@@ -1,4 +1,8 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
 """Live local Rex integration demo; launches only disposable owned panes."""
 import argparse
 import json
@@ -66,7 +70,7 @@ def demo():
         assert all(len(ids) <= 2 for wid, ids in current.items() if wid not in before)
         print("PASS two different tasks share one Checks tab in the main session", flush=True)
 
-        server = launch("demo-http-server", shlex.join([sys.executable, "-u", "-m", "http.server", "0", "--bind", "127.0.0.1", "--directory", str(ROOT / "demo")]), "server")
+        server = launch("demo-http-server", shlex.join([rex.uv_executable(), "run", "--no-project", "python", "-u", "-m", "http.server", "0", "--bind", "127.0.0.1", "--directory", str(ROOT / "demo")]), "server")
         port = wait_for(lambda: re.search(r"port (\d+)", capture(server["block_id"])), "HTTP server announces readiness").group(1)
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5) as response:
             assert response.status == 200

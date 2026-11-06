@@ -7,9 +7,15 @@ description: Manage Python project environments and dependencies, and run Ruff f
 
 Inspect the project’s existing packaging and tool configuration before changing it. Preserve its established workflow; do not migrate a project or replace its dependency manager as an incidental cleanup.
 
+## Execution and standalone scripts
+
+Use **uv for all Python execution and tooling**: `uv run` for project commands, `uv run --script script.py` for standalone scripts, and `uv tool run` for standalone CLI tools. Avoid direct interpreter invocations and system-wide pip installs. For a project using another dependency manager, use uv as the launcher while preserving that project's dependency files unless migration is requested.
+
+Initialize standalone Python scripts with `uv init --script script.py`. Declare their Python version and dependencies in inline PEP 723 metadata, including `dependencies = []` for standard-library-only scripts. Add dependencies with `uv add --script script.py PACKAGE`. For directly executable scripts, use `#!/usr/bin/env -S uv run --script` and set the executable bit. A reusable standalone script should carry its own environment definition instead of depending on the caller's working directory or globally installed packages.
+
 ## New projects and dependencies
 
-For a new project, prefer `uv` with `pyproject.toml` and a committed `uv.lock`. Use `uv init`, add runtime or development dependencies with `uv add` (use `uv add --dev` for development tools), then sync and run project commands with `uv run`. Keep the Python version consistent with the project’s declared support and pin it only when the project needs a specific interpreter.
+For a new project, use `uv` with `pyproject.toml` and a committed `uv.lock`. Use `uv init`, add runtime or development dependencies with `uv add` (use `uv add --dev` for development tools), then sync and run project commands with `uv run`. Keep the Python version consistent with the project’s declared support and pin it only when the project needs a specific interpreter.
 
 For an existing uv project, treat `pyproject.toml` as dependency intent and `uv.lock` as the resolved environment. Make dependency changes through `uv add` or `uv remove` and include the resulting lockfile change. Use `uv sync --locked` when installing an existing lock without allowing it to change; use `uv lock --check` to confirm it matches the project metadata. Upgrade dependencies only when requested or needed to resolve the task, and keep upgrades as narrow as practical.
 
@@ -29,4 +35,4 @@ Ruff and ty can provide Python editor diagnostics through their language servers
 
 ## Repository hooks
 
-The bundled `scripts/install_hooks.py` installs deterministic Python hooks for Codex and Claude Code. Run it only when setting up or updating hooks, then review new definitions in the host's `/hooks` menu. Add `--with-rex` to also install the optional local Rex integration. The hooks add project context and guard pip mutations in uv projects; they run no checks, install no packages, and grant no permissions. Use `PYTHON_TOOLING_DISABLED=1` in the hook environment for an explicitly requested exceptional workflow. Perform relevant code checks through the user's normal visible terminal workflow.
+The bundled `scripts/install_hooks.py` installs only Python hooks for Codex and Claude Code. Run it with `uv run --script` when setting up or updating hooks, then review new definitions in the host's `/hooks` menu. The hooks add project context and guard pip mutations in uv projects; they run no checks, install no packages, and grant no permissions. Use `PYTHON_TOOLING_DISABLED=1` in the hook environment for an explicitly requested exceptional workflow. Perform relevant code checks through the user's normal visible terminal workflow.

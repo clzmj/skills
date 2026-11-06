@@ -1,4 +1,8 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
 """Persistent Rex command routing, layout, and completion retention. Stdlib only."""
 import argparse
 import fcntl
@@ -18,6 +22,14 @@ ROOT = Path(__file__).resolve().parent
 STATE = Path(os.environ.get("REX_VISIBLE_STATE_DIR", str(Path.home() / ".local/state/rex-visible"))).expanduser()
 KINDS = ("server", "logs", "infra", "deploy", "test", "build", "install", "job")
 POLICY = ROOT / "POLICY.md"
+
+
+def uv_executable():
+    """Use a persistent launcher rather than uv's temporary script interpreter."""
+    executable = shutil.which("uv")
+    if not executable:
+        raise RuntimeError("uv is required; install uv and ensure it is on PATH")
+    return str(Path(executable).absolute())
 
 
 def classify(command):
@@ -81,7 +93,7 @@ def classify(command):
             return "job"
         if exe in ("prisma", "drizzle-kit", "sqlx", "alembic") and any("migrat" in x or x == "push" for x in args):
             return "infra"
-        if exe in ("python", "python3") and "http.server" in args:
+        if exe in ("python", "python3", "uv") and "http.server" in args:
             return "server"
     return None
 
@@ -102,7 +114,7 @@ def hook():
     kind = classify(command) if isinstance(command, str) else None
     if kind:
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason":
-            f"Run this {kind} command visibly in local Rex. Read {POLICY}, then use python3 {ROOT / 'rex_visible.py'} run --task TASK --kind {kind} --command ORIGINAL_COMMAND. Use --detach for servers/log followers. This hook has not executed the command. Preserve normal approvals; use the user's explicit machine if specified."}}))
+            f"Run this {kind} command visibly in local Rex. Read {POLICY}, then use uv run --script {ROOT / 'rex_visible.py'} run --task TASK --kind {kind} --command ORIGINAL_COMMAND. Use --detach for servers/log followers. This hook has not executed the command. Preserve normal approvals; use the user's explicit machine if specified."}}))
 
 
 def atomic_json(path, data):
@@ -194,7 +206,7 @@ def open_job(args, job_id, status):
     task_key = hashlib.sha256(session.encode()).hexdigest()[:16]
     task_file = STATE / (task_key + ".json")
     label = re.sub(r"[^a-z0-9]+", "-", args.task.lower()).strip("-")[:48] or "agent-work"
-    child = [sys.executable, str(Path(__file__).resolve()), "job", "--status", str(status),
+    child = [uv_executable(), "run", "--script", str(Path(__file__).resolve()), "job", "--status", str(status),
              "--kind", args.kind, "--close-after", str(args.close_after), "--command", args.command,
              "--shell", args.shell]
     group = "Services" if args.kind in ("server", "logs") else ("Checks" if args.kind in ("test", "build", "install") else "Operations")

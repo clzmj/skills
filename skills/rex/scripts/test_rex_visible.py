@@ -1,3 +1,8 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
 import contextlib
 import importlib.util
 import io
@@ -22,6 +27,7 @@ class RoutingTests(unittest.TestCase):
             ("tail -F app.log", "logs"),
             ("/bin/zsh -lc 'bun run build'", "build"),
             ("uv run pytest", "test"),
+            ("uv run --no-project python -u -m http.server 0", "server"),
             ("npm ci", "install"),
         ]:
             with self.subTest(command=command):
@@ -45,6 +51,13 @@ class RoutingTests(unittest.TestCase):
     def test_remote_default_cannot_be_inherited(self):
         with patch.dict(rv.os.environ, {"REX_SERVER": "some-other-machine:22"}), patch.object(rv.shutil, "which", return_value="/bin/rex"):
             self.assertTrue(rv.rex_cli()[2].startswith("unix://"))
+
+    def test_uv_launcher_is_absolute_and_required(self):
+        with patch.object(rv.shutil, "which", return_value="/opt/tools/uv"):
+            self.assertEqual(rv.uv_executable(), "/opt/tools/uv")
+        with patch.object(rv.shutil, "which", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "uv is required"):
+                rv.uv_executable()
 
     def test_job_reports_actual_exit_and_success_delay(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -101,13 +114,17 @@ class RoutingTests(unittest.TestCase):
                 if arguments[:2] == ["session", "inspect"]:
                     return {"windows": [] if len(calls) == 1 else [{"label": "Checks", "layers": [{"blocks": [{"block_id": "owned-1"}]}]}]}
                 return {"block_ids": ["owned-1" if len(calls) == 2 else "owned-2"]}
-            with patch.object(rv, "rex_json", side_effect=fake):
+            with patch.object(rv, "rex_json", side_effect=fake), patch.object(rv, "uv_executable", return_value="/opt/tools/uv"):
                 for task in ("first-project", "another-project"):
                     args = argparse.Namespace(task=task, kind="test", close_after=30, command="true", shell="/bin/sh", cwd=folder)
                     opened = rv.open_job(args, task, Path(folder) / (task + ".json"))
                     self.assertEqual(opened["session_id"], "main")
             self.assertEqual(calls[1][:2], ["window", "new"])
             self.assertEqual(calls[3][0], "split")
+            for call in (calls[1], calls[3]):
+                child = call[call.index("--") + 1:]
+                self.assertEqual(child[:4], ["/opt/tools/uv", "run", "--script", str(Path(rv.__file__).resolve())])
+                self.assertEqual(child[4], "job")
             self.assertFalse(any(c[0] == "new" for c in calls))
 
 

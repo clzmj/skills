@@ -1,4 +1,10 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+#
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
+
 """Read-only Python workflow guidance for SessionStart and PreToolUse hooks.
 
 This is a convenience guard, not a shell security boundary. It never runs tools.
@@ -43,7 +49,7 @@ def session_context(root):
         metadata = (root / "pyproject.toml").read_text()
     except (OSError, UnicodeError):
         metadata = ""
-    guidance = [f"Python project: {root}. Follow the python-tooling skill and existing project scripts."]
+    guidance = [f"Python project: {root}. Follow the python-tooling skill and existing project scripts. Use uv run for all Python execution; initialize standalone scripts with uv init --script and inline dependency metadata."]
     if (root / "pyproject.toml").is_file() and (root / "uv.lock").is_file():
         guidance.append("This project uses uv: use uv add/remove for dependencies, uv sync --locked for the existing lock, and uv run for project commands.")
     for tool, command in (("ruff", "ruff format and ruff check"), ("ty", "ty check")):

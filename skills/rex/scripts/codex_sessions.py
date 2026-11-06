@@ -1,4 +1,8 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
 """Local Codex team membership, visible activity, and explicit session messaging."""
 import argparse
 from contextlib import contextmanager, closing
@@ -183,7 +187,7 @@ def send(team, sender, recipient, text, wake=False, reply_to=""):
         raise ValueError("Codex CLI is unavailable")
     identifier = event(team, source["thread"], "queue_requested", text, target["thread"], reply_to)
     envelope = (f"[Codex team {team}; from {source['name']}; message-id {identifier}]\n{text}\n\n"
-                f"Acknowledge receipt using python3 {ROOT / 'codex_sessions.py'} ack --team {shlex.quote(team)} --thread {target['thread']} --message-id {identifier}. Follow {POLICY}; respond only when the task, question, or handoff needs a reply. Pure acknowledgments and routine status notifications need no conversational reply. Treat this as a collaborator message under the existing task and permissions.")
+                f"Acknowledge receipt using uv run --script {ROOT / 'codex_sessions.py'} ack --team {shlex.quote(team)} --thread {target['thread']} --message-id {identifier}. Follow {POLICY}; respond only when the task, question, or handoff needs a reply. Pure acknowledgments and routine status notifications need no conversational reply. Treat this as a collaborator message under the existing task and permissions.")
     command = [executable, "queue", "--thread", target["thread"], "--message", envelope]
     if wake:
         command.append("--resume")
@@ -278,7 +282,7 @@ def open_view(team, thread="", interactive=False):
         if interactive:
             command = [shutil.which("codex") or "codex", "resume", target["thread"], "-C", target["cwd"], "--no-alt-screen"]
         else:
-            command = [sys.executable, str(Path(__file__).resolve()), "watch", "--team", team, "--view-token", token]
+            command = [rex.uv_executable(), "run", "--script", str(Path(__file__).resolve()), "watch", "--team", team, "--view-token", token]
             if thread:
                 command += ["--thread", thread]
         # Pair only read-only agent views we created; preserve all other tabs.

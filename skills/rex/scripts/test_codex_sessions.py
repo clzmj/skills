@@ -1,3 +1,8 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
 import contextlib
 import io
 import json
@@ -31,12 +36,16 @@ class CoordinationTests(unittest.TestCase):
     def test_open_uses_root_main_session_and_never_creates_session(self):
         cs.register("task", B, "worker", parent=A)
         layout = {"windows": [{"label": "Main", "layers": [{"blocks": [{"block_id": "codex"}]}]}]}
-        with patch.object(cs.rex, "main_session", return_value="main-rex", create=True) as resolve, patch.object(cs.rex, "state_dir"), patch.object(cs.rex, "rex_json", side_effect=[layout, {"block_ids": ["owned"]}]) as rex_json:
+        with patch.object(cs.rex, "main_session", return_value="main-rex", create=True) as resolve, patch.object(cs.rex, "state_dir"), patch.object(cs.rex, "uv_executable", return_value="/opt/tools/uv"), patch.object(cs.rex, "rex_json", side_effect=[layout, {"block_ids": ["owned"]}]) as rex_json:
             view = cs.open_view("task", B)
         resolve.assert_called_once_with(thread=A)
         self.assertEqual(view["session"], "main-rex")
         self.assertEqual(rex_json.call_args_list[1].args[0][:4], ["window", "new", "-s", "main-rex"])
         self.assertIn("--view-token", rex_json.call_args_list[1].args[0])
+        launch = rex_json.call_args_list[1].args[0]
+        child = launch[launch.index("--") + 1:]
+        self.assertEqual(child[:4], ["/opt/tools/uv", "run", "--script", str(Path(cs.__file__).resolve())])
+        self.assertEqual(child[4], "watch")
         self.assertFalse(any(call.args[0][0] == "new" for call in rex_json.call_args_list))
 
     def test_open_reuses_tracked_pane_and_prunes_missing_rows(self):

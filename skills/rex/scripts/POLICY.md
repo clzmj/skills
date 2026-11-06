@@ -5,7 +5,7 @@ Run important local commands in the existing main Codex Rex session without wait
 Before the first important command, read the installed Rex skill. Resolve the main session from `REX_SESSION`, a stored thread-to-session binding, or the unique Rex session with a foreground Codex process. If resolution is ambiguous, stop and report the ambiguity. Choose a stable, descriptive task slug and run:
 
 ```sh
-python3 ~/.local/share/agent-tooling/rex/rex_visible.py run --task project-task --kind test --cwd /absolute/project --command 'cargo test'
+uv run --script ~/.local/share/agent-tooling/rex/rex_visible.py run --task project-task --kind test --cwd /absolute/project --command 'cargo test'
 ```
 
 Use `--detach` for servers and log followers. Supported kinds are `server`, `logs`, `infra`, `deploy`, `test`, `build`, `install`, and `job`. The runner returns the session, pane, and status-file IDs, streams output for finite commands, and returns their actual exit code. A detached launch confirms creation only: capture the returned pane and check readiness separately. Read a detached job's status file for its exit code when it finishes.

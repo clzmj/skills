@@ -1,0 +1,8 @@
+{
+  "favorites": [
+    { "type": "skills", "source": "UditAkhourii/adhd", "skills": ["adhd"] },
+    { "type": "plugin", "source": "google/elephant-goldfish-model", "marketplace": "egm", "plugin": "egm" },
+    { "type": "plugin", "source": "DietrichGebert/ponytail", "marketplace": "ponytail", "plugin": "ponytail", "installedAs": ["engineering-suite-ponytail@openai-curated-remote"] },
+    { "type": "skills", "source": "mattpocock/skills", "skills": ["*"] }
+  ]
+}
