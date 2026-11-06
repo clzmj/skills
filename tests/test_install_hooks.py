@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 SOURCE = Path(__file__).resolve().parents[1] / "skills/python-tooling/scripts/install_hooks.py"
 SPEC = importlib.util.spec_from_file_location("install_hooks", SOURCE)
@@ -11,6 +12,19 @@ SPEC.loader.exec_module(installer)
 
 
 class InstallTests(unittest.TestCase):
+    def test_python_launcher_update_replaces_definition_without_duplicates(self):
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder)
+            with patch.object(installer.shutil, "which", return_value="/old-python"):
+                installer.install(home, ["codex"])
+            with patch.object(installer.shutil, "which", return_value="/stable/python3"):
+                installer.install(home, ["codex"])
+            data = json.loads((home / ".codex/hooks.json").read_text())
+            for event in ("SessionStart", "PreToolUse"):
+                handlers = [h for g in data["hooks"][event] for h in g["hooks"]]
+                self.assertEqual(len(handlers), 1)
+                self.assertTrue(handlers[0]["command"].startswith("/stable/python3 "))
+
     def test_preserves_other_hooks_settings_and_trust_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as folder:
             home = Path(folder)

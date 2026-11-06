@@ -29,8 +29,16 @@ def write(path, content):
 
 def merge_hook(data, event, command, matcher=None, timeout=5):
     groups = data.setdefault("hooks", {}).setdefault(event, [])
-    if any(h.get("command") == command for g in groups for h in g.get("hooks", [])):
-        return
+    arguments = shlex.split(command)[1:]
+    for group in groups:
+        for handler in group.get("hooks", []):
+            try:
+                existing = shlex.split(handler.get("command", ""))
+            except ValueError:
+                continue
+            if existing and existing[1:] == arguments:
+                handler["command"] = command
+                return
     group = {"hooks": [{"type": "command", "command": command, "timeout": timeout}]}
     if matcher:
         group["matcher"] = matcher
@@ -57,7 +65,7 @@ def rex_hooks(data, root, codex):
     ):
         for event in events:
             groups = data.get("hooks", {}).get(event, [])
-            command = shlex.join([sys.executable, str(root / script), "hook"])
+            command = shlex.join([shutil.which("python3") or sys.executable, str(root / script), "hook"])
             existing = []
             for group in groups:
                 for handler in group.get("hooks", []):
@@ -87,7 +95,7 @@ def install(home, agents, with_rex=False):
     if with_rex and (source / "rex").resolve() != (runtime / "rex").resolve():
         shutil.copytree(source / "rex", runtime / "rex", dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", ".state"))
     changed = []
-    command = shlex.join([sys.executable, str(runtime / "python_tooling.py")])
+    command = shlex.join([shutil.which("python3") or sys.executable, str(runtime / "python_tooling.py")])
     for agent in agents:
         codex = agent == "codex"
         path = home / (".codex/hooks.json" if codex else ".claude/settings.json")
