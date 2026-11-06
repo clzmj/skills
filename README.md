@@ -7,10 +7,10 @@ One Python tooling skill, its deterministic hooks, and the optional Rex runtime.
 Install the skill with the [Skills CLI](https://github.com/vercel-labs/skills):
 
 ```sh
-bunx skills add clzmj/agent-tooling --skill python-tooling -g -a codex claude-code -y
+bunx skills add clzmj/skills --skill python-tooling -g -a codex claude-code -y
 ```
 
-For a private repository with SSH authentication, use `git@github.com:clzmj/agent-tooling.git` instead of `clzmj/agent-tooling`.
+For a private repository with SSH authentication, use `git@github.com:clzmj/skills.git` instead of `clzmj/skills`.
 
 Skills CLI installs skill files. Install the bundled hooks separately:
 

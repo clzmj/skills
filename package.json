@@ -1,5 +1,5 @@
 {
-  "name": "@clzmj/agent-tooling",
+  "name": "@clzmj/skills",
   "private": true,
   "scripts": {
     "install:hooks": "python3 skills/python-tooling/scripts/install_hooks.py",
