@@ -6,6 +6,11 @@ const mode = process.argv[2];
 if (!['plan', 'production'].includes(mode ?? '')) {
   throw new Error('Usage: bun scripts/deploy.ts plan|production');
 }
+if (process.env.GITHUB_ACTIONS === 'true') {
+  if (process.env.GITHUB_REPOSITORY !== 'clzmj/skills') throw new Error('Deployment credentials are restricted to clzmj/skills');
+} else if (process.env.DOPPLER_PROJECT !== 'skills' || !['ci', 'prd'].includes(process.env.DOPPLER_CONFIG ?? '') || (mode === 'production' && process.env.DOPPLER_CONFIG !== 'prd')) {
+  throw new Error('Run through the dedicated skills Doppler ci/prd config');
+}
 const required = [
   'CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_ZONE_ID',
   'TF_STATE_BUCKET', 'TF_STATE_R2_ACCESS_KEY_ID', 'TF_STATE_R2_SECRET_ACCESS_KEY',

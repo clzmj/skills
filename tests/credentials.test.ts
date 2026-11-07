@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { bucket, inputs, provision, s3Credentials, specifications, type IO } from "../scripts/provision-credentials";
+import { bucket, inputs, operatorCLI, operatorCommand, operatorEnvironment, operatorResult, provision, s3Credentials, specifications, type IO } from "../scripts/provision-credentials";
 
 const account = "a".repeat(32), zone = "b".repeat(32);
 const env = { DOPPLER_PROJECT: "skills", DOPPLER_CONFIG: "dev", CLOUDFLARE_ACCOUNT_ID: account, CLOUDFLARE_ZONE_ID: zone, CLOUDFLARE_BOOTSTRAP_API_TOKEN: "operator-secret" };
@@ -83,4 +83,28 @@ test("partial persistence failure stops immediately with sanitized diagnostic, n
   await expect(provision(env, "apply", f.io)).rejects.toThrow("Provisioning stopped at skills-prd-cloudflare");
   expect(f.tokens).toHaveLength(1);
   expect(f.calls.some(c => c.method === "DELETE")).toBe(false);
+});
+test("operator mode must be explicit and maps only token administration endpoints", async () => {
+  const operatorEnv = { ...env, CLOUDFLARE_BOOTSTRAP_API_TOKEN: "" };
+  expect(() => inputs(operatorEnv)).toThrow("Missing");
+  expect(inputs(operatorEnv, true).bootstrap).toBe(operatorCLI);
+  expect(operatorCommand(`/accounts/${account}/tokens/permission_groups`).args).toEqual(["cf", "--profile", "default", "accounts", "tokens", "permission-groups", "list"]);
+  expect(operatorCommand(`/accounts/${account}/tokens/${zone}`).args.slice(-2)).toEqual(["get", zone]);
+  const body = specifications(account, zone, groups)[0];
+  const command = operatorCommand(`/accounts/${account}/tokens`, "POST", body);
+  expect(command.args).toContain("create");
+  expect(command.args).not.toContain("operator-secret");
+  expect(() => operatorCommand(`/accounts/${account}/r2/buckets`, "POST", {})).toThrow("Unsupported");
+  expect(() => operatorCommand(`/accounts/${account}/tokens`, "DELETE")).toThrow("Unsupported");
+  const f = fixture(); await provision(operatorEnv, "plan", f.io, true);
+  expect(f.calls.every(c => c.token === operatorCLI)).toBe(true);
+  expect(f.writes).toHaveLength(0);
+});
+test("operator child environment excludes all service auth and normalizes captured JSON only", () => {
+  const filtered = operatorEnvironment({ PATH: "/bin", HOME: "/home", CLOUDFLARE_ACCOUNT_ID: zone,
+    CLOUDFLARE_API_TOKEN: "legacy", CLOUDFLARE_BOOTSTRAP_API_TOKEN: "admin", CLOUDFLARE_API_KEY: "key", CF_API_TOKEN: "legacy", AWS_SECRET_ACCESS_KEY: "aws", TF_STATE_R2_SECRET_ACCESS_KEY: "s3" }, account);
+  expect(filtered).toEqual({ PATH: "/bin", HOME: "/home", CLOUDFLARE_ACCOUNT_ID: account });
+  expect(operatorResult('{"success":true,"result":[{"name":"test"}]}')).toEqual([{ name: "test" }]);
+  expect(operatorResult('[{"name":"test"}]')).toEqual([{ name: "test" }]);
+  expect(() => operatorResult('{"success":false,"error":"SECRET"}')).toThrow("output suppressed");
 });

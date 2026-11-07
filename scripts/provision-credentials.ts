@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 // All secret reads/writes are restricted to this project. Never print provider/CLI responses.
 export const project = "skills";
 export const bucket = "clzmj-skills-tfstate";
+export const operatorCLI = "skills:operator-cli";
 type Secrets = Record<string, string>;
 type Group = { id: string; name: string; scopes: string[]; is_selectable?: boolean };
 type Policy = { effect: string; resources: Record<string, string>; permission_groups: { id: string }[] };
@@ -16,14 +17,39 @@ export type IO = {
   write(config: "ci" | "prd", values: Secrets): Promise<void>;
   log(line: string): void;
 };
-export function inputs(env: Secrets) {
+export function inputs(env: Secrets, useOperatorCLI = false) {
   const development = env.DOPPLER_CONFIG === "dev" || (env.DOPPLER_ENVIRONMENT === "dev" && env.DOPPLER_CONFIG?.startsWith("dev_"));
   if (env.DOPPLER_PROJECT !== project || !development) throw new Error("Run with Doppler project skills config dev or its private development config");
   for (const key of ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_ZONE_ID"]) {
     if (!/^[a-f0-9]{32}$/.test(env[key] ?? "")) throw new Error(`Invalid ${key}`);
   }
-  if (!env.CLOUDFLARE_BOOTSTRAP_API_TOKEN?.trim()) throw new Error("Missing CLOUDFLARE_BOOTSTRAP_API_TOKEN in skills/dev");
-  return { account: env.CLOUDFLARE_ACCOUNT_ID, zone: env.CLOUDFLARE_ZONE_ID, bootstrap: env.CLOUDFLARE_BOOTSTRAP_API_TOKEN };
+  if (!useOperatorCLI && !env.CLOUDFLARE_BOOTSTRAP_API_TOKEN?.trim()) throw new Error("Missing CLOUDFLARE_BOOTSTRAP_API_TOKEN in skills/dev");
+  return { account: env.CLOUDFLARE_ACCOUNT_ID, zone: env.CLOUDFLARE_ZONE_ID, bootstrap: useOperatorCLI ? operatorCLI : env.CLOUDFLARE_BOOTSTRAP_API_TOKEN };
+}
+// Only non-secret resource identifiers and policies may appear in CLI arguments.
+export function operatorCommand(path: string, method = "GET", body?: any): { args: string[]; account: string } {
+  const match = /^\/accounts\/([a-f0-9]{32})\/tokens(?:\/(permission_groups|[a-f0-9]{32}))?$/.exec(path);
+  if (!match) throw new Error("Unsupported operator CLI endpoint");
+  let action: string[];
+  if (method === "GET" && match[2] === "permission_groups") action = ["permission-groups", "list"];
+  else if (method === "GET" && match[2]) action = ["get", match[2]];
+  else if (method === "GET") action = ["list", "--include-expired", "true"];
+  else if (method === "POST" && !match[2] && /^skills-(ci|prd)-(cloudflare|state)$/.test(body?.name) && Array.isArray(body?.policies)) {
+    action = ["create", "--name", body.name, "--policies", JSON.stringify(body.policies)];
+  } else throw new Error("Unsupported operator CLI operation");
+  return { args: ["cf", "--profile", "default", "accounts", "tokens", ...action], account: match[1] };
+}
+export function operatorEnvironment(env: Record<string, string | undefined>, account: string) {
+  return { ...Object.fromEntries(Object.entries(env).filter(([key]) =>
+    !key.startsWith("CLOUDFLARE_") && !key.startsWith("CF_") && !key.startsWith("TF_STATE_") && !key.startsWith("AWS_"))),
+    CLOUDFLARE_ACCOUNT_ID: account };
+}
+export function operatorResult(raw: string) {
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed?.success === false) throw new Error();
+    return parsed?.result ?? parsed;
+  } catch { throw new Error("Invalid operator CLI response; output suppressed"); }
 }
 export function s3Credentials(id: string, value: string) {
   return { TF_STATE_R2_ACCESS_KEY_ID: id, TF_STATE_R2_SECRET_ACCESS_KEY: createHash("sha256").update(value).digest("hex") };
@@ -62,8 +88,8 @@ export function validateExisting(spec: Spec, token: Token, stored: Secrets) {
     throw new Error(`${spec.name}: existing token is inactive or has different scope; resolve manually`);
   }
 }
-export async function provision(env: Secrets, mode: "plan" | "apply", io: IO) {
-  const { account, zone, bootstrap } = inputs(env);
+export async function provision(env: Secrets, mode: "plan" | "apply", io: IO, useOperatorCLI = false) {
+  const { account, zone, bootstrap } = inputs(env, useOperatorCLI);
   const base = `/accounts/${account}`;
   const groups: Group[] = await io.api(`${base}/tokens/permission_groups`, bootstrap);
   const specs = specifications(account, zone, groups);
@@ -139,6 +165,25 @@ async function doppler(args: string[], value?: string): Promise<string> {
 export const liveIO: IO = {
   async api(path, token, method = "GET", body) {
     try {
+      if (token === operatorCLI) {
+        const command = operatorCommand(path, method, body);
+        const results: any[] = [];
+        // Explicit pages avoid silently missing an existing named credential.
+        const list = method === "GET" && /\/tokens$/.test(path);
+        for (let page = 1; page <= 1000; page++) {
+          const child = Bun.spawn([...command.args, ...(list ? ["--per-page", "50", "--page", String(page)] : [])], {
+            env: operatorEnvironment(process.env, command.account), stdin: "ignore", stdout: "pipe", stderr: "pipe",
+          });
+          const [stdout] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
+          if (await child.exited !== 0) throw new Error();
+          const result = operatorResult(stdout);
+          if (!list) return result;
+          if (!Array.isArray(result)) throw new Error();
+          results.push(...result);
+          if (result.length < 50) return results;
+        }
+        throw new Error();
+      }
       const response = await fetch(`https://api.cloudflare.com/client/v4${path}`, { method,
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -169,7 +214,7 @@ export const liveIO: IO = {
 };
 if (import.meta.main) {
   const mode = process.argv[2];
-  if (mode !== "plan" && mode !== "apply") { console.error("Usage: bun scripts/provision-credentials.ts plan|apply"); process.exit(1); }
-  try { await provision(process.env as Secrets, mode, liveIO); }
+  if ((mode !== "plan" && mode !== "apply") || process.argv.slice(3).some(arg => arg !== "--operator-cli")) { console.error("Usage: bun scripts/provision-credentials.ts plan|apply [--operator-cli]"); process.exit(1); }
+  try { await provision(process.env as Secrets, mode, liveIO, process.argv.includes("--operator-cli")); }
   catch (error) { console.error(error instanceof Error ? error.message : "Credential provisioning failed; details suppressed"); process.exit(1); }
 }

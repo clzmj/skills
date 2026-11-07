@@ -10,7 +10,9 @@
     "build:release": "bun scripts/build-release.ts",
     "build:worker": "bun x --no-install wrangler deploy --config distribution/wrangler.jsonc --dry-run --outdir dist/worker",
     "deploy:plan": "bun scripts/deploy.ts plan",
-    "deploy:production": "bun scripts/deploy.ts production"
+    "deploy:production": "bun scripts/deploy.ts production",
+    "credentials:plan": "doppler run --project skills --config dev -- bun scripts/provision-credentials.ts plan --operator-cli",
+    "credentials:apply": "doppler run --project skills --config dev -- bun scripts/provision-credentials.ts apply --operator-cli"
   },
   "devDependencies": {
     "wrangler": "4.156.2"

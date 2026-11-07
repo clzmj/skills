@@ -78,18 +78,30 @@ retain older versioned objects for that purpose.
 
 Cloudflare standard DDoS protection applies to the custom domain. The Worker allowlists paths/methods, rejects query cache-busting before R2, rate-limits anonymous clients to 120 requests/60 seconds, and returns Retry-After on limits or protection outages. Immutable releases cache for one year; installer/manifest cache for 60 seconds. Native rate limits are approximate per location and use a prefixed IP key, so clients behind the same NAT share an allowance. Worker cache hits still count as Worker requests.
 
-Normal installer usage is expected to fit the account-shared free allowances: Workers Free has 100,000 requests/day; R2 Standard includes 10 GB-month, 1 million Class A operations, and 10 million Class B operations monthly, with free egress. Existing account usage, plan status, and abuse can affect cost/availability; rate limiting is not a global billing cap. No plan upgrade is performed by these scripts. Billing-plan reads were not permitted by the existing deployment token; verify the account plan in the owner dashboard.
+Normal installer usage is expected to fit the account-shared free allowances: Workers Free has 100,000 requests/day; R2 Standard includes 10 GB-month, 1 million Class A operations, and 10 million Class B operations monthly, with free egress. Existing account usage, plan status, and abuse can affect cost/availability; rate limiting is not a global billing cap. No plan upgrade is performed by these scripts. The operator CLI verified that the current account subscriptions report zero base price. R2 remains usage-based and allowances are account-shared, so this is not a guarantee of a zero bill under unlimited usage.
 
 Sources: [Workers limits](https://developers.cloudflare.com/workers/platform/limits/), [R2 pricing](https://developers.cloudflare.com/r2/pricing/), [DDoS coverage](https://developers.cloudflare.com/ddos-protection/), [Rate Limiting API](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/).
 
 ## Dedicated credential bootstrap
 
-A human operator must create a short-lived account token named `skills-bootstrap` with only Account API Tokens Edit for the personal Cloudflare account, then save it directly in Doppler `skills/dev` as `CLOUDFLARE_BOOTSTRAP_API_TOKEN`. The bootstrap credential is not a deployment credential and must never be synced to GitHub. `scripts/provision-credentials.ts` uses it to mint named, least-privilege keys for `skills/ci` and `skills/prd`, and stores their values directly in the matching Doppler configs. Never paste credentials into chat or arguments.
+Use the authenticated **Cloudflare CLI `cf`**, not Wrangler authentication, for operator provisioning. The operator profile needs `account_api_tokens:create`; routine deployment never uses that operator identity. The factory captures command responses in process memory, stores new values directly through Doppler stdin, and never logs or writes plaintext key values.
 
-Required leaf identities: `skills-ci-cloudflare` (read-only provider operations), `skills-prd-cloudflare` (required Worker/R2 writes and zone read), `skills-ci-state` (object reads only in `clzmj-skills-tfstate`), and `skills-prd-state` (object reads/writes only in that bucket). The factory credential should be revoked after setup. API-token administration is a prerequisite enforced by Cloudflare; deployment credentials cannot grant themselves this permission.
+```sh
+cf auth whoami
+doppler run --project skills --config dev -- bun scripts/provision-credentials.ts plan --operator-cli
+doppler run --project skills --config dev -- bun scripts/provision-credentials.ts apply --operator-cli
+```
+
+The explicit `--operator-cli` option strips service-token auth variables from the child CLI and uses its named operator profile. The optional API-token bootstrap mode remains available for operators who supply their own temporary `CLOUDFLARE_BOOTSTRAP_API_TOKEN` in this project; it is not required when `cf` is already authenticated. No operator/bootstrap token is synced to GitHub.
+
+Required leaf identities: `skills-ci-cloudflare` (read-only provider operations), `skills-prd-cloudflare` (required Worker/R2 writes and zone read), `skills-ci-state` (object reads only in `clzmj-skills-tfstate`), and `skills-prd-state` (object reads/writes only in that bucket). Any optional temporary factory token should be revoked after setup. API-token administration is a prerequisite enforced by Cloudflare; deployment credentials cannot grant themselves this permission. Existing dedicated tokens are preserved only when their identities and policies match the project manifest.
 
 ## Initial bootstrap audit and state migration
 
-The first public release (`7d01868c9aad18a90097b4f0d61c9907c9d3b827`) was provisioned before the user clarified the global dedicated-credential rule. It used the reference deployment credential in place and wrote only `skills/terraform.tfstate` in the reference state bucket. No credentials were copied to `skills` or GitHub, and no environment was deleted. Further deployment/automation is paused until dedicated credentials are available.
+The first public release (`7d01868c9aad18a90097b4f0d61c9907c9d3b827`) was provisioned before the user clarified the global dedicated-credential rule. It used the reference deployment credential in place and wrote only `skills/terraform.tfstate` in the reference state bucket. No credentials were copied to `skills` or GitHub, and no environment was deleted. The four dedicated credentials have now been provisioned. The live release bucket and custom domain have been imported into `clzmj-skills-tfstate` with a no-change plan. Read-only CI planning also reports no changes. No ongoing deployment or backend operation uses the reference credentials.
 
 After creating the dedicated backend, initialize it with `-reconfigure` and import the already-created release bucket and custom domain using the new project keys; do not read the reference credentials again. The custom-domain import identifier is `$CLOUDFLARE_ACCOUNT_ID/af5477ad04031752e1152de25fd41380401078c0`; the bucket import is `$CLOUDFLARE_ACCOUNT_ID/clzmj-skills-releases/default`. Require a full no-change plan before retiring the initial skills-only state object using a dedicated project identity. Never modify the site state object.
+
+## Sync quota
+
+The existing `clzmj` GitHub integration is reused. The Doppler free workplace allows five config syncs. One older duplicate site CI mapping was removed with explicit user approval and `delete_from_target=false`; its active replacement and the original GitHub secret-name inventory were verified. This frees the production mapping slot without a plan upgrade. Only the new dedicated `skills` credentials are synced to this repository.
