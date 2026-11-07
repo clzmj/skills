@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync, realpathSync, statSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 
@@ -91,8 +91,15 @@ export function parseState(agent: Agent, plugins: unknown, marketplaces: unknown
   return { plugins: new Set(pluginIds), marketplaces: new Set(marketplaceNames) };
 }
 
-export function planCommands(favorites: Favorite[], options: Options, states: Partial<Record<Agent, State>>, directory = resolve(homedir(), ".agents")): Command[] {
-  const commands: Command[] = [skillsCommand("clzmj/skills", ["rex", "python-tooling"], options.agents)];
+export function resolveCoreSource(value: string | undefined, directory = root): string {
+  if (value === undefined) return "clzmj/skills";
+  if (!isAbsolute(value) || realpathSync(value) !== realpathSync(directory)) throw new Error("CLZMJ_SKILLS_SOURCE must point to this extracted release root");
+  for (const skill of ["rex", "python-tooling"]) if (!statSync(resolve(value, "skills", skill, "SKILL.md")).isFile()) throw new Error(`Missing bundled skill: ${skill}`);
+  return realpathSync(value);
+}
+
+export function planCommands(favorites: Favorite[], options: Options, states: Partial<Record<Agent, State>>, directory = resolve(homedir(), ".agents"), coreSource = "clzmj/skills"): Command[] {
+  const commands: Command[] = [skillsCommand(coreSource, ["rex", "python-tooling"], options.agents)];
   if (options.hooks) for (const skill of ["rex", "python-tooling"])
     commands.push(["uv", "run", "--script", resolve(directory, "skills", skill, "scripts/install_hooks.py"), "--agents", ...options.agents]);
   const knownMarketplaces = new Map(options.agents.map(agent => [agent, new Set(states[agent]?.marketplaces)]));
@@ -112,7 +119,7 @@ export function planCommands(favorites: Favorite[], options: Options, states: Pa
 
 export const displayCommand = (command: Command) => command.map(value => /^[\w./:@-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`).join(" ");
 
-export function initialize(manifest: unknown, options: Options, runtime: Runtime, directory = resolve(homedir(), ".agents")): void {
+export function initialize(manifest: unknown, options: Options, runtime: Runtime, directory = resolve(homedir(), ".agents"), coreSource = "clzmj/skills"): void {
   const favorites = parseManifest(manifest);
   // Complete manifest and executable checks before the first subprocess or mutation.
   const tools = new Set(["bunx", "git"]);
@@ -131,7 +138,7 @@ export function initialize(manifest: unknown, options: Options, runtime: Runtime
       states[agent] = parseState(agent, plugins, marketplaces);
     }
   }
-  const commands = planCommands(favorites, options, states, directory);
+  const commands = planCommands(favorites, options, states, directory, coreSource);
   for (const command of commands) {
     runtime.log(displayCommand(command));
     if (!options.dryRun) runtime.run(command, false);
@@ -150,7 +157,7 @@ if (import.meta.main) {
         if (result.exitCode !== 0) throw new Error(`Command failed (${result.exitCode}): ${displayCommand(command)}`);
         return capture ? result.stdout.toString() : "";
       },
-    });
+    }, undefined, resolveCoreSource(process.env.CLZMJ_SKILLS_SOURCE));
   } catch (error) {
     console.error(`Initialization failed: ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;

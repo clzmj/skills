@@ -1,0 +1,24 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "clzmj-skills",
+  "main": "worker.ts",
+  "compatibility_date": "2026-11-06",
+  "workers_dev": false,
+  "r2_buckets": [
+    {
+      "binding": "RELEASES",
+      "bucket_name": "clzmj-skills-releases"
+    }
+  ],
+  "preview_urls": false,
+  "ratelimits": [
+    {
+      "name": "RATE_LIMITER",
+      "namespace_id": "2026110601",
+      "simple": {
+        "limit": 120,
+        "period": 60
+      }
+    }
+  ]
+}

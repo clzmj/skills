@@ -1,0 +1,53 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: clzmj-skills-production
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    uses: ./.github/workflows/check.yml # zizmor: ignore[self-repository] Local workflow is bound to the caller commit.
+  deploy:
+    name: Publish installer and apply infrastructure
+    needs: checks
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: production
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up uv
+        uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          python-version: '3.13'
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.17.1
+          terraform_wrapper: false
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Publish and apply
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+          TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+          TF_STATE_R2_ACCESS_KEY_ID: ${{ secrets.TF_STATE_R2_ACCESS_KEY_ID }}
+          TF_STATE_R2_SECRET_ACCESS_KEY: ${{ secrets.TF_STATE_R2_SECRET_ACCESS_KEY }}
+        run: bun scripts/deploy.ts production

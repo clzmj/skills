@@ -11,12 +11,17 @@ Both are self-contained and installable on their own. Python scripts use uv sheb
 
 ## Initialize a machine
 
-Clone this private repository with your GitHub credentials, then run:
+Install the public release without cloning the private repository:
 
 ```sh
-gh repo clone clzmj/skills
-cd skills
-bun run init
+curl -fsSL https://skills.clzmj.dev/install | sh
+```
+
+The bootstrap verifies a SHA-256 checksum and validates the archive before writing files. Releases contain only the two skills, initializer, favorites manifest, and license; source history, secrets, Terraform state, infrastructure, and CI files are excluded. Verified releases persist under `~/.local/share/clzmj-skills/releases/VERSION`. Hosted dry runs use temporary storage and remove it afterward. Run the installer again for hosted core-skill updates. Private-repository users can still clone and run `bun run init`.
+
+```sh
+curl -fsSL https://skills.clzmj.dev/install | sh -s -- --dry-run
+curl -fsSL https://skills.clzmj.dev/install | sh -s -- --agents codex
 ```
 
 `init` installs both personal skills, registers their independent hooks, and installs the favorites in [favorites.json](favorites.json). Edit that file to change the list.
@@ -38,7 +43,7 @@ bun run init --agents codex
 bun run init --no-hooks
 ```
 
-The dry run makes no subprocess calls or writes; its native plugin commands are conditional because it does not inspect host state. `--agents` selects Codex and/or Claude Code (both by default). `--no-hooks` skips the two personal hook installers; native plugins retain their own packaged behavior.
+The initializer dry run makes no subprocess calls or writes; its native plugin commands are conditional because it does not inspect host state. `--agents` selects Codex and/or Claude Code (both by default). `--no-hooks` skips the two personal hook installers; native plugins retain their own packaged behavior.
 
 Review new or changed hooks in the host's `/hooks` menu, then start/resume a session. Init never approves hooks or expands tool permissions.
 
@@ -73,3 +78,9 @@ bun run test
 ```
 
 This runs standard-library Python tests through uv and Bun tests for the bootstrap. Unit tests require no network or Rex server. Agents should route substantial commands through their configured visible runner.
+
+## Hosting and cost controls
+
+A Cloudflare Worker serves an allowlist from a private R2 bucket. Terraform owns the bucket and custom domain; Wrangler owns the code and bindings. Doppler feeds scoped GitHub environments. See [deployment](docs/deployment.md) and [infrastructure](infra/README.md).
+
+The service rejects unsupported routes, methods, and query strings before storage access, uses native rate limiting (120 requests/minute per anonymous IP), and caches releases at the edge. Native limits are approximate and per Cloudflare location; shared-IP clients share an allowance. These controls reduce usage and abuse but are not a global spending cap. No paid plan upgrade is part of deployment.

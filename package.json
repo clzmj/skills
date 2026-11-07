@@ -6,6 +6,13 @@
     "install:rex": "uv run --script skills/rex/scripts/install_hooks.py",
     "install:hooks": "bun run install:python && bun run install:rex",
     "init": "bun scripts/init.ts",
-    "test": "uv run --script scripts/check.py && bun test tests/init.test.ts"
+    "test": "uv run --script scripts/check.py && bun test tests",
+    "build:release": "bun scripts/build-release.ts",
+    "build:worker": "bun x --no-install wrangler deploy --config distribution/wrangler.jsonc --dry-run --outdir dist/worker",
+    "deploy:plan": "bun scripts/deploy.ts plan",
+    "deploy:production": "bun scripts/deploy.ts production"
+  },
+  "devDependencies": {
+    "wrangler": "4.156.2"
   }
 }

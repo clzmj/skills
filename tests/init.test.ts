@@ -1,11 +1,24 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { initialize, parseManifest, parseOptions, parseState, planCommands, type Options } from "../scripts/init";
+import { initialize, parseManifest, parseOptions, parseState, planCommands, resolveCoreSource, type Options } from "../scripts/init";
 
 const manifest = JSON.parse(readFileSync(new URL("../favorites.json", import.meta.url), "utf8"));
 const options: Options = { agents: ["codex", "claude-code"], dryRun: false, hooks: true };
 
 describe("favorite installation", () => {
+  test("hosted mode uses this extracted release while clone mode keeps GitHub tracking", () => {
+    const release = new URL("../", import.meta.url).pathname.replace(/\/$/, "");
+    expect(resolveCoreSource(undefined)).toBe("clzmj/skills");
+    expect(resolveCoreSource(release)).toBe(release);
+    expect(() => resolveCoreSource("relative")).toThrow("extracted release root");
+    expect(() => resolveCoreSource("/tmp")).toThrow("extracted release root");
+    const commands = planCommands(parseManifest(manifest), options, {}, "/agents", release);
+    expect(commands[0][3]).toBe(release);
+    expect(commands.find(command => command[3] === "mattpocock/skills")).toBeDefined();
+    const logs: string[] = [];
+    initialize(manifest, { ...options, dryRun: true }, { which: () => "/bin/tool", log: line => logs.push(line), run: () => { throw new Error("spawned"); } }, "/agents", release);
+    expect(logs.some(line => line.includes(`skills add ${release}`))).toBe(true);
+  });
   test("plans both local skills, independent uv hook installers, and complete upstream packs", () => {
     const commands = planCommands(parseManifest(manifest), options, {}, "/repo");
     expect(commands[0]).toEqual(["bunx", "skills", "add", "clzmj/skills", "--skill", "rex", "python-tooling", "-g", "-a", "codex", "claude-code", "-y"]);
