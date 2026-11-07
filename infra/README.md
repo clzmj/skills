@@ -10,11 +10,11 @@ This follows the ownership and Doppler environment pattern in `clzmj.dev` withou
 | Worker | `clzmj-skills` | Wrangler |
 | Custom domain | `skills.clzmj.dev`, `cloudflare_workers_custom_domain.skills` | Terraform; creates routing and DNS |
 | Private releases | `clzmj-skills-releases`, `cloudflare_r2_bucket.releases` | Terraform; `prevent_destroy` |
-| Private Terraform state | `clzmj-dev-tfstate`, key `skills/terraform.tfstate` | Existing backend bucket; isolated object key |
+| Private Terraform state | `clzmj-skills-tfstate`, key `skills/terraform.tfstate` | Dedicated backend bucket and object key |
 | Existing zone | `clzmj.dev` | Read-only data source; verifies the zone name |
 
 The backend uses native S3 lockfiles. Production operations need state read/write/delete access
-including `skills/terraform.tfstate.tflock`. The current credential set is bucket-scoped to the existing private state bucket. The skills state and lock use their own object keys; the site state key is never selected. A dedicated backend bucket can be supplied when dedicated credentials are available.
+including `skills/terraform.tfstate.tflock`. Always create dedicated project/environment state credentials. Never reuse another project's backend bucket or keys.
 No token resource is managed by Terraform, so token values do not enter this state.
 
 ## Credentials
@@ -28,10 +28,10 @@ provisioning. No repository-level secrets are needed.
 | `CLOUDFLARE_ACCOUNT_ID` | Personal Cloudflare account; Wrangler and `TF_VAR_cloudflare_account_id` |
 | `CLOUDFLARE_ZONE_ID` | Existing `clzmj.dev` zone; `TF_VAR_cloudflare_zone_id` |
 | `CLOUDFLARE_API_TOKEN` | Account R2 and Workers, zone read; CI read-only, production write including R2 object uploads |
-| `TF_STATE_R2_ACCESS_KEY_ID`, `TF_STATE_R2_SECRET_ACCESS_KEY` | Only `clzmj-dev-tfstate`; map to AWS credentials for Terraform |
+| `TF_STATE_R2_ACCESS_KEY_ID`, `TF_STATE_R2_SECRET_ACCESS_KEY` | Only `clzmj-skills-tfstate`; map to AWS credentials for Terraform |
 
 R2 runtime reads use the `RELEASES` binding and need no S3 key. The publisher uploads with Wrangler
-using `CLOUDFLARE_API_TOKEN`; no separate release S3 key is needed. The state bucket is supplied by `TF_STATE_BUCKET` at init; the state key remains fixed to `skills/terraform.tfstate`. The deployment helper accepts only the two approved personal state bucket names.
+using `CLOUDFLARE_API_TOKEN`; no separate release S3 key is needed. The backend bucket and state key are fixed. The deployment helper requires `TF_STATE_BUCKET=clzmj-skills-tfstate`.
 
 Export these mappings inside the same `doppler run --project skills --config prd -- sh -c '…'`
 process for every remote-state operation:
@@ -50,8 +50,7 @@ export AWS_DEFAULT_REGION=auto
 Run important commands through the existing main Codex Rex session's visible runner. From the
 repository root, with the personal account selected:
 
-1. Select the existing private state bucket and its scoped credentials in Doppler. For a dedicated
-   `clzmj-skills-tfstate` backend instead, create it and dedicated credentials outside this state first.
+1. Provision the dedicated `clzmj-skills-tfstate` backend bucket and its per-environment keys outside this state first, using the dedicated credential factory.
 2. Export the mappings above and run `terraform -chdir=infra init -reconfigure -backend-config="bucket=$TF_STATE_BUCKET"`.
 3. The release bucket must exist before Wrangler can bind it. Run
    `terraform -chdir=infra plan -target=cloudflare_r2_bucket.releases -out=bootstrap.tfplan`, review

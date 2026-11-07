@@ -1,6 +1,6 @@
 terraform {
   backend "s3" {
-    # Supplied at init from Doppler TF_STATE_BUCKET; state key stays isolated.
+    bucket         = "clzmj-skills-tfstate"
     key            = "skills/terraform.tfstate"
     region         = "auto"
     use_lockfile   = true

@@ -27,13 +27,13 @@ must be verified in the external services.
 | `CLOUDFLARE_API_TOKEN` | Read Cloudflare resources and R2 bucket metadata | Manage this Worker's script, R2 release objects/bucket, and custom domain |
 | `CLOUDFLARE_ACCOUNT_ID` | Account selector | Same account selector |
 | `CLOUDFLARE_ZONE_ID` | `clzmj.dev` zone selector | Same zone selector |
-| `TF_STATE_BUCKET` | `clzmj-dev-tfstate` | `clzmj-dev-tfstate` |
+| `TF_STATE_BUCKET` | `clzmj-skills-tfstate` | `clzmj-skills-tfstate` |
 | `TF_STATE_R2_ACCESS_KEY_ID` | Read only, scoped to state bucket | Read/write, scoped to state bucket |
 | `TF_STATE_R2_SECRET_ACCESS_KEY` | Paired state secret | Paired state secret |
 
 The deployment script maps the state pair to `AWS_ACCESS_KEY_ID` and
 `AWS_SECRET_ACCESS_KEY`, the identifiers to Terraform's `TF_VAR_cloudflare_*`
-variables, and derives `AWS_ENDPOINT_URL_S3` from the account ID. The backend bucket is supplied through `TF_STATE_BUCKET`; the current scoped credentials use the existing `clzmj-dev-tfstate` bucket with a separate `skills/terraform.tfstate` key and lockfile. The site state key is never selected. Dedicated `clzmj-skills-tfstate` credentials can be used later without changing the fixed state key. Release uploads use Wrangler's
+variables, and derives `AWS_ENDPOINT_URL_S3` from the account ID. The backend is fixed to dedicated bucket `clzmj-skills-tfstate` and key `skills/terraform.tfstate`, with native S3 locks. Both the script guard and Terraform configuration reject cross-project state-bucket reuse. All CI/production credentials must be newly created for this project and environment; never copy or reference another project's keys. Release uploads use Wrangler's
 Cloudflare API token, not the Terraform state's S3 credentials.
 
 ## Checks and production
@@ -81,3 +81,15 @@ Cloudflare standard DDoS protection applies to the custom domain. The Worker all
 Normal installer usage is expected to fit the account-shared free allowances: Workers Free has 100,000 requests/day; R2 Standard includes 10 GB-month, 1 million Class A operations, and 10 million Class B operations monthly, with free egress. Existing account usage, plan status, and abuse can affect cost/availability; rate limiting is not a global billing cap. No plan upgrade is performed by these scripts. Billing-plan reads were not permitted by the existing deployment token; verify the account plan in the owner dashboard.
 
 Sources: [Workers limits](https://developers.cloudflare.com/workers/platform/limits/), [R2 pricing](https://developers.cloudflare.com/r2/pricing/), [DDoS coverage](https://developers.cloudflare.com/ddos-protection/), [Rate Limiting API](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/).
+
+## Dedicated credential bootstrap
+
+A human operator must create a short-lived account token named `skills-bootstrap` with only Account API Tokens Edit for the personal Cloudflare account, then save it directly in Doppler `skills/dev` as `CLOUDFLARE_BOOTSTRAP_API_TOKEN`. The bootstrap credential is not a deployment credential and must never be synced to GitHub. `scripts/provision-credentials.ts` uses it to mint named, least-privilege keys for `skills/ci` and `skills/prd`, and stores their values directly in the matching Doppler configs. Never paste credentials into chat or arguments.
+
+Required leaf identities: `skills-ci-cloudflare` (read-only provider operations), `skills-prd-cloudflare` (required Worker/R2 writes and zone read), `skills-ci-state` (object reads only in `clzmj-skills-tfstate`), and `skills-prd-state` (object reads/writes only in that bucket). The factory credential should be revoked after setup. API-token administration is a prerequisite enforced by Cloudflare; deployment credentials cannot grant themselves this permission.
+
+## Initial bootstrap audit and state migration
+
+The first public release (`7d01868c9aad18a90097b4f0d61c9907c9d3b827`) was provisioned before the user clarified the global dedicated-credential rule. It used the reference deployment credential in place and wrote only `skills/terraform.tfstate` in the reference state bucket. No credentials were copied to `skills` or GitHub, and no environment was deleted. Further deployment/automation is paused until dedicated credentials are available.
+
+After creating the dedicated backend, initialize it with `-reconfigure` and import the already-created release bucket and custom domain using the new project keys; do not read the reference credentials again. The custom-domain import identifier is `$CLOUDFLARE_ACCOUNT_ID/af5477ad04031752e1152de25fd41380401078c0`; the bucket import is `$CLOUDFLARE_ACCOUNT_ID/clzmj-skills-releases/default`. Require a full no-change plan before retiring the initial skills-only state object using a dedicated project identity. Never modify the site state object.

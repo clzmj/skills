@@ -13,8 +13,8 @@ const required = [
 for (const name of required) {
   if (!process.env[name]) throw new Error(`Missing required environment variable: ${name}`);
 }
-if (!['clzmj-skills-tfstate', 'clzmj-dev-tfstate'].includes(process.env.TF_STATE_BUCKET!)) {
-  throw new Error('TF_STATE_BUCKET must be an approved personal Terraform-state bucket');
+if (process.env.TF_STATE_BUCKET !== 'clzmj-skills-tfstate') {
+  throw new Error('TF_STATE_BUCKET must be the dedicated clzmj-skills-tfstate bucket');
 }
 if (!/^[0-9a-f]{32}$/.test(process.env.CLOUDFLARE_ACCOUNT_ID!)) {
   throw new Error('Invalid CLOUDFLARE_ACCOUNT_ID');
