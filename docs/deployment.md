@@ -7,8 +7,8 @@ never release inputs.
 
 ## Environments and secrets
 
-Doppler project `skills` is the source of truth. Configure its GitHub integration
-for this private repository with these exact mappings:
+Doppler project `skills` is the source of truth. GitHub fetches secrets at runtime
+using a separate read-only service token for each repository environment:
 
 | Doppler config | GitHub environment | Purpose |
 | --- | --- | --- |
@@ -16,13 +16,21 @@ for this private repository with these exact mappings:
 | `ci` | `ci` | Tests and read-only Terraform plans |
 | `prd` | `production` | Release upload, Worker deployment, Terraform apply |
 
-Restrict GitHub `production` deployment branches to `main`. Both the workflow and
-script reject other GitHub refs. No staging deployment or repository-level secret
-fallback is configured. Update values in Doppler and verify its sync, rather than
-editing the synced GitHub copies. Integration configuration and token policies
-must be verified in the external services.
+The only stored GitHub environment secret is `DOPPLER_TOKEN`. Its dedicated
+identity is `github-clzmj-skills-ci-runtime` or
+`github-clzmj-skills-prd-runtime`, with read access to exactly the corresponding
+Doppler config. Keep Cloudflare and state credentials in Doppler only.
 
-| GitHub environment secret | `ci` | `production` |
+Restrict GitHub `production` deployment branches to `main`. Both the workflow and
+script reject other GitHub refs. `scripts/with-doppler.ts` fetches the required
+names from the fixed Doppler HTTPS API, validates project/config metadata,
+registers GitHub log masks before starting the command, and injects the values
+only into that child. It removes the service token from the child environment.
+There are no secret files, runner environment/output files, CLI caches, fallback
+credentials, or config syncs. A failed fetch stops the command. Update provider
+credentials in Doppler; the next job fetches their current values.
+
+| Doppler secret | `ci` | `prd` |
 | --- | --- | --- |
 | `CLOUDFLARE_API_TOKEN` | Read Cloudflare resources and R2 bucket metadata | Manage this Worker's script, R2 release objects/bucket, and custom domain |
 | `CLOUDFLARE_ACCOUNT_ID` | Account selector | Same account selector |
@@ -65,14 +73,27 @@ A `main` push, or manual run selecting `main`, passes the same checks, then:
 Production runs are serialized and never cancel an active upload/apply. Terraform
 applies use saved local plans and state locking. No state or plan artifact is
 published. Action dependencies are pinned to commit SHAs; package dependencies
-are installed from the committed Bun lockfile.
+are installed from the committed Bun lockfile. Only the secret-consuming steps
+receive `DOPPLER_TOKEN`; dependency installation and public packaging do not.
+
+The token is a standing credential: anyone able to steal it or modify a trusted
+secret-consuming workflow can read its config. Keep repository write access
+restricted, preserve production branch rules and same-repository PR guards, and
+do not inject production secrets into PR jobs. Runtime reads depend on Doppler
+availability and fail closed during an outage.
+
+To rotate a runtime token, mint a replacement with read-only access to the same
+config, pipe its value directly into the matching GitHub environment's
+`DOPPLER_TOKEN`, verify a job, then revoke the previous identity. Revoke a leaked
+token immediately and rotate provider credentials it could have exposed. Token
+values must stay in process memory or stdin; record identity metadata only.
 
 For an explicitly authorized local deployment, supply the same environment
 contract through Doppler and select a full commit SHA:
 
 ```sh
-doppler run --project skills --config ci -- bun scripts/deploy.ts plan
-GITHUB_SHA="$(git rev-parse HEAD)" doppler run --project skills --config prd -- bun scripts/deploy.ts production
+doppler run --no-fallback --project skills --config ci -- bun scripts/deploy.ts plan
+GITHUB_SHA="$(git rev-parse HEAD)" doppler run --no-fallback --project skills --config prd -- bun scripts/deploy.ts production
 ```
 
 Run important local commands through the repository's visible Rex workflow.
@@ -114,13 +135,17 @@ managed skills resources, then only the temporary
 `clzmj-dev-tfstate/skills/terraform.tfstate` object was deleted using the dedicated
 skills production identity. The site's state object was not selected.
 
-## Sync quota
+## Zero-sync distribution
 
-The existing `clzmj` GitHub integration is reused. The Doppler free workplace allows five config syncs. One older duplicate site CI mapping was removed with explicit user approval and `delete_from_target=false`; its active replacement and the original GitHub secret-name inventory were verified. This frees the production mapping slot without a plan upgrade. Only the new dedicated `skills` credentials are synced to this repository.
+Each runtime service token belongs to one project/config and one GitHub
+repository environment. Tokens and provider credentials are never shared
+between projects. CLI/API reads do not consume Doppler config-sync slots; the
+workflow uses direct API reads and requires no paid plan upgrade.
 
-Both `skills/ci` → GitHub `ci` and `skills/prd` → GitHub `production` are now
-configured through that integration. Both destinations contain all six required
-secret names; production remains restricted to `main`. A sync mapping counts
-once per config/destination connection, not per secret or synchronization event.
-The two skills mappings fit within the five-slot limit after duplicate cleanup;
-no subscription upgrade was performed.
+The previous native syncs and their copied GitHub secrets are retired only after
+the runtime workflows pass. The GitHub integration connection may remain
+authorized without any config mappings; it is not used to distribute secrets.
+
+Sources: [service-token scope](https://docs.doppler.com/docs/service-tokens),
+[download API](https://docs.doppler.com/reference/secrets-download),
+[sync limits](https://docs.doppler.com/docs/platform-limits).

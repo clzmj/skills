@@ -9,6 +9,8 @@ deployment must use the resulting project-specific credentials.
 
 Doppler is the secret source of truth. Keep values out of Git, release packages,
 Terraform configuration/state, command arguments, and logs. Configure GitHub
-environment syncs only for this repository, with production restricted to main.
+environment secrets as one dedicated read-only `DOPPLER_TOKEN` per config. Fetch
+provider secrets at runtime through `scripts/with-doppler.ts`, with production
+restricted to main. Use zero config syncs and no shared project credentials.
 The public installer package must never contain credentials or infrastructure
 state.
