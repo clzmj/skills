@@ -30,6 +30,16 @@ describe("favorite installation", () => {
     expect(JSON.stringify(commands)).not.toMatch(/plannotator/i);
   });
 
+  test("installs Cloudflare security-audit by default and only for selected agents", () => {
+    const favorites = parseManifest(manifest);
+    for (const selected of [options.agents, ["codex"], ["claude-code"]] as Options["agents"][]) {
+      const commands = planCommands(favorites, { ...options, agents: selected }, {});
+      expect(commands.filter(command => command[3] === "cloudflare/security-audit-skill")).toEqual([
+        ["bunx", "skills", "add", "cloudflare/security-audit-skill", "--skill", "security-audit", "-g", "-a", ...selected, "-y"],
+      ]);
+    }
+  });
+
   test("keeps installed disabled plugins and versions untouched, adds only missing marketplaces", () => {
     const state = parseState("codex", { installed: [{ pluginId: "egm@egm", enabled: false, version: "0.1.0" }] }, { marketplaces: [{ name: "egm" }, { name: "ponytail" }] });
     const commands = planCommands(parseManifest(manifest), { ...options, agents: ["codex"], hooks: false }, { codex: state });
@@ -68,6 +78,17 @@ describe("favorite installation", () => {
     expect(calls).toBe(0);
     expect(() => parseManifest({ favorites: [{ type: "skills", source: "a/b", skills: ["*", "foo"] }] })).toThrow();
     expect(() => parseManifest({ favorites: [manifest.favorites[0], manifest.favorites[0]] })).toThrow("Duplicate favorite");
+  });
+
+  test("checks Node for Cloudflare security-audit before any subprocess", () => {
+    const auditOnly = { favorites: [{ type: "skills", source: "cloudflare/security-audit-skill", skills: ["security-audit"] }] };
+    let calls = 0;
+    expect(() => initialize(auditOnly, options, {
+      which: name => name === "node" ? null : "/bin/tool",
+      log: () => {},
+      run: () => { calls++; return ""; },
+    })).toThrow("Missing required tools: node");
+    expect(calls).toBe(0);
   });
 
   test("reads all host inventories before mutations and stops immediately on a command failure", () => {

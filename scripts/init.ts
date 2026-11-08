@@ -125,7 +125,10 @@ export function initialize(manifest: unknown, options: Options, runtime: Runtime
   const tools = new Set(["bunx", "git"]);
   if (options.hooks) tools.add("uv");
   if (favorites.some(f => f.type === "plugin")) for (const agent of options.agents) tools.add(cli(agent));
-  if (favorites.some(f => f.type === "plugin" && f.source === "DietrichGebert/ponytail")) tools.add("node");
+  if (favorites.some(f =>
+    (f.type === "plugin" && f.source === "DietrichGebert/ponytail") ||
+    (f.type === "skills" && f.source === "cloudflare/security-audit-skill")
+  )) tools.add("node");
   const missing = [...tools].filter(tool => !runtime.which(tool));
   if (missing.length) throw new Error(`Missing required tools: ${missing.join(", ")}`);
   const states: Partial<Record<Agent, State>> = {};

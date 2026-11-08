@@ -29,13 +29,14 @@ curl -fsSL https://skills.clzmj.dev/install | sh -s -- --agents codex
 | Favorite | Upstream owner | Installation |
 | --- | --- | --- |
 | ADHD | [Udit Akhouri](https://github.com/UditAkhourii/adhd) | Skills CLI |
+| Security audit | [Cloudflare](https://github.com/cloudflare/security-audit-skill) | Skills CLI |
 | Elephant & Goldfish | [Google](https://github.com/google/elephant-goldfish-model) | Complete native plugin |
 | Ponytail | [DietrichGebert](https://github.com/DietrichGebert/ponytail) | Complete native plugin |
 | Matt Pocock's skills | [Matt Pocock](https://github.com/mattpocock/skills) | Full skill pack |
 
 EGM and Ponytail need their complete plugin resources and integration. Existing native plugins, disabled states, and pinned versions are preserved; Ponytail's known curated Codex alias also counts as installed. Ordinary skill entries are refreshed from their upstream source. Plannotator is excluded for now.
 
-Requirements: Bun/bunx, uv, Git, the selected agent CLIs, and Node for Ponytail. Rex needs the installed local Rex CLI. Authentication is handled by your existing Git/agent configuration. Init validates its manifest and prerequisites, reads host inventories before modifying anything, and stops on command failure.
+Requirements: Bun/bunx, uv, Git, the selected agent CLIs, and Node for Ponytail and Cloudflare security audit. Rex needs the installed local Rex CLI. Authentication is handled by your existing Git/agent configuration. Init validates its manifest and prerequisites, reads host inventories before modifying anything, and stops on command failure.
 
 ```sh
 bun run init --dry-run
