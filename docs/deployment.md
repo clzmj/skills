@@ -36,6 +36,13 @@ The deployment script maps the state pair to `AWS_ACCESS_KEY_ID` and
 variables, and derives `AWS_ENDPOINT_URL_S3` from the account ID. The backend is fixed to dedicated bucket `clzmj-skills-tfstate` and key `skills/terraform.tfstate`, with native S3 locks. Both the script guard and Terraform configuration reject cross-project state-bucket reuse. All CI/production credentials must be newly created for this project and environment; never copy or reference another project's keys. Release uploads use Wrangler's
 Cloudflare API token, not the Terraform state's S3 credentials.
 
+Isolation means separate credentials, configs, and resources within the existing
+Cloudflare account, not a separate account. The state keys are restricted to the
+dedicated state bucket. Cloudflare's Worker script and R2 management permissions
+on the provider tokens cover the selected account; naming those tokens makes
+them independently auditable and revocable, but does not restrict those
+management permissions to this Worker's name or one bucket.
+
 ## Checks and production
 
 Pull requests run Python/Bun tests, build the public archive, and validate
@@ -102,6 +109,18 @@ The first public release (`7d01868c9aad18a90097b4f0d61c9907c9d3b827`) was provis
 
 After creating the dedicated backend, initialize it with `-reconfigure` and import the already-created release bucket and custom domain using the new project keys; do not read the reference credentials again. The custom-domain import identifier is `$CLOUDFLARE_ACCOUNT_ID/af5477ad04031752e1152de25fd41380401078c0`; the bucket import is `$CLOUDFLARE_ACCOUNT_ID/clzmj-skills-releases/default`. Require a full no-change plan before retiring the initial skills-only state object using a dedicated project identity. Never modify the site state object.
 
+The approved retirement is complete: both snapshots contained the same two
+managed skills resources, then only the temporary
+`clzmj-dev-tfstate/skills/terraform.tfstate` object was deleted using the dedicated
+skills production identity. The site's state object was not selected.
+
 ## Sync quota
 
 The existing `clzmj` GitHub integration is reused. The Doppler free workplace allows five config syncs. One older duplicate site CI mapping was removed with explicit user approval and `delete_from_target=false`; its active replacement and the original GitHub secret-name inventory were verified. This frees the production mapping slot without a plan upgrade. Only the new dedicated `skills` credentials are synced to this repository.
+
+Both `skills/ci` → GitHub `ci` and `skills/prd` → GitHub `production` are now
+configured through that integration. Both destinations contain all six required
+secret names; production remains restricted to `main`. A sync mapping counts
+once per config/destination connection, not per secret or synchronization event.
+The two skills mappings fit within the five-slot limit after duplicate cleanup;
+no subscription upgrade was performed.
