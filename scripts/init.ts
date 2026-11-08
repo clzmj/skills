@@ -76,7 +76,7 @@ export function parseManifest(value: unknown): Favorite[] {
 
 const cli = (agent: Agent) => agent === "codex" ? "codex" : "claude";
 const skillsCommand = (source: string, skills: string[], selected: Agent[]): Command =>
-  ["bunx", "skills", "add", source, "--skill", ...skills, "-g", "-a", ...selected, "-y"];
+  ["bunx", "--bun", "skills", "add", source, "--skill", ...skills, "-g", "-a", ...selected, "-y"];
 
 export function parseState(agent: Agent, plugins: unknown, marketplaces: unknown): State {
   const pluginRows = agent === "codex" ? (plugins as any)?.installed : plugins;
@@ -125,10 +125,6 @@ export function initialize(manifest: unknown, options: Options, runtime: Runtime
   const tools = new Set(["bunx", "git"]);
   if (options.hooks) tools.add("uv");
   if (favorites.some(f => f.type === "plugin")) for (const agent of options.agents) tools.add(cli(agent));
-  if (favorites.some(f =>
-    (f.type === "plugin" && f.source === "DietrichGebert/ponytail") ||
-    (f.type === "skills" && f.source === "cloudflare/security-audit-skill")
-  )) tools.add("node");
   const missing = [...tools].filter(tool => !runtime.which(tool));
   if (missing.length) throw new Error(`Missing required tools: ${missing.join(", ")}`);
   const states: Partial<Record<Agent, State>> = {};

@@ -13,20 +13,20 @@ describe("favorite installation", () => {
     expect(() => resolveCoreSource("relative")).toThrow("extracted release root");
     expect(() => resolveCoreSource("/tmp")).toThrow("extracted release root");
     const commands = planCommands(parseManifest(manifest), options, {}, "/agents", release);
-    expect(commands[0][3]).toBe(release);
-    expect(commands.find(command => command[3] === "mattpocock/skills")).toBeDefined();
+    expect(commands[0][4]).toBe(release);
+    expect(commands.find(command => command[4] === "mattpocock/skills")).toBeDefined();
     const logs: string[] = [];
     initialize(manifest, { ...options, dryRun: true }, { which: () => "/bin/tool", log: line => logs.push(line), run: () => { throw new Error("spawned"); } }, "/agents", release);
     expect(logs.some(line => line.includes(`skills add ${release}`))).toBe(true);
   });
   test("plans both local skills, independent uv hook installers, and complete upstream packs", () => {
     const commands = planCommands(parseManifest(manifest), options, {}, "/repo");
-    expect(commands[0]).toEqual(["bunx", "skills", "add", "clzmj/skills", "--skill", "rex", "python-tooling", "-g", "-a", "codex", "claude-code", "-y"]);
+    expect(commands[0]).toEqual(["bunx", "--bun", "skills", "add", "clzmj/skills", "--skill", "rex", "python-tooling", "-g", "-a", "codex", "claude-code", "-y"]);
     expect(commands[1]).toEqual(["uv", "run", "--script", "/repo/skills/rex/scripts/install_hooks.py", "--agents", "codex", "claude-code"]);
     expect(commands[2][3]).toBe("/repo/skills/python-tooling/scripts/install_hooks.py");
     expect(commands).toContainEqual(["codex", "plugin", "add", "egm@egm"]);
     expect(commands).toContainEqual(["claude", "plugin", "install", "ponytail@ponytail"]);
-    expect(commands).toContainEqual(["bunx", "skills", "add", "mattpocock/skills", "--skill", "*", "-g", "-a", "codex", "claude-code", "-y"]);
+    expect(commands).toContainEqual(["bunx", "--bun", "skills", "add", "mattpocock/skills", "--skill", "*", "-g", "-a", "codex", "claude-code", "-y"]);
     expect(JSON.stringify(commands)).not.toMatch(/plannotator/i);
   });
 
@@ -34,8 +34,8 @@ describe("favorite installation", () => {
     const favorites = parseManifest(manifest);
     for (const selected of [options.agents, ["codex"], ["claude-code"]] as Options["agents"][]) {
       const commands = planCommands(favorites, { ...options, agents: selected }, {});
-      expect(commands.filter(command => command[3] === "cloudflare/security-audit-skill")).toEqual([
-        ["bunx", "skills", "add", "cloudflare/security-audit-skill", "--skill", "security-audit", "-g", "-a", ...selected, "-y"],
+      expect(commands.filter(command => command[4] === "cloudflare/security-audit-skill")).toEqual([
+        ["bunx", "--bun", "skills", "add", "cloudflare/security-audit-skill", "--skill", "security-audit", "-g", "-a", ...selected, "-y"],
       ]);
     }
   });
@@ -80,15 +80,21 @@ describe("favorite installation", () => {
     expect(() => parseManifest({ favorites: [manifest.favorites[0], manifest.favorites[0]] })).toThrow("Duplicate favorite");
   });
 
-  test("checks Node for Cloudflare security-audit before any subprocess", () => {
-    const auditOnly = { favorites: [{ type: "skills", source: "cloudflare/security-audit-skill", skills: ["security-audit"] }] };
+  test("plans all favorites without Node and forces Skills CLI to use Bun", () => {
     let calls = 0;
-    expect(() => initialize(auditOnly, options, {
+    const logs: string[] = [];
+    expect(() => initialize(manifest, { ...options, dryRun: true }, {
       which: name => name === "node" ? null : "/bin/tool",
-      log: () => {},
+      log: line => logs.push(line),
       run: () => { calls++; return ""; },
-    })).toThrow("Missing required tools: node");
+    })).not.toThrow();
     expect(calls).toBe(0);
+    expect(logs.some(line => line.includes("cloudflare/security-audit-skill"))).toBe(true);
+    expect(logs.some(line => line.includes("ponytail@ponytail"))).toBe(true);
+    const commands = planCommands(parseManifest(manifest), options, {});
+    const skillCommands = commands.filter(command => command[0] === "bunx");
+    expect(skillCommands.length).toBeGreaterThan(0);
+    expect(skillCommands.every(command => command.slice(0, 4).join(" ") === "bunx --bun skills add")).toBe(true);
   });
 
   test("reads all host inventories before mutations and stops immediately on a command failure", () => {

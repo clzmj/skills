@@ -129,13 +129,26 @@ def state_dir():
 
 
 def rex_cli():
-    # Never inherit a remote REX_SERVER as the default destination.
-    server = os.environ.get("REX_SERVER", "")
-    if not server.startswith("unix://"):
-        server = "unix://" + str(Path.home() / "Library/Application%20Support/rex/server.sock")
     executable = shutil.which("rex")
     if not executable:
         raise RuntimeError("Rex CLI is unavailable")
+    # Discover the platform's canonical local endpoint without inheriting a remote.
+    server = os.environ.get("REX_SERVER", "")
+    if not server.startswith("unix://"):
+        environment = dict(os.environ)
+        environment.pop("REX_SERVER", None)
+        result = subprocess.run(
+            [executable, "--timeout", "5s", "--autostart=false", "whoami", "--json"],
+            capture_output=True, text=True, env=environment,
+        )
+        if result.returncode:
+            raise RuntimeError("Cannot discover the local Rex server with rex whoami")
+        try:
+            server = json.loads(result.stdout).get("endpoint", "")
+        except (ValueError, AttributeError):
+            raise RuntimeError("Rex returned invalid local server metadata") from None
+        if not isinstance(server, str) or not server.startswith("unix://"):
+            raise RuntimeError("The local Rex runner requires a Unix socket; use a configured Rex connection directly for remote work")
     return [executable, "-S", server, "--timeout", "5s"]
 
 

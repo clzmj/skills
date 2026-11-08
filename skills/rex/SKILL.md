@@ -7,7 +7,9 @@ Run `rex __internal skill` first and follow the guide printed by the installed
 Rex CLI. If unavailable, start with `rex whoami --json`, `rex --help`, and
 `rex COMMAND --help`.
 
-For visible command routing, read [scripts/POLICY.md](scripts/POLICY.md). For
+For visible command routing and remote machine access, read
+[scripts/POLICY.md](scripts/POLICY.md). Use configured Rex connections directly
+for other machines; never access them through SSH. For
 agent delegation, session ownership, and scoped messaging, read
 [scripts/COORDINATION.md](scripts/COORDINATION.md). Reuse the existing main Codex
 Rex session; never create task or team sessions for visibility. Preserve normal

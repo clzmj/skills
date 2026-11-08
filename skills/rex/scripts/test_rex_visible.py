@@ -49,8 +49,23 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(json.loads(output.getvalue())["hookSpecificOutput"]["permissionDecision"], "deny")
 
     def test_remote_default_cannot_be_inherited(self):
-        with patch.dict(rv.os.environ, {"REX_SERVER": "some-other-machine:22"}), patch.object(rv.shutil, "which", return_value="/bin/rex"):
-            self.assertTrue(rv.rex_cli()[2].startswith("unix://"))
+        result = rv.subprocess.CompletedProcess([], 0, '{"endpoint":"unix:///run/user/1001/rex/server.sock"}', "")
+        with patch.dict(rv.os.environ, {"REX_SERVER": "some-other-machine:22"}), patch.object(rv.shutil, "which", return_value="/bin/rex"), patch.object(rv.subprocess, "run", return_value=result) as discover:
+            self.assertEqual(rv.rex_cli()[2], "unix:///run/user/1001/rex/server.sock")
+            self.assertNotIn("REX_SERVER", discover.call_args.kwargs["env"])
+            self.assertEqual(discover.call_args.args[0][-2:], ["whoami", "--json"])
+
+    def test_existing_local_endpoint_needs_no_discovery(self):
+        with patch.dict(rv.os.environ, {"REX_SERVER": "unix:///custom/rex.sock"}), patch.object(rv.shutil, "which", return_value="/bin/rex"), patch.object(rv.subprocess, "run") as discover:
+            self.assertEqual(rv.rex_cli()[2], "unix:///custom/rex.sock")
+            discover.assert_not_called()
+
+    def test_local_discovery_rejects_remote_or_invalid_metadata(self):
+        for code, output in [(0, '{"endpoint":"https://remote.example"}'), (0, '[]'), (0, 'invalid'), (1, '')]:
+            result = rv.subprocess.CompletedProcess([], code, output, "")
+            with self.subTest(output=output), patch.dict(rv.os.environ, {}, clear=True), patch.object(rv.shutil, "which", return_value="/bin/rex"), patch.object(rv.subprocess, "run", return_value=result):
+                with self.assertRaises(RuntimeError):
+                    rv.rex_cli()
 
     def test_uv_launcher_is_absolute_and_required(self):
         with patch.object(rv.shutil, "which", return_value="/opt/tools/uv"):

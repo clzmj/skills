@@ -94,7 +94,7 @@ def install(home, agents):
         if write(path, json.dumps(data, indent=2) + "\n"):
             changed.append(str(path))
         instructions = home / (".codex/AGENTS.md" if codex else ".claude/CLAUDE.md")
-        marked_block(instructions, "rex-visible", "## Visible terminal work\n\nRun important commands in the existing main Codex Rex session. Reuse its tabs and owned panes; never create task or team sessions for visibility. Before important terminal work, read " + str(runtime / "POLICY.md") + " and follow its runner, layout, verification, and retention rules. Keep quick reads in ordinary tools. Preserve normal permissions and explicitly requested machines.")
+        marked_block(instructions, "rex-visible", "## Visible terminal work\n\nRun important commands in the existing main Codex Rex session. Reuse its tabs and owned panes; never create task or team sessions for visibility. Before important terminal work, read " + str(runtime / "POLICY.md") + " and follow its runner, layout, verification, and retention rules. Keep quick reads in ordinary tools. Preserve normal permissions and explicitly requested machines. Access other machines through their configured Rex connection directly, never SSH.")
         if codex:
             marked_block(instructions, "codex-coordination", "## Conversational agent coordination\n\nCoordinate the user's objective and delegate useful bounded work. Before delegation or session-to-session coordination, read " + str(runtime / "COORDINATION.md") + ". Keep ownership clear, use economical models, and keep views in the main Codex Rex session.")
     return {"runtime": str(runtime), "changed": changed,

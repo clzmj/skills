@@ -36,7 +36,9 @@ curl -fsSL https://skills.clzmj.dev/install | sh -s -- --agents codex
 
 EGM and Ponytail need their complete plugin resources and integration. Existing native plugins, disabled states, and pinned versions are preserved; Ponytail's known curated Codex alias also counts as installed. Ordinary skill entries are refreshed from their upstream source. Plannotator is excluded for now.
 
-Requirements: Bun/bunx, uv, Git, the selected agent CLIs, and Node for Ponytail and Cloudflare security audit. Rex needs the installed local Rex CLI. Authentication is handled by your existing Git/agent configuration. Init validates its manifest and prerequisites, reads host inventories before modifying anything, and stops on command failure.
+Skills CLI commands use `bunx --bun` to run under Bun; the initializer does not require Node. Upstream skills may document Node commands for their own workflows.
+
+Requirements: Bun/bunx, uv, Git, and the selected agent CLIs. Rex needs the installed local Rex CLI. Authentication is handled by your existing Git/agent configuration. Init validates its manifest and prerequisites, reads host inventories before modifying anything, and stops on command failure.
 
 ```sh
 bun run init --dry-run
@@ -51,8 +53,8 @@ Review new or changed hooks in the host's `/hooks` menu, then start/resume a ses
 ## Install individual skills
 
 ```sh
-bunx skills add clzmj/skills --skill python-tooling -g -a codex claude-code -y
-bunx skills add clzmj/skills --skill rex -g -a codex claude-code -y
+bunx --bun skills add clzmj/skills --skill python-tooling -g -a codex claude-code -y
+bunx --bun skills add clzmj/skills --skill rex -g -a codex claude-code -y
 ```
 
 For private-repository SSH authentication, use `git@github.com:clzmj/skills.git` as the source. Skills CLI installs the files; each skill registers only its own hooks:
@@ -70,7 +72,7 @@ Rex jobs and agent views reuse the existing main session, close completed owned 
 
 ## Update and remove
 
-Run `bunx skills update python-tooling rex -g`, then rerun the relevant hook installers. Existing legacy runtime locations remain compatible. Remove only the corresponding owned hook definitions before `bunx skills remove NAME -g -y`. Removing Rex also requires removing its marked instruction blocks; preserve running and unrelated work.
+Run `bunx --bun skills update python-tooling rex -g`, then rerun the relevant hook installers. Existing legacy runtime locations remain compatible. Remove only the corresponding owned hook definitions before `bunx --bun skills remove NAME -g -y`. Removing Rex also requires removing its marked instruction blocks; preserve running and unrelated work.
 
 ## Check
 
