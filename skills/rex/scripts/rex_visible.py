@@ -103,7 +103,7 @@ def hook():
     event = data.get("hook_event_name")
     if event in ("SessionStart", "UserPromptSubmit"):
         print(json.dumps({"hookSpecificOutput": {"hookEventName": event, "additionalContext":
-            f"For important terminal work, follow {POLICY}. Reuse the main Codex Rex session for job tabs and agent views; close completed owned panes under its retention rules. Read the policy before the first such command. Respect an explicitly requested other machine."}}))
+            f"For important terminal work, follow {POLICY}. Reuse the main agent Rex session for job tabs and agent views; close completed owned panes under its retention rules. Read the policy before the first such command. Respect an explicitly requested other machine."}}))
         return
     if event != "PreToolUse" or data.get("tool_name") not in ("Bash", "exec_command", "shell", "shell_command"):
         return
@@ -166,7 +166,7 @@ def blocks(layout):
 def main_session(thread=None):
     """Resolve an existing local host, failing closed rather than creating one."""
     state_dir()
-    thread = thread or os.environ.get("CODEX_THREAD_ID", "")
+    thread = thread or os.environ.get("REX_COORD_THREAD") or os.environ.get("CODEX_THREAD_ID", "")
     key = hashlib.sha256(thread.encode()).hexdigest()[:16]
     binding = STATE / ("main-" + key + ".json")
     sessions = rex_json(["ls", "--json"])["sessions"]
@@ -184,11 +184,11 @@ def main_session(thread=None):
             if block.get("creator_name") != "com.superlogical.terminal":
                 continue
             process = rex_json(["block", "call", "-s", sid, "-b", block["block_id"], "process"])
-            if (process.get("foreground") or {}).get("name") == "codex":
+            if (process.get("foreground") or {}).get("name") in ("codex", "claude"):
                 candidates.append(sid)
                 break
     if len(candidates) != 1:
-        raise RuntimeError("Cannot identify the main Codex Rex session unambiguously. Supply its existing REX_SESSION; no session was created.")
+        raise RuntimeError("Cannot identify the main agent Rex session unambiguously. Supply its existing REX_SESSION; no session was created.")
     atomic_json(binding, {"session_id": candidates[0]})
     return candidates[0]
 

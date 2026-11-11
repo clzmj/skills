@@ -36,7 +36,7 @@ class CoordinationTests(unittest.TestCase):
     def test_open_uses_root_main_session_and_never_creates_session(self):
         cs.register("task", B, "worker", parent=A)
         layout = {"windows": [{"label": "Main", "layers": [{"blocks": [{"block_id": "codex"}]}]}]}
-        with patch.object(cs.rex, "main_session", return_value="main-rex", create=True) as resolve, patch.object(cs.rex, "state_dir"), patch.object(cs.rex, "uv_executable", return_value="/opt/tools/uv"), patch.object(cs.rex, "rex_json", side_effect=[layout, {"block_ids": ["owned"]}]) as rex_json:
+        with patch.dict(cs.os.environ, {}, clear=True), patch.object(cs.rex, "main_session", return_value="main-rex", create=True) as resolve, patch.object(cs.rex, "state_dir"), patch.object(cs.rex, "uv_executable", return_value="/opt/tools/uv"), patch.object(cs.rex, "rex_json", side_effect=[layout, {"block_ids": ["owned"]}]) as rex_json:
             view = cs.open_view("task", B)
         resolve.assert_called_once_with(thread=A)
         self.assertEqual(view["session"], "main-rex")
@@ -47,6 +47,14 @@ class CoordinationTests(unittest.TestCase):
         self.assertEqual(child[:4], ["/opt/tools/uv", "run", "--script", str(Path(cs.__file__).resolve())])
         self.assertEqual(child[4], "watch")
         self.assertFalse(any(call.args[0][0] == "new" for call in rex_json.call_args_list))
+
+    def test_reader_receives_explicit_nonsecret_state_directory(self):
+        with patch.dict(cs.os.environ, {"REX_VISIBLE_STATE_DIR": self.folder.name, "REX_SERVER": "unix:///test/rex.sock"}), patch.object(cs.rex, "STATE", Path(self.folder.name)), patch.object(cs.rex, "main_session", return_value="main-rex"), patch.object(cs.rex, "state_dir"), patch.object(cs.rex, "uv_executable", return_value="/opt/tools/uv"), patch.object(cs.rex, "rex_json", side_effect=[{"windows": []}, {"block_ids": ["owned"]}]) as rex_json:
+            cs.open_view("task", B)
+        arguments = rex_json.call_args.args[0]
+        child = arguments[arguments.index("--") + 1:]
+        self.assertEqual(child[:3], ["/usr/bin/env", "REX_VISIBLE_STATE_DIR=" + self.folder.name, "REX_SERVER=unix:///test/rex.sock"])
+        self.assertEqual(child[3:7], ["/opt/tools/uv", "run", "--script", str(Path(cs.__file__).resolve())])
 
     def test_open_reuses_tracked_pane_and_prunes_missing_rows(self):
         self.track_view()

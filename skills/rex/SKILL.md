@@ -1,6 +1,6 @@
 ---
 name: rex
-description: Manage Rex sessions, tabs, panes and commands, and keep substantial terminal work and agent coordination visible in the existing main Codex Rex session.
+description: Manage Rex sessions, tabs, panes and commands, and keep substantial terminal work and Codex or Claude coordination visible in the existing main Rex session.
 ---
 
 Run `rex __internal skill` first and follow the guide printed by the installed

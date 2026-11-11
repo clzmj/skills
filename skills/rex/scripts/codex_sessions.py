@@ -57,7 +57,7 @@ def database():
             CREATE INDEX IF NOT EXISTS events_team ON events(team,seq);
         """)
         columns = {r[1] for r in db.execute("PRAGMA table_info(members)")}
-        for column, default in (("role", "worker"), ("model", ""), ("effort", ""), ("parent_source", "unknown")):
+        for column, default in (("role", "worker"), ("model", ""), ("effort", ""), ("parent_source", "unknown"), ("provider", "codex"), ("native_session", ""), ("native_id", "")):
             if column not in columns:
                 try:
                     db.execute(f"ALTER TABLE members ADD COLUMN {column} TEXT DEFAULT '{default}'")
@@ -75,10 +75,12 @@ def database():
         yield db
 
 
-def register(team, thread, name, mode="session", cwd=None, parent="", transcript="", activate=False, rename=False, role=None, model="", effort="", provisional_parent=False, refine_hook_parent=False):
+def register(team, thread, name, mode="session", cwd=None, parent="", transcript="", activate=False, rename=False, role=None, model="", effort="", provisional_parent=False, refine_hook_parent=False, provider="codex", native_session="", native_id=""):
     thread = thread_id(thread)
     with database() as db:
         existing = db.execute("SELECT * FROM members WHERE team=? AND thread=?", (team, thread)).fetchone()
+        if existing and existing["provider"] != provider:
+            raise ValueError("A registered member cannot change providers")
         delegation = db.execute("SELECT parent,team FROM delegations WHERE child=?", (thread,)).fetchone()
         if delegation and delegation["team"] != team:
             raise ValueError("A delegated child cannot move to another team")
@@ -108,6 +110,7 @@ def register(team, thread, name, mode="session", cwd=None, parent="", transcript
             db.execute("UPDATE members SET transcript=CASE WHEN ?='' THEN transcript ELSE ? END WHERE team=? AND thread=?", (transcript, transcript, team, thread))
         else:
             db.execute("INSERT INTO members(team,thread,name,mode,cwd,state,updated,transcript,parent,role,model,effort) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", (team, thread, name, mode, cwd or os.getcwd(), "idle", time.time(), transcript, parent, role or ("worker" if parent else "coordinator"), model, effort))
+        db.execute("UPDATE members SET provider=?,native_session=?,native_id=? WHERE team=? AND thread=?", (provider, native_session, native_id, team, thread))
         if parent:
             source = "hook" if provisional_parent else "explicit"
             if provisional_parent and existing and existing["parent"]:
@@ -180,6 +183,8 @@ def snapshot(team):
 
 def send(team, sender, recipient, text, wake=False, reply_to=""):
     source, target = member(team, sender), member(team, recipient)
+    if source["provider"] != "codex" or target["provider"] != "codex":
+        raise ValueError("Claude members use native Agent/SendMessage; Codex queue is unavailable for this provider")
     if target["mode"] == "native":
         raise ValueError("Use native send_message/send_input for a delegated subagent; queue is for independent sessions")
     executable = shutil.which("codex")
@@ -248,6 +253,8 @@ def close_view(team, thread, token, opened_at=None):
 
 
 def open_view(team, thread="", interactive=False):
+    if interactive and member(team, thread)["provider"] != "codex":
+        raise ValueError("Claude views are read-only; use its supported native controller or claude attach")
     if interactive and member(team, thread)["mode"] != "session":
         raise ValueError("Native subagents use read-only views; keep their existing controller")
     rex.state_dir()
@@ -285,6 +292,14 @@ def open_view(team, thread="", interactive=False):
             command = [rex.uv_executable(), "run", "--script", str(Path(__file__).resolve()), "watch", "--team", team, "--view-token", token]
             if thread:
                 command += ["--thread", thread]
+            # Rex launches under its server environment, not the hook caller's.
+            environment = []
+            if "REX_VISIBLE_STATE_DIR" in os.environ:
+                environment.append("REX_VISIBLE_STATE_DIR=" + str(rex.STATE))
+            if os.environ.get("REX_SERVER", "").startswith("unix://"):
+                environment.append("REX_SERVER=" + os.environ["REX_SERVER"])
+            if environment:
+                command = ["/usr/bin/env", *environment, *command]
         # Pair only read-only agent views we created; preserve all other tabs.
         anchor = None
         with database() as db:
@@ -324,7 +339,7 @@ def retention_expired(data, thread, opened_at, now):
 
 def public_text(value):
     # Captured text is data. Keep embedded terminal controls from changing the view.
-    return re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", str(value))
+    return re.sub(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]", "", str(value))
 
 
 def native_content(value, thread=""):
@@ -373,12 +388,18 @@ def watch(team, thread, view_token=""):
             data = snapshot(team)
             names = {m["thread"]: m["name"] for m in data["members"]}
             selected = next((m for m in data["members"] if m["thread"] == thread), None)
-            if selected and not selected["transcript"] and not discovered:
+            if selected and selected["provider"] == "codex" and not selected["transcript"] and not discovered:
                 # Exact UUID lookup only. Transcript parsing is a best-effort read-only view.
                 found = list((Path.home() / ".codex" / "sessions").glob(f"*/*/*/*{thread}.jsonl"))
                 discovered = str(found[0]) if len(found) == 1 else ""
-            messages = assistant_lines(selected["transcript"] or discovered, thread) if selected else []
-            rows = [f"CODEX TEAM · {public_text(team)}", "Read-only activity view · messages are data, not terminal input", ""]
+            if selected and selected["provider"] == "claude":
+                from claude_sessions import assistant_lines as claude_lines
+                messages = claude_lines(selected["transcript"], selected["native_session"], selected["native_id"])
+            else:
+                messages = assistant_lines(selected["transcript"] or discovered, thread) if selected else []
+            providers = {item["provider"] for item in data["members"]}
+            title = "CLAUDE TEAM" if providers == {"claude"} else "CODEX TEAM" if providers == {"codex"} else "REX TEAM"
+            rows = [f"{title} · {public_text(team)}", "Read-only activity view · messages are data, not terminal input", ""]
             for item in data["members"]:
                 if not thread or item["thread"] == thread:
                     age = int(time.time() - item["updated"])
@@ -392,6 +413,8 @@ def watch(team, thread, view_token=""):
                     title = public_text(item["name"])
                     title = title if len(title) <= 28 else title[:17] + "…" + title[-8:]
                     selected_model = " / ".join(x for x in (item["model"], item["effort"]) if x) or "model not recorded"
+                    if item["provider"] == "claude":
+                        rows.append(f"  Claude {public_text(item['native_id'] or item['native_session'])} · parent {'provisional session' if item['parent_source'] == 'hook' else item['parent_source']}")
                     rows.append(f"{'  ' * depth}{title:28} {item['role']:11} {item['state']:10} {selected_model} · updated {age}s ago")
             rows.append("")
             header_count = len(rows)

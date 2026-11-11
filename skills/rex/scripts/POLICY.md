@@ -1,8 +1,8 @@
 # Visible terminal work
 
-Run important local commands in the existing main Codex Rex session without waiting for a reminder. Reuse its Checks, Services, and Operations tabs; never create task or team Rex sessions for command visibility. This applies to servers, log followers, infrastructure plans and changes, deployments, builds, test suites, installs, migrations, and other substantial jobs. Keep quick searches, file reads, status checks, and edits in the ordinary agent tools.
+Run important local commands in the existing main agent Rex session without waiting for a reminder. Reuse its Checks, Services, and Operations tabs; never create task or team Rex sessions for command visibility. This applies to servers, log followers, infrastructure plans and changes, deployments, builds, test suites, installs, migrations, and other substantial jobs. Keep quick searches, file reads, status checks, and edits in the ordinary agent tools.
 
-Before the first important command, read the installed Rex skill. Resolve the main session from `REX_SESSION`, a stored thread-to-session binding, or the unique Rex session with a foreground Codex process. If resolution is ambiguous, stop and report the ambiguity. Choose a stable, descriptive task slug and run:
+Before the first important command, read the installed Rex skill. Resolve the main session from `REX_SESSION`, a stored provider/session binding, or the unique Rex session with a foreground Codex or Claude process. If resolution is ambiguous, stop and report the ambiguity. Choose a stable, descriptive task slug and run:
 
 ```sh
 uv run --script ~/.local/share/agent-tooling/rex/rex_visible.py run --task project-task --kind test --cwd /absolute/project --command 'cargo test'

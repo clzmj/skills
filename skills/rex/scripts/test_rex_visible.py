@@ -102,6 +102,12 @@ class RoutingTests(unittest.TestCase):
             self.assertEqual(rv.main_session(), "main")
             self.assertEqual(call.call_count, 1)
 
+    def test_unique_claude_foreground_is_supported_without_creating_a_session(self):
+        layout = {"windows": [{"layers": [{"blocks": [{"creator_name": "com.superlogical.terminal", "block_id": "claude"}]}]}]}
+        with tempfile.TemporaryDirectory() as folder, patch.object(rv, "STATE", Path(folder)), patch.dict(rv.os.environ, {}, clear=True), patch.object(rv, "rex_json", side_effect=[{"sessions": [{"session_id": "main"}]}, layout, {"foreground": {"name": "claude"}}]) as calls:
+            self.assertEqual(rv.main_session("claude-root"), "main")
+            self.assertFalse(any(call.args[0][0] == "new" for call in calls.call_args_list))
+
     def test_ambiguous_or_missing_host_never_creates_session(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(rv, "STATE", Path(folder)), patch.dict(rv.os.environ, {}, clear=True), patch.object(rv, "rex_json", return_value={"sessions": []}) as call:
             with self.assertRaisesRegex(RuntimeError, "unambiguously"):

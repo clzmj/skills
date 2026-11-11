@@ -67,6 +67,35 @@ scope; Claude Code links to that tree. The shared tree also serves Codex, but a
 Claude-only installation does not change Codex settings. Copy installations give
 each selected agent its own ordinary skill files.
 
+## Claude Code integration
+
+Select `claude-code` for either scope. Global hooks register the independent
+Python and Rex integrations in Claude's settings, preserving unrelated hooks,
+tool permissions, model choices, and workspace trust. Review changed hooks with
+`/hooks`; the installer does not approve them or grant permissions.
+
+Rex uses Claude's native session and agent identifiers for activity tracking.
+Native `Agent` children share the main session and have their own opaque agent
+IDs. Independent background sessions have different session IDs. Their records
+and read-only Rex views remain separate; a parent is marked provisional when
+Claude's event does not identify the immediate caller. Claude's native tools
+remain responsible for delegation and messaging.
+
+Check the installed CLI's capabilities before using background sessions:
+
+```sh
+claude --version
+claude --help
+claude agents --json --all
+```
+
+Use `claude attach`, `claude logs`, and `claude stop` with the background ID
+reported by Claude. That short background ID differs from the full session ID
+used by hooks. Agent teams are a separate experimental Claude feature; installing
+these skills does not enable them. See Claude's [background-agent
+reference](https://code.claude.com/docs/en/agent-view) and [hook
+reference](https://code.claude.com/docs/en/hooks).
+
 ## Saved configuration and commands
 
 Global settings live in `~/.config/clzmj-skills/install.json`; the global command

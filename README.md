@@ -93,6 +93,14 @@ Python hooks add project context and guard pip mutations in projects with both `
 
 Rex jobs and agent views reuse the existing main session, close completed owned panes under their retention rules, and have no Computer Use dependency. Runtime files remain under `~/.local/share/agent-tooling`; mutable Rex state stays in `~/.local/state/rex-visible` so skill updates preserve it.
 
+Claude Code keeps its native `Agent` and `SendMessage` workflow. Rex records
+Claude session, child-agent, task, and background activity in read-only views;
+it does not send Claude messages, approve tools, or change workspace trust.
+Native children share their parent's Claude session ID and have separate opaque
+agent IDs. Independent `claude --bg` sessions have their own session IDs; use
+`claude agents --json --all` and Claude's supported attach/logs/stop commands to
+manage them. Availability follows the installed Claude CLI version.
+
 ## Update and remove
 
 Global installs provide `~/.local/bin/clzmj-skills`; add `~/.local/bin` to your

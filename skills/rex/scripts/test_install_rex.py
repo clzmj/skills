@@ -72,7 +72,7 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(data["hooks"]["SessionEnd"][0]["hooks"][1], unrelated)
             self.assertEqual(data["hooks"]["SessionEnd"][0]["matcher"], "keep")
 
-    def test_claude_has_visible_hooks_only_and_preserves_settings(self):
+    def test_claude_has_native_lifecycle_and_preserves_settings(self):
         with tempfile.TemporaryDirectory() as folder:
             home = Path(folder)
             path = home / ".claude/settings.json"
@@ -84,7 +84,15 @@ class InstallerTests(unittest.TestCase):
             data = json.loads(path.read_text())
             self.assertEqual(data["permissions"], original["permissions"])
             self.assertEqual(data["enabledPlugins"], original["enabledPlugins"])
-            self.assertEqual(set(data["hooks"]), {"SessionStart", "UserPromptSubmit", "PreToolUse"})
+            self.assertTrue({"SessionStart", "UserPromptSubmit", "PreToolUse", "SubagentStart", "SubagentStop", "Stop", "StopFailure", "SessionEnd", "TeammateIdle", "TaskCreated", "TaskCompleted"}.issubset(data["hooks"]))
+            commands = [handler["command"] for groups in data["hooks"].values() for group in groups for handler in group["hooks"]]
+            self.assertTrue(any("claude_sessions.py" in command for command in commands))
+            self.assertFalse(any("codex_sessions.py" in command for command in commands))
+            first = path.read_text()
+            with patch.object(installer.shutil, "which", return_value="/opt/tools/uv"):
+                self.assertEqual(installer.install(home, ["claude-code"])["changed"], [])
+            self.assertEqual(first, path.read_text())
+            self.assertIn("<!-- claude-coordination:start -->", (home / ".claude/CLAUDE.md").read_text())
             self.assertFalse((home / ".codex").exists())
             self.assertNotIn("codex-coordination", (home / ".claude/CLAUDE.md").read_text())
 

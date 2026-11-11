@@ -55,6 +55,8 @@ def rex_hooks(data, root, home, uv, codex):
     definitions = [("rex_visible.py", ("SessionStart", "UserPromptSubmit", "PreToolUse"))]
     if codex:
         definitions.append(("codex_sessions.py", ("SessionStart", "UserPromptSubmit", "SubagentStart", "SubagentStop", "Stop", "SessionEnd", "PostToolUse")))
+    else:
+        definitions.append(("claude_sessions.py", ("SessionStart", "UserPromptSubmit", "SubagentStart", "SubagentStop", "PreToolUse", "PostToolUse", "Stop", "StopFailure", "SessionEnd", "TeammateIdle", "TaskCreated", "TaskCompleted", "Notification", "PostModelSwitch")))
     for script, events in definitions:
         for event in events:
             command = shlex.join([uv, "run", "--script", str(root / script), "hook"])
@@ -67,7 +69,9 @@ def rex_hooks(data, root, home, uv, codex):
                     if event == "SessionEnd":
                         handler["timeout"] = 3
                 continue
-            matcher = "Bash|exec_command|shell|shell_command" if event == "PreToolUse" else (".*(send_message|send_input|followup_task)$" if event == "PostToolUse" else None)
+            matcher = "Bash|exec_command|shell|shell_command" if event == "PreToolUse" and script == "rex_visible.py" else None
+            if event == "PostToolUse":
+                matcher = ".*(send_message|send_input|followup_task)$" if codex else "Agent|Task|SendMessage|TaskCreate|TaskUpdate"
             group = {"hooks": [{"type": "command", "command": command,
                                  "timeout": 3 if event == "SessionEnd" else (20 if event == "SubagentStart" else 5)}]}
             if matcher:
@@ -94,9 +98,12 @@ def install(home, agents):
         if write(path, json.dumps(data, indent=2) + "\n"):
             changed.append(str(path))
         instructions = home / (".codex/AGENTS.md" if codex else ".claude/CLAUDE.md")
-        marked_block(instructions, "rex-visible", "## Visible terminal work\n\nRun important commands in the existing main Codex Rex session. Reuse its tabs and owned panes; never create task or team sessions for visibility. Before important terminal work, read " + str(runtime / "POLICY.md") + " and follow its runner, layout, verification, and retention rules. Keep quick reads in ordinary tools. Preserve normal permissions and explicitly requested machines. Access other machines through their configured Rex connection directly, never SSH.")
+        marked_block(instructions, "rex-visible", "## Visible terminal work\n\nRun important commands in the existing main agent Rex session. Reuse its tabs and owned panes; never create task or team sessions for visibility. Before important terminal work, read " + str(runtime / "POLICY.md") + " and follow its runner, layout, verification, and retention rules. Keep quick reads in ordinary tools. Preserve normal permissions and explicitly requested machines. Access other machines through their configured Rex connection directly, never SSH.")
         if codex:
-            marked_block(instructions, "codex-coordination", "## Conversational agent coordination\n\nCoordinate the user's objective and delegate useful bounded work. Before delegation or session-to-session coordination, read " + str(runtime / "COORDINATION.md") + ". Keep ownership clear, use economical models, and keep views in the main Codex Rex session.")
+            marked_block(instructions, "codex-coordination", "## Conversational agent coordination\n\nCoordinate the user's objective and delegate useful bounded work. Before delegation or session-to-session coordination, read " + str(runtime / "COORDINATION.md") + ". Keep ownership clear, use economical models, and keep views in the main agent Rex session.")
+        else:
+            marked_block(instructions, "claude-coordination", "## Conversational agent coordination\n\nCoordinate the user's objective using Claude's native Agent and SendMessage tools when available. Before delegation, background work, or session coordination, read " + str(runtime / "COORDINATION.md") + ". Keep clear ownership and use the existing main agent Rex session for read-only activity views. Preserve normal permissions and host trust.")
+
     return {"runtime": str(runtime), "changed": changed,
             "hook_review": "Review new or changed hooks in the host's /hooks menu. This installer never changes hook trust or tool permissions."}
 
