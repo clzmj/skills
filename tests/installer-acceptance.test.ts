@@ -143,3 +143,16 @@ test("hosted shell pipeline controlling terminal cancellation and EOF make no pe
   expect(result.stdout.toString()).toContain("cancel and EOF passed");
   expect(f.commands()).toEqual([]); expect(readdirSync(f.home)).toEqual([]);
 });
+
+for (const mode of ["accept", "yes"] as const) test(`hosted shell pipeline controlling terminal completes ${mode === "accept" ? "approved interactive" : "explicit --yes"} installation`, () => {
+  const f = fixture("terminal-" + mode);
+  const shell = join(f.base, "install.sh"); writeFileSync(shell, installer());
+  const python = Bun.which("python3"); expect(python).not.toBeNull();
+  const result = f.run([python!, join(root, "tests/installer-pty.py"), shell, f.project, mode]);
+  expect(result.stderr.toString()).toBe(""); expect(result.exitCode).toBe(0);
+  expect(result.stdout.toString()).toContain("Hosted pipeline installation passed");
+  expect(f.commands()).toHaveLength(mode === "accept" ? 2 : 1);
+  for (const skill of ["rex", "python-tooling"]) expect(existsSync(join(f.home, ".agents/skills", skill, "SKILL.md"))).toBe(true);
+  expect(existsSync(join(f.home, ".local/bin/clzmj-skills"))).toBe(true);
+  expect(existsSync(join(f.home, ".config/clzmj-skills/install.json"))).toBe(true);
+});

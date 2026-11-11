@@ -64,10 +64,9 @@ try {
   await extractArchive(archive, extracted);
   const source = extracted;
   if (dryRun) console.log("Bootstrap dry run: downloaded and verified in temporary storage; no persistent release or installation writes.");
-  // The shell/Bun heredoc consumes stdin; reconnect interactive children to the terminal.
-  let input = "inherit";
-  try { input = (await import("node:fs")).openSync("/dev/tty", "r"); } catch {}
-  const result = Bun.spawnSync([process.execPath, join(source, "scripts/init.ts"), ...args], { env: { ...process.env, CLZMJ_SKILLS_SOURCE: source, CLZMJ_SKILLS_VERSION: version, CLZMJ_SKILLS_SHA256: sha256 }, stdin: input, stdout: "inherit", stderr: "inherit" });
+  // init owns its controlling terminal for wrapper prompts. Preserve the heredoc
+  // stdin here: forwarding a read-only tty fd breaks Bun readline in child tools.
+  const result = Bun.spawnSync([process.execPath, join(source, "scripts/init.ts"), ...args], { env: { ...process.env, CLZMJ_SKILLS_SOURCE: source, CLZMJ_SKILLS_VERSION: version, CLZMJ_SKILLS_SHA256: sha256 }, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
   if (result.error) throw result.error;
   process.exitCode = result.exitCode;
 } catch (error) {

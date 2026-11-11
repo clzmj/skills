@@ -197,7 +197,8 @@ describe("public distribution", () => {
     expect(script).toContain('CLZMJ_SKILLS_SOURCE: source');
     expect(script).toContain('createHash("sha256")');
     expect(script).toContain('CLZMJ_SKILLS_VERSION: version');
-    expect(script).toContain('openSync("/dev/tty", "r")');
+    expect(script).not.toContain('openSync("/dev/tty"');
+    expect(script).toContain('stdin: "inherit"');
     expect(script).toContain('no persistent release or installation writes');
     expect(script).not.toMatch(/gh auth|GITHUB_TOKEN|CLOUDFLARE_API_TOKEN|git clone/);
   });

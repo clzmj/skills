@@ -9,11 +9,14 @@ import sys
 import time
 
 
-def exercise(shell, directory, eof):
+def exercise(shell, directory, mode):
     pid, fd = pty.fork()
     if pid == 0:
         os.chdir(directory)
-        os.execv('/bin/sh', ['sh', '-c', 'cat ' + shlex.quote(shell) + ' | sh'])
+        command = 'cat ' + shlex.quote(shell) + ' | sh'
+        if mode == 'yes':
+            command += ' -s -- --yes --agents codex --core-only --no-hooks'
+        os.execv('/bin/sh', ['sh', '-c', command])
     output = b''
     sent = False
     status = None
@@ -32,19 +35,22 @@ def exercise(shell, directory, eof):
                 if not sent and b'Select numbers/names separated by commas' in output:
                     # Defaults for hosts/scope/method/core/favorites/hooks, then
                     # decline the final confirmation. Ctrl-D tests true tty EOF.
-                    os.write(fd, b'\x04' if eof else b'\n\n\n\n\n\nno\n')
+                    os.write(fd, b'\x04' if mode == 'eof' else b'\n\n\n\n\n\n' + (b'yes\n' if mode == 'accept' else b'no\n'))
                     sent = True
-            ended, status = os.waitpid(pid, os.WNOHANG)
+            ended, child_status = os.waitpid(pid, os.WNOHANG)
             if ended:
+                status = child_status
                 break
         else:
             raise AssertionError('PTY installer did not terminate; output: ' + output[-6000:].decode(errors='replace'))
         code = os.waitstatus_to_exitcode(status)
-        assert sent, output.decode(errors='replace')
-        if eof:
+        assert sent or mode == 'yes', output.decode(errors='replace')
+        if mode == 'eof':
             assert code != 0 and b'input ended' in output.lower(), output.decode(errors='replace')
-        else:
+        elif mode == 'cancel':
             assert code == 0 and b'Cancelled' in output, output.decode(errors='replace')
+        else:
+            assert code == 0 and b'Summary:' in output and b'0 failed' in output, output.decode(errors='replace')
     finally:
         os.close(fd)
         if status is None or not os.WIFEXITED(status):
@@ -55,6 +61,12 @@ def exercise(shell, directory, eof):
                 pass
 
 
-exercise(sys.argv[1], sys.argv[2], False)
-exercise(sys.argv[1], sys.argv[2], True)
-print('Hosted pipeline cancel and EOF passed')
+mode = sys.argv[3] if len(sys.argv) > 3 else 'boundary'
+if mode == 'boundary':
+    exercise(sys.argv[1], sys.argv[2], 'cancel')
+    exercise(sys.argv[1], sys.argv[2], 'eof')
+    print('Hosted pipeline cancel and EOF passed')
+else:
+    assert mode in ('accept', 'yes'), mode
+    exercise(sys.argv[1], sys.argv[2], mode)
+    print('Hosted pipeline installation passed: ' + mode)
