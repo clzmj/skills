@@ -28,7 +28,7 @@ describe("public distribution", () => {
     expect(statSync(join(temporary, "extracted/favorites.json")).mode & 0o7777).toBe(0o644);
     expect(paths).toContain("skills/rex/scripts/agents/complex-worker.toml");
     expect(paths.some(path => /test|\.git|runtime|\.state|__pycache__|infra/.test(path))).toBe(false);
-    expect(paths.every(path => path === "scripts/init.ts" || path === "scripts/self-update.ts" || path === "distribution/archive.ts" || path === "distribution/archive-source.ts" || path === "favorites.json" || path === "LICENSE" || path.startsWith("skills/"))).toBe(true);
+    expect(paths.every(path => path === "scripts/init.ts" || path === "scripts/self-update.ts" || path === "scripts/terminal-ui.ts" || path === "distribution/archive.ts" || path === "distribution/archive-source.ts" || path === "favorites.json" || path === "LICENSE" || path.startsWith("skills/"))).toBe(true);
     for (const version of ["", "../escape", "a..b", "/abs", "a/b", "x".repeat(129)]) expect(() => buildRelease(version, temporary)).toThrow("Unsafe release version");
   });
 

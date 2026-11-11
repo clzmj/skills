@@ -6,9 +6,36 @@ Run the hosted installer from the directory you want to configure:
 curl -fsSL https://skills.clzmj.dev/install | sh
 ```
 
-Interactive selection shows descriptions and owners, discovers individual skills
-in selected packs, and ends with a preview and a default-no confirmation. Use
-`--yes` for unattended execution. A dry run previews the plan without installing
+Each interactive step replaces the terminal page. Select agents, scope, an
+existing project folder when needed, installation method, core skills, favorite
+packs, individual pack skills, and optional global hooks. Descriptions and owners
+appear alongside the current choice. Project scope skips global hooks and native
+plugins.
+
+| Key | Action |
+| --- | --- |
+| ↑ / ↓ | Move between choices; scroll review and summary pages |
+| Space | Toggle the highlighted item in a multiple-selection list |
+| `a` / `n` | Select all / clear all in a multiple-selection list |
+| Enter | Continue with the current selection |
+| Esc | Go back to the previous page, retaining completed choices |
+| `y` / `n` | Accept or decline a yes/no page, including the final review |
+| Ctrl-C | Cancel and restore the terminal |
+
+Home, End, Page Up, and Page Down navigate long lists. The folder browser offers
+the current folder, its parent, and existing child folders; select a folder to
+enter it, then choose **Use this folder**. Long skill catalogs scroll within the
+page. Selecting all applies to the whole list, including items below the screen.
+The final review defaults to No. Before approval, Esc returns to the last choice
+page; `n` leaves without installing anything.
+
+During installation, a progress bar shows completed steps out of the planned
+total, failures, the current operation, a spinner, and elapsed time. Child command
+logs are captured so they do not overwrite the page. The final page reports the
+result and provides retry details when needed. Ctrl-C stops the active operation
+and restores the cursor and terminal input mode.
+
+Use `--yes` for unattended execution. A dry run previews the plan without installing
 skills or registering hooks; read-only upstream discovery can still occur. The
 hosted bootstrap downloads and verifies its temporary payload.
 
@@ -34,6 +61,11 @@ inventories preserve existing pins, disabled states, and supported curated
 aliases, including during an ordinary skill update. Project scope never runs
 global hook installers or native plugin commands. Each personal hook installer
 owns only its own configuration and preserves unrelated settings and host trust.
+
+Symlink installations share a canonical `.agents/skills` tree in the selected
+scope; Claude Code links to that tree. The shared tree also serves Codex, but a
+Claude-only installation does not change Codex settings. Copy installations give
+each selected agent its own ordinary skill files.
 
 ## Saved configuration and commands
 

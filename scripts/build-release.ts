@@ -11,7 +11,7 @@ export function buildRelease(version: string, output = resolve(root, "dist/relea
   if (!validVersion(version)) throw new Error("Unsafe release version");
   const inventory = Bun.spawnSync(["git", "ls-files", "-z", "--", "skills/rex", "skills/python-tooling"], { cwd: root });
   if (inventory.exitCode !== 0) throw new Error("Cannot read tracked release files");
-  const paths = ["scripts/init.ts", "scripts/self-update.ts", "distribution/archive.ts", "distribution/archive-source.ts", "favorites.json", "LICENSE", ...inventory.stdout.toString().split("\0").filter(path => path && !path.split("/").some(part => part.startsWith(".") || part.startsWith("test") || part === "__pycache__"))].sort();
+  const paths = ["scripts/init.ts", "scripts/self-update.ts", "scripts/terminal-ui.ts", "distribution/archive.ts", "distribution/archive-source.ts", "favorites.json", "LICENSE", ...inventory.stdout.toString().split("\0").filter(path => path && !path.split("/").some(part => part.startsWith(".") || part.startsWith("test") || part === "__pycache__"))].sort();
   const chunks: Buffer[] = [];
   for (const path of paths) {
     const metadata = lstatSync(resolve(root, path));

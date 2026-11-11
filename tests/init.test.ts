@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync, mkdtempSync, rmSync, mkdirSync, symlinkSync, openSync, closeSync, writeFileSync } from "node:fs";
+import { TerminalBack, TerminalCancelled } from "../scripts/terminal-ui";
+import { readFileSync, mkdtempSync, rmSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { initialize, parseManifest, parseOptions, parseState, buildPlan, resolveCoreSource, detectAgents, skillDirectory, settingsPath, readTerminalAnswer, type Runtime, type Options, type InstallRecord } from "../scripts/init";
+import { initialize, parseManifest, parseOptions, parseState, buildPlan, resolveCoreSource, detectAgents, skillDirectory, settingsPath, runSubprocess, type PageUI, type Runtime, type Options, type InstallRecord } from "../scripts/init";
 
 const manifest = JSON.parse(readFileSync(new URL("../favorites.json", import.meta.url), "utf8"));
 const options = (args: string[] = []) => parseOptions(["--agents", "codex", "claude-code", "--yes", ...args]);
@@ -20,6 +21,12 @@ function mock(existing = new Set<string>()) {
     save: (path, record) => saved.push({ path, record }), fingerprint: () => "a".repeat(64), link: (_source, destination) => existing.add(destination),
   };
   return { logs, calls, runtime, saved, existing };
+}
+
+function pages(overrides: Partial<PageUI> = {}): PageUI {
+  return { multiselect: (_title, _rows, defaults) => defaults, select: (_title, _rows, defaultValue) => defaultValue,
+    directory: (_title, start) => start, confirm: (_title, defaultValue = false) => defaultValue,
+    review: () => false, page: () => {}, progress: () => {}, finish: () => {}, error: () => {}, pollCancel: () => {}, close: () => {}, ...overrides };
 }
 
 describe("installer choices and plans", () => {
@@ -51,6 +58,15 @@ describe("installer choices and plans", () => {
     expect(plan.steps.filter(s => s.kind === "skill").every(s => !s.command.includes("--copy") && s.command.includes("-g"))).toBe(true);
     expect(plan.steps.map(s => s.command)).toContainEqual(["codex", "plugin", "add", "egm@egm"]);
     expect(plan.steps.map(s => s.command)).toContainEqual(["claude", "plugin", "install", "ponytail@ponytail"]);
+  });
+  test("Claude-only symlink batches include the universal canonical target required by Skills CLI", () => {
+    const chosen = options(["--agents", "claude-code", "--core", "rex", "--method", "symlink"]);
+    const plan = buildPlan([], chosen, {}, "clzmj/skills", () => false);
+    expect(plan.steps).toHaveLength(1);
+    expect(plan.steps[0].command.slice(plan.steps[0].command.indexOf("-a"))).toEqual(["-a", "codex", "claude-code", "-y"]);
+    expect(plan.steps[0].paths).toContain(resolve(skillDirectory("codex", chosen), "rex"));
+    const copied = buildPlan([], { ...chosen, method: "copy" }, {}, "clzmj/skills", () => false);
+    expect(copied.steps[0].command.slice(copied.steps[0].command.indexOf("-a"))).toEqual(["-a", "claude-code", "--copy", "-y"]);
   });
   test("retains disabled, pinned and curated-alias native installations even on explicit skill update", () => {
     const state = parseState("codex", { installed: [{ pluginId: "egm@egm", enabled: false, version: "0.1" }, { pluginId: "engineering-suite-ponytail@openai-curated-remote", enabled: false }] }, { marketplaces: [] });
@@ -117,17 +133,16 @@ describe("safe installer execution", () => {
   });
   test("interactive preview is default-no and no installation mutations happen before approval", async () => {
     const { runtime, calls, logs, saved } = mock();
-    const answers = ["codex", "global", "copy", "rex", "none", "no", "no"];
-    runtime.ask = (question, fallback) => { if (question.startsWith("Install this plan")) expect(logs.some(s => s.includes("Installation preview"))).toBe(true); return answers.shift() ?? fallback; };
+    let cancelled = false;
+    runtime.ui = pages({ review(_title, lines) { expect(lines.some(line => line.includes("Scope: global"))).toBe(true); return false; }, finish(title) { cancelled = title === "Installation cancelled"; } });
     runtime.prepare = () => { throw new Error("mutation before confirmation"); };
     await initialize(manifest, parseOptions([], ["codex"]), runtime);
     expect(calls).toEqual([]); expect(saved).toEqual([]);
-    expect(logs.at(-1)).toContain("Cancelled");
+    expect(cancelled).toBe(true);
   });
   test("interactive wildcard selection shows count and accepts individual skills", async () => {
     const { runtime, calls } = mock();
-    const answers = ["codex", "global", "copy", "none", "mattpocock/skills", "no", "tdd", "yes"];
-    runtime.ask = (_question, fallback) => answers.shift() ?? fallback;
+    runtime.ui = pages({ multiselect(title, _rows, defaults) { if (title === "Core skills") return []; if (title === "Favorite packs") return ["mattpocock/skills"]; if (title.startsWith("Individual skills")) return ["tdd"]; return defaults; }, review: () => true });
     await initialize(manifest, parseOptions([], ["codex"]), runtime);
     expect(calls).toHaveLength(1);
     expect(calls[0].command).toContain("tdd");
@@ -190,21 +205,71 @@ describe("safe installer execution", () => {
     expect(second.calls[0].command).not.toContain("--copy");
     expect(second.saved[0].record.options).toMatchObject({ favorites: [], packSkills: {}, core: ["rex"], agents: ["codex"], method: "symlink" });
   });
-  test("terminal EOF aborts even when defaults exist", () => {
-    const dir = mkdtempSync(resolve(tmpdir(), "skills-eof-"));
-    try {
-      const path = resolve(dir, "input");
-      writeFileSync(path, ""); const empty = openSync(path, "r");
-      try { expect(() => readTerminalAnswer(empty, "yes")).toThrow("Terminal input ended"); } finally { closeSync(empty); }
-      writeFileSync(path, "\n"); const newline = openSync(path, "r");
-      try { expect(readTerminalAnswer(newline, "no")).toBe("no"); } finally { closeSync(newline); }
-    } finally { rmSync(dir, { recursive: true, force: true }); }
-  });
   test("hosted source validation only accepts the current extracted release", () => {
     const release = new URL("../", import.meta.url).pathname.replace(/\/$/, "");
     expect(resolveCoreSource(undefined)).toBe("clzmj/skills");
     expect(resolveCoreSource(release)).toBe(release);
     expect(() => resolveCoreSource("relative")).toThrow("extracted release root");
     expect(() => resolveCoreSource("/tmp")).toThrow("extracted release root");
+  });
+});
+
+describe("terminal page flow and asynchronous work", () => {
+  test("Back revisits a page with its prior choice and review stays default-no", async () => {
+    const fixture = mock(); let back = false; let coreVisits = 0; let reviews = 0;
+    fixture.runtime.ui = pages({
+      multiselect(title, _rows, defaults) {
+        if (title === "Core skills") { coreVisits++; if (coreVisits === 2) expect(defaults).toEqual(["rex"]); return ["rex"]; }
+        if (title === "Favorite packs" && !back) { back = true; throw new TerminalBack(); }
+        return defaults;
+      },
+      review() { reviews++; if (reviews === 1) throw new TerminalBack(); return false; },
+    });
+    await initialize(manifest, parseOptions([], ["codex"]), fixture.runtime);
+    expect(coreVisits).toBe(2); expect(reviews).toBe(2); expect(fixture.saved).toEqual([]); expect(fixture.calls).toEqual([]);
+  });
+  test("project favorite page excludes global native plugins", async () => {
+    const directory = mkdtempSync(resolve(tmpdir(), "skills-pages-project-"));
+    try {
+      const fixture = mock(); let shown: string[] = [];
+      fixture.runtime.ui = pages({ multiselect(title, rows, defaults, context) { if (title === "Favorite packs") { shown = rows.map(row => row.name); expect(context).toContain("global scope"); } return defaults; } });
+      await initialize(manifest, parseOptions(["--scope", "project", "--project-dir", directory], ["codex"]), fixture.runtime);
+      expect(shown).toEqual(parseManifest(manifest).filter(favorite => favorite.type === "skills").map(favorite => favorite.source));
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+  test("awaits inventory and installation promises while repainting honest progress", async () => {
+    const fixture = mock(); const frames: {completed:number;total:number}[] = []; const original = fixture.runtime.run;
+    fixture.runtime.run = async (command, capture, cwd) => { const output = await original(command, capture, cwd); if (!capture) await new Promise(resolve => setTimeout(resolve, 230)); return output; };
+    fixture.runtime.ui = pages({ progress: state => { frames.push(state); } });
+    await initialize(manifest, options(["--agents", "codex", "--core", "rex"]), fixture.runtime);
+    expect(frames.filter(frame => frame.total === 1 && frame.completed === 0).length).toBeGreaterThanOrEqual(3);
+    expect(frames.at(-1)).toMatchObject({ total: 1, completed: 1 });
+  });
+  test("interactive completion summarizes choices without dumping installed file paths", async () => {
+    const fixture = mock(); let completed: string[] = [];
+    fixture.runtime.ui = pages({ finish(_title, lines) { completed = lines ?? []; } });
+    await initialize(manifest, options(["--agents", "codex", "--core", "rex"]), fixture.runtime);
+    expect(completed[0]).toContain("Summary:");
+    expect(completed).toContain("Agents: codex");
+    expect(completed).toContain("Core: rex");
+    expect(completed.some(line => line.startsWith("Launcher:"))).toBe(true);
+    expect(completed.some(line => line.startsWith("Changed path:"))).toBe(false);
+  });
+  test("Ctrl-C during work aborts later steps and preserves only completed ownership", async () => {
+    const fixture = mock(); let polls = 0, cancelled = false, finished = false;
+    const chosen = options(["--core", "rex"]); const first = resolve(skillDirectory("codex", chosen), "rex");
+    fixture.runtime.ui = pages({ pollCancel() { if (++polls === 3) throw new TerminalCancelled(); } });
+    fixture.runtime.cancel = () => { cancelled = true; };
+    fixture.runtime.finish = () => { finished = true; };
+    fixture.runtime.run = async () => { if (!fixture.existing.has(first)) fixture.existing.add(first); else await new Promise(resolve => setTimeout(resolve, 250)); return ""; };
+    await expect(initialize(manifest, chosen, fixture.runtime)).rejects.toThrow("Installation cancelled");
+    expect(cancelled).toBe(true); expect(finished).toBe(false); expect(fixture.saved[0].record.ownedPaths).toEqual({ [first]: "a".repeat(64) });
+  });
+  test("async child pipes drain concurrently, bounded errors retain exit status, and timers run", async () => {
+    let ticks = 0; const timer = setInterval(() => ticks++, 25);
+    try {
+      await expect(runSubprocess([process.execPath, "-e", 'process.stdout.write("x".repeat(300000));process.stderr.write("e".repeat(300000));await Bun.sleep(150);process.exit(17)'], false)).rejects.toThrow("Command failed (17)");
+      expect(ticks).toBeGreaterThan(2);
+    } finally { clearInterval(timer); }
   });
 });

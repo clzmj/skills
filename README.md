@@ -15,14 +15,19 @@ Both are self-contained and installable on their own. Python scripts use uv sheb
 curl -fsSL https://skills.clzmj.dev/install | sh
 ```
 
-The installer guides you through agents, global or project scope, copy or
-symlink installation, skills, favorites, and optional hooks. It shows a preview
-and asks before applying changes. Defaults are global scope, symlinked core skills,
+The installer gives each choice its own terminal page: agents, scope, project
+folder, installation method, skills, favorites, and optional hooks. Use the arrow
+keys to move, Space to toggle, `a` to select all, and Enter to continue. Browse
+project folders without typing paths. Esc goes back and keeps completed choices.
+The review page accepts `y` to install or `n` to cancel; installation shows a
+progress bar, completed steps, and elapsed time. Defaults are global scope, symlinked core skills,
 detected agents, and no hooks or upstream favorites. A project install keeps its
 files in the selected project and skips global hooks and native plugins. Symlink
 installation is the default; use `--method copy` for independent copies. Symlink
 sources must remain available. Existing installs keep their saved method when
 updated; changing it requires an explicit `--method` choice.
+Symlinked skills share `.agents/skills` within the selected scope; Claude Code
+links there. Selecting Claude alone does not change Codex settings.
 
 For unattended installation, use explicit choices and `--yes`:
 

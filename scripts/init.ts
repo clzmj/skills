@@ -1,8 +1,9 @@
-import { existsSync, lstatSync, readFileSync, realpathSync, statSync, mkdirSync, writeFileSync, openSync, readSync, writeSync, closeSync, symlinkSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync, statSync, mkdirSync, writeFileSync, symlinkSync } from "node:fs";
 import { isAbsolute, resolve, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { prepareHostedRelease, registerLauncher, launcherPath, fingerprint } from "./self-update";
+import { openTerminalUI, TerminalBack, TerminalCancelled, type TerminalUI } from "./terminal-ui";
 
 export type Agent = "codex" | "claude-code";
 export type Favorite = ({ type: "skills"; skills: string[] } | { type: "plugin"; marketplace: string; plugin: string; installedAs?: string[] }) & { source: string; description?: string };
@@ -15,13 +16,16 @@ export type State = { plugins: Set<string>; marketplaces: Set<string> };
 export type Command = string[];
 export type Skill = { name: string; description: string };
 export type InstallRecord = { version: 1; options: Options; ownedPaths: Record<string, string> };
+export type PageUI = { [K in keyof TerminalUI]: TerminalUI[K] extends (...args: infer Args) => infer Result ? (...args: Args) => Result | Awaited<Result> : TerminalUI[K] };
 export type Runtime = {
   which: (name: string) => string | null;
-  run: (command: Command, capture: boolean, cwd?: string) => string;
+  run: (command: Command, capture: boolean, cwd?: string) => string | Promise<string>;
   log: (message: string) => void;
   exists?: (path: string) => boolean;
-  ask?: (question: string, defaultValue: string) => string;
-  discover?: (source: string) => Promise<Skill[]>;
+  ui?: PageUI;
+  cancel?: () => void | Promise<void>;
+  signal?: AbortSignal;
+  discover?: (source: string, signal?: AbortSignal) => Promise<Skill[]>;
   save?: (path: string, record: InstallRecord) => void;
   load?: (path: string) => InstallRecord | undefined;
   prepare?: (options: Options, source: string) => Promise<string> | string;
@@ -132,13 +136,17 @@ export function detectAgents(which: Runtime["which"], exists: (path: string) => 
 export const skillDirectory = (agent: Agent, options: Options, home = homedir()) => options.scope === "project"
   ? resolve(options.projectDir, agent === "codex" ? ".agents/skills" : ".claude/skills")
   : agent === "codex" ? resolve(home, ".agents/skills") : resolve(process.env.CLAUDE_CONFIG_DIR || resolve(home, ".claude"), "skills");
-const skillsCommand = (source: string, names: string[], selected: Agent[], options: Options): Command =>
-  ["bunx", "--bun", "skills", "add", source, "--skill", ...names, ...(options.scope === "global" ? ["-g"] : []), "-a", ...selected, ...(options.method === "copy" ? ["--copy"] : []), "-y"];
+const skillsCommand = (source: string, names: string[], selected: Agent[], options: Options): Command => {
+  // Skills CLI auto-copies when only one agent directory is targeted. Include
+  // the universal canonical destination so Claude really receives a symlink.
+  const targets = options.method === "symlink" && selected.includes("claude-code") && !selected.includes("codex") ? ["codex", ...selected] : selected;
+  return ["bunx", "--bun", "skills", "add", source, "--skill", ...names, ...(options.scope === "global" ? ["-g"] : []), "-a", ...targets, ...(options.method === "copy" ? ["--copy"] : []), "-y"];
+};
 export const displayCommand = (command: Command) => command.map(value => /^[\w./:@-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`).join(" ");
 
-export async function discoverPack(source: string): Promise<Skill[]> {
+export async function discoverPack(source: string, signal?: AbortSignal): Promise<Skill[]> {
   const get = async (url: string) => {
-    const response = await fetch(url, { headers: { Accept: "application/vnd.github+json" }, signal: AbortSignal.timeout(20_000) });
+    const response = await fetch(url, { headers: { Accept: "application/vnd.github+json" }, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(20_000)]) : AbortSignal.timeout(20_000) });
     if (!response.ok) throw new Error(`Could not discover ${source}: HTTP ${response.status}. Retry or use --skills ${source}:name,name`);
     return response;
   };
@@ -159,38 +167,74 @@ export async function discoverPack(source: string): Promise<Skill[]> {
   return skills.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function select(ask: NonNullable<Runtime["ask"]>, log: Runtime["log"], title: string, rows: Skill[], defaults: string[], shortcuts = false): string[] {
-  log(title);
-  rows.forEach((row, index) => log(`  ${index + 1}. ${row.name}${defaults.includes(row.name) ? " [selected]" : ""} — ${row.description}`));
-  const answer = ask(`Select numbers/names separated by commas${shortcuts ? ", all or none (core-only)" : ", all or none"}`, defaults.join(","));
-  if (answer === "all") return rows.map(row => row.name);
-  if (answer === "none" || answer === "core-only") return [];
-  const selected = answer.split(/[\s,]+/).filter(Boolean).map(value => /^\d+$/.test(value) ? rows[Number(value) - 1]?.name : value);
-  if (!selected.every(name => rows.some(row => row.name === name))) throw new Error(`Invalid selection for ${title}`);
-  return [...new Set(selected)] as string[];
+async function activity<T>(runtime: Runtime, label: string, action: () => T | Promise<T>, counts = { completed: 0, total: 0, failed: 0 }): Promise<T> {
+  if (runtime.signal?.aborted) throw new TerminalCancelled();
+  if (!runtime.ui) return await action();
+  const started = Date.now();
+  const draw = () => { runtime.ui!.pollCancel(); runtime.ui!.progress({ ...counts, title: counts.total ? "Installing" : label, label, elapsedMs: Date.now() - started }); };
+  draw();
+  let cancellationError: unknown, cleanup: Promise<void> | undefined;
+  const timer = setInterval(() => {
+    if (cancellationError) return;
+    try { draw(); }
+    catch (error) { cancellationError = runtime.signal?.aborted ? new TerminalCancelled() : error; cleanup = Promise.resolve(runtime.cancel?.()); }
+  }, 100);
+  try {
+    const result = await action();
+    if (cancellationError) { await cleanup; throw cancellationError; }
+    return result;
+  } catch (error) {
+    if (cancellationError) { await cleanup; throw cancellationError; }
+    throw error;
+  } finally { clearInterval(timer); }
 }
 
-export function chooseOptions(options: Options, favorites: Favorite[], runtime: Runtime): Options {
+function validateCatalog(skills: Skill[], source: string): Skill[] {
+  if (!skills.length || skills.some(skill => !namePattern.test(skill.name)) || new Set(skills.map(skill => skill.name)).size !== skills.length) throw new Error(`Invalid discovered skill catalog: ${source}`);
+  return skills;
+}
+
+export async function chooseOptions(options: Options, favorites: Favorite[], runtime: Runtime, resume = false): Promise<Options> {
   if (options.yes || options.dryRun) return options;
-  if (!runtime.ask) throw new Error("No controlling terminal. Run in a terminal or pass --yes with explicit choices for unattended installation.");
-  const ask = runtime.ask;
+  const ui = runtime.ui;
+  if (!ui) throw new Error("No controlling terminal. Run in a terminal or pass --yes with explicit choices for unattended installation.");
   const chosen = { ...options, packSkills: { ...options.packSkills } };
-  chosen.agents = select(ask, runtime.log, "Agents", agents.map(name => ({ name, description: name === "codex" ? "OpenAI Codex" : "Claude Code" })), chosen.agents) as Agent[];
-  const scope = ask("Scope: global or project", chosen.scope);
-  if (scope !== "global" && scope !== "project") throw new Error("Scope must be global or project");
-  chosen.scope = scope;
-  if (scope === "project") {
-    const directory = ask("Exact absolute project directory", chosen.projectDir);
-    if (!isAbsolute(directory) || !statSync(directory).isDirectory()) throw new Error("Project directory must be an existing absolute directory");
-    chosen.projectDir = realpathSync(directory);
+  const catalogs = new Map<string, Skill[]>();
+  let page = resume ? Number.MAX_SAFE_INTEGER : 0;
+  while (true) {
+    const selectedPacks = favorites.filter(favorite => (chosen.favorites === undefined || chosen.favorites.includes(favorite.source)) && favorite.type === "skills");
+    const pages: (() => void | Promise<void>)[] = [
+      async () => { chosen.agents = await ui.multiselect("Agents", agents.map(name => ({ name, description: name === "codex" ? "OpenAI Codex" : "Claude Code" })), chosen.agents, undefined, 1) as Agent[]; },
+      async () => { chosen.scope = await ui.select("Installation scope", [{ name: "global", description: "Install for your user account" }, { name: "project", description: "Install only in one project directory" }], chosen.scope) as Options["scope"]; },
+      ...(chosen.scope === "project" ? [async () => { chosen.projectDir = realpathSync(await ui.directory("Project directory", chosen.projectDir)); }] : []),
+      async () => { chosen.method = await ui.select("Installation method", [{ name: "symlink", description: "Keep one shared canonical copy per scope" }, { name: "copy", description: "Copy ordinary skills into each selected agent" }], chosen.method, "Native plugins keep their complete host packaging.") as Options["method"]; },
+      async () => { chosen.core = await ui.multiselect("Core skills", coreSkills, chosen.core, "Owner: clzmj"); },
+      async () => {
+        const available = favorites.filter(favorite => chosen.scope !== "project" || favorite.type === "skills");
+        chosen.favorites = await ui.multiselect("Favorite packs", available.map(favorite => ({ name: favorite.source, description: `${favorite.description || (favorite.type === "plugin" ? "Complete native plugin pack" : "Upstream skill pack")} · owner ${favorite.source.split("/")[0]}` })), chosen.favorites ?? available.map(favorite => favorite.source), chosen.scope === "project" ? "Native plugins require global scope and are omitted here. Choose none for core-only." : "Choose none for core-only. Native plugins retain their host packaging.");
+      },
+      ...selectedPacks.map(favorite => async () => {
+        if (favorite.type !== "skills") return;
+        let rows = catalogs.get(favorite.source);
+        if (!rows) {
+          rows = favorite.skills.includes("*") ? validateCatalog(await activity(runtime, `Discovering ${favorite.source}`, () => (runtime.discover ?? discoverPack)(favorite.source, runtime.signal)), favorite.source) : favorite.skills.map(name => ({ name, description: `From ${favorite.source}` }));
+          catalogs.set(favorite.source, rows);
+        }
+        chosen.packSkills[favorite.source] = await ui.multiselect(`Individual skills: ${favorite.source}`, rows, chosen.packSkills[favorite.source] ?? rows.map(skill => skill.name), `${rows.length} skills · owner ${favorite.source.split("/")[0]}`);
+      }),
+      ...(chosen.scope === "global" ? [async () => { chosen.hooks = await ui.confirm("Hooks", chosen.hooks, ["Install independent Rex and Python hooks in your home settings?", "Hooks are separate from ordinary skill selection."]); }] : []),
+    ];
+    page = Math.min(page, pages.length - 1);
+    try { await pages[page](); }
+    catch (error) { if (error instanceof TerminalBack) { page = Math.max(0, page - 1); continue; } throw error; }
+    // Recompute pages after scope/pack changes; the next page follows this one.
+    page++;
+    const extraDirectory = chosen.scope === "project" ? 1 : 0;
+    const ordinaryCount = favorites.filter(favorite => favorite.type === "skills" && (chosen.favorites === undefined || chosen.favorites.includes(favorite.source))).length;
+    const length = 5 + extraDirectory + ordinaryCount + (chosen.scope === "global" ? 1 : 0);
+    if (page >= length) break;
   }
-  const method = ask("Ordinary skills: copy or symlink (native plugins keep their packaging)", chosen.method);
-  if (method !== "copy" && method !== "symlink") throw new Error("Method must be copy or symlink");
-  chosen.method = method;
-  chosen.core = select(ask, runtime.log, "Core skills — owner clzmj", coreSkills, chosen.core);
-  chosen.favorites = select(ask, runtime.log, "Favorite packs — select all, individual packs, or core-only", favorites.map(f => ({ name: f.source, description: `${f.description || (f.type === "plugin" ? "Complete native plugin pack" : "Upstream skill pack")} (owner ${f.source.split("/")[0]})` })), chosen.favorites ?? favorites.map(f => f.source), true);
-  if (chosen.scope === "project") { runtime.log("Project hooks are unsupported; global hooks skipped without changing home settings."); chosen.hooks = false; }
-  else chosen.hooks = /^(y|yes)$/i.test(ask("Install independent Rex/Python hooks? yes or no", chosen.hooks ? "yes" : "no"));
+  if (chosen.scope === "project") chosen.hooks = false;
   return chosen;
 }
 
@@ -239,143 +283,213 @@ export async function initialize(manifest: unknown, initial: Options, runtime: R
   let options = { ...initial, packSkills: { ...initial.packSkills } };
   const saved = runtime.load?.(settingsPath(options));
   if (options.update && saved) {
-    options = { ...saved.options, dryRun: initial.dryRun, yes: initial.yes, update: true, help: initial.help, provided: initial.provided };
+    options = { ...saved.options, packSkills: { ...saved.options.packSkills }, dryRun: initial.dryRun, yes: initial.yes, update: true, help: initial.help, provided: initial.provided };
     const flags: [string[], keyof Options][] = [[["--agents"], "agents"], [["--core"], "core"], [["--core-only", "--all-favorites", "--favorites"], "favorites"], [["--skills"], "packSkills"], [["--hooks", "--no-hooks"], "hooks"], [["--scope"], "scope"], [["--project-dir"], "projectDir"], [["--method"], "method"]];
     for (const [names, key] of flags) if (names.some(flag => initial.provided?.includes(flag))) (options as any)[key] = key === "packSkills" ? { ...saved.options.packSkills, ...initial.packSkills } : initial[key];
   }
-  options = chooseOptions(options, favorites, runtime);
-  if (!options.agents.length) throw new Error("No agents selected/detected. Pass --agents codex and/or claude-code.");
-  if (options.scope === "project" && !statSync(options.projectDir).isDirectory()) throw new Error("Project directory must exist");
   const exists = runtime.exists ?? pathExists;
-  if (options.favorites?.some(source => !favorites.some(f => f.source === source))) throw new Error("Unknown favorite source; use an owner/repo listed in favorites.json");
-  let selected = favorites.filter(f => options.favorites === undefined || options.favorites.includes(f.source)).map(f => ({ ...f }));
-  for (const [source] of Object.entries(options.packSkills)) if (!selected.some(f => f.source === source && f.type === "skills")) {
-    if (initial.provided?.includes("--skills") && initial.packSkills[source]) throw new Error(`--skills source is not a selected ordinary pack: ${source}`);
-    delete options.packSkills[source];
-  }
-  // Persist the exact approved packs, so a future catalog addition never expands update scope.
-  options.favorites = selected.map(f => f.source);
-  for (const favorite of selected) if (favorite.type === "skills") {
-    if (options.packSkills[favorite.source]) favorite.skills = options.packSkills[favorite.source];
-    else if (favorite.skills.includes("*")) {
-      const discovered = await (runtime.discover ?? discoverPack)(favorite.source);
-      if (!discovered.length || discovered.some(s => !namePattern.test(s.name)) || new Set(discovered.map(s => s.name)).size !== discovered.length) throw new Error(`Invalid discovered skill catalog: ${favorite.source}`);
-      runtime.log(`${favorite.source}: discovered ${discovered.length} skills`);
-      favorite.skills = options.yes || options.dryRun ? discovered.map(s => s.name) : select(runtime.ask!, runtime.log, `Individual skills from ${favorite.source}`, discovered, discovered.map(s => s.name));
-      runtime.log(`  ${favorite.skills.join(", ")}`);
+  let plan: ReturnType<typeof buildPlan>;
+  let selected: Favorite[];
+  let states: Partial<Record<Agent, State>>;
+  let resume = false;
+  while (true) {
+    options = await chooseOptions(options, favorites, runtime, resume);
+    if (!options.agents.length) throw new Error("No agents selected/detected. Pass --agents codex and/or claude-code.");
+    if (options.scope === "project" && !statSync(options.projectDir).isDirectory()) throw new Error("Project directory must exist");
+    if (options.favorites?.some(source => !favorites.some(favorite => favorite.source === source))) throw new Error("Unknown favorite source; use an owner/repo listed in favorites.json");
+    selected = favorites.filter(favorite => options.favorites === undefined || options.favorites.includes(favorite.source)).map(favorite => ({ ...favorite }));
+    for (const source of Object.keys(options.packSkills)) if (!selected.some(favorite => favorite.source === source && favorite.type === "skills")) {
+      if (initial.provided?.includes("--skills") && initial.packSkills[source]) throw new Error(`--skills source is not a selected ordinary pack: ${source}`);
+      delete options.packSkills[source];
     }
-    options.packSkills[favorite.source] = favorite.skills;
-  }
-  const tools = new Set<string>();
-  if (options.core.length || selected.some(f => f.type === "skills")) { tools.add("bunx"); tools.add("git"); }
-  if (options.hooks && options.scope === "global") tools.add("uv");
-  if (options.scope === "global" && selected.some(f => f.type === "plugin")) for (const agent of options.agents) tools.add(cli(agent));
-  const missing = [...tools].filter(tool => !runtime.which(tool));
-  if (missing.length) throw new Error(`Missing required tools: ${missing.join(", ")}`);
-  const states: Partial<Record<Agent, State>> = {};
-  if (!options.dryRun && options.scope === "global" && selected.some(f => f.type === "plugin")) for (const agent of options.agents) {
-    states[agent] = parseState(agent, JSON.parse(runtime.run([cli(agent), "plugin", "list", "--json"], true, options.projectDir)), JSON.parse(runtime.run([cli(agent), "plugin", "marketplace", "list", "--json"], true, options.projectDir)));
-  }
-  let plan = buildPlan(selected, options, states, coreSource, exists);
-  runtime.log(`\nInstallation preview: ${options.scope}${options.scope === "project" ? ` at ${options.projectDir}` : " (user home)"}; ${options.method}; agents ${options.agents.join(", ")}`);
-  runtime.log(`Core: ${options.core.join(", ") || "none"}; favorites: ${selected.map(f => f.source).join(", ") || "none"}; hooks: ${options.hooks && options.scope === "global" ? "selected (home settings)" : "skipped"}`);
-  if (options.dryRun) runtime.log("Dry run: no subprocesses or writes. Native plugin commands are conditional on inventory; read-only network discovery may occur.");
-  for (const line of plan.skipped) runtime.log(`Skip ${line}`);
-  for (const step of plan.steps) { runtime.log(`${step.label}: ${step.link ? `${step.link.destination} -> ${step.link.source}` : displayCommand(step.command)}`); for (const path of step.paths) runtime.log(`  path: ${path}`); }
-  runtime.log(`Settings: ${settingsPath(options)}; native plugins retain complete host packaging.`);
-  runtime.log(`Launcher: ${launcherPath({ scope: options.scope, projectRoot: options.projectDir })}`);
-  if (process.env.CLZMJ_SKILLS_VERSION) runtime.log(`Release cache: ${resolve(options.scope === "global" ? resolve(homedir(), ".local/share/clzmj-skills/releases") : resolve(options.projectDir, ".clzmj-skills/releases"), process.env.CLZMJ_SKILLS_VERSION)}`);
-  else runtime.log(`Launcher source: ${coreSource === "clzmj/skills" ? root : coreSource}`);
-  if (options.scope === "global" && selected.some(f => f.type === "plugin")) for (const agent of options.agents) runtime.log(`Native plugin store (${agent}): ${resolve(agent === "codex" ? process.env.CODEX_HOME || resolve(homedir(), ".codex") : process.env.CLAUDE_CONFIG_DIR || resolve(homedir(), ".claude"), "plugins")}`);
-  if (options.hooks && options.scope === "global") {
-    runtime.log(`Hook runtime: ${resolve(homedir(), ".local/share/agent-tooling")} (Rex runtime and Python hook files)`);
-    for (const agent of options.agents) {
-      runtime.log(`Hook settings: ${resolve(homedir(), agent === "codex" ? ".codex/hooks.json" : ".claude/settings.json")}`);
-      runtime.log(`Rex instructions: ${resolve(homedir(), agent === "codex" ? ".codex/AGENTS.md" : ".claude/CLAUDE.md")}`);
+    options.favorites = selected.map(favorite => favorite.source);
+    for (const favorite of selected) if (favorite.type === "skills") {
+      if (options.packSkills[favorite.source]) favorite.skills = options.packSkills[favorite.source];
+      else if (favorite.skills.includes("*")) {
+        const discovered = validateCatalog(await activity(runtime, `Discovering ${favorite.source}`, () => (runtime.discover ?? discoverPack)(favorite.source, runtime.signal)), favorite.source);
+        favorite.skills = discovered.map(skill => skill.name);
+        runtime.log(`${favorite.source}: discovered ${discovered.length} skills`);
+      }
+      options.packSkills[favorite.source] = favorite.skills;
     }
+    const tools = new Set<string>();
+    if (options.core.length || selected.some(favorite => favorite.type === "skills" && favorite.skills.length)) { tools.add("bunx"); tools.add("git"); }
+    if (options.hooks && options.scope === "global") tools.add("uv");
+    if (options.scope === "global" && selected.some(favorite => favorite.type === "plugin")) for (const agent of options.agents) tools.add(cli(agent));
+    const missing = [...tools].filter(tool => !runtime.which(tool));
+    if (missing.length) throw new Error(`Missing required tools: ${missing.join(", ")}`);
+    states = {};
+    if (!options.dryRun && options.scope === "global" && selected.some(favorite => favorite.type === "plugin")) for (const agent of options.agents) {
+      states[agent] = await activity(runtime, `Checking ${agent} native plugins`, async () => parseState(agent,
+        JSON.parse(await runtime.run([cli(agent), "plugin", "list", "--json"], true, options.projectDir)),
+        JSON.parse(await runtime.run([cli(agent), "plugin", "marketplace", "list", "--json"], true, options.projectDir))));
+    }
+    plan = buildPlan(selected, options, states, coreSource, exists);
+    const summary = [
+      `Agents: ${options.agents.join(", ")}`,
+      `Scope: ${options.scope}${options.scope === "project" ? ` at ${options.projectDir}` : " (user home)"}`,
+      `Method: ${options.method}; native plugins retain complete host packaging`,
+      ...(options.method === "symlink" ? [`Shared skill storage: ${resolve(options.scope === "global" ? homedir() : options.projectDir, ".agents/skills")}${options.agents.includes("claude-code") ? "; Claude links to this directory" : ""}`] : []),
+      `Core: ${options.core.join(", ") || "none"}`,
+      ...selected.map(favorite => `Pack: ${favorite.source}${favorite.type === "skills" ? ` · ${favorite.skills.length} skills` : " · native plugin"}`),
+      `Hooks: ${options.hooks && options.scope === "global" ? "selected (home settings)" : "skipped"}`,
+      `Plan: ${plan.steps.length} operations; ${plan.skipped.length} preserved or skipped`,
+      ...plan.skipped.map(line => `Preserved/skipped: ${line}`),
+      `Settings: ${settingsPath(options)}`,
+      `Launcher: ${launcherPath({ scope: options.scope, projectRoot: options.projectDir })}`,
+    ];
+    if (process.env.CLZMJ_SKILLS_VERSION) summary.push(`Release cache: ${resolve(options.scope === "global" ? resolve(homedir(), ".local/share/clzmj-skills/releases") : resolve(options.projectDir, ".clzmj-skills/releases"), process.env.CLZMJ_SKILLS_VERSION)}`);
+    else summary.push(`Launcher source: ${coreSource === "clzmj/skills" ? root : coreSource}`);
+    if (options.hooks && options.scope === "global") {
+      summary.push(`Hook runtime: ${resolve(homedir(), ".local/share/agent-tooling")}`);
+      for (const agent of options.agents) summary.push(`Hook settings: ${resolve(homedir(), agent === "codex" ? ".codex/hooks.json" : ".claude/settings.json")}`, `Rex instructions: ${resolve(homedir(), agent === "codex" ? ".codex/AGENTS.md" : ".claude/CLAUDE.md")}`);
+    }
+    if (!runtime.ui) {
+      runtime.log(`\nInstallation preview: ${options.scope}${options.scope === "project" ? ` at ${options.projectDir}` : " (user home)"}; ${options.method}; agents ${options.agents.join(", ")}`);
+      summary.forEach(runtime.log);
+      if (options.dryRun) runtime.log("Dry run: no subprocesses or writes. Native plugin commands are conditional on inventory; read-only network discovery may occur.");
+      for (const step of plan.steps) { runtime.log(`${step.label}: ${step.link ? `${step.link.destination} -> ${step.link.source}` : displayCommand(step.command)}`); for (const path of step.paths) runtime.log(`  path: ${path}`); }
+    }
+    if (options.dryRun) return;
+    if (!options.yes) {
+      try {
+        if (!await runtime.ui!.review("Review installation", summary)) { await runtime.ui!.finish("Installation cancelled", ["No installation changes made."]); return; }
+      } catch (error) { if (error instanceof TerminalBack) { resume = true; continue; } throw error; }
+    }
+    break;
   }
-  if (options.dryRun) return;
-  if (!options.yes && !/^(y|yes)$/i.test(runtime.ask!("Install this plan? yes or no", "no"))) { runtime.log("Cancelled; no installation changes made."); return; }
-  if (runtime.prepare) { coreSource = await runtime.prepare(options, coreSource); plan = buildPlan(selected, options, states, coreSource, exists); }
+  if (runtime.prepare) { coreSource = await activity(runtime, "Preparing verified release", () => runtime.prepare!(options, coreSource)); plan = buildPlan(selected!, options, states!, coreSource, exists); }
   const scopedSaved = runtime.load?.(settingsPath(options));
   const record: InstallRecord = { version: 1, options, ownedPaths: { ...(scopedSaved?.ownedPaths ?? {}) } };
   let completed = 0, failed = 0;
-  const changed = new Set<string>();
-  for (const step of plan.steps) {
+  const changed = new Set<string>(), errors: string[] = [];
+  for (const step of plan!.steps) {
     const fresh = step.paths.filter(path => !exists(path));
     const previouslyOwned = step.paths.filter(path => record.ownedPaths[path]);
-    runtime.log(step.label);
+    if (!runtime.ui) runtime.log(step.label);
     try {
-      if (step.link) { if (!runtime.link) throw new Error("Native symlink operation unavailable"); runtime.link(step.link.source, step.link.destination); }
-      else runtime.run(step.command, false, options.projectDir);
+      await activity(runtime, step.label, async () => {
+        if (step.link) { if (!runtime.link) throw new Error("Native symlink operation unavailable"); runtime.link(step.link.source, step.link.destination); }
+        else await runtime.run(step.command, false, options.projectDir);
+      }, { completed, total: plan!.steps.length, failed });
       completed++;
       for (const path of step.paths) if (exists(path)) changed.add(path);
       for (const path of [...fresh, ...previouslyOwned]) if (exists(path) && runtime.fingerprint) record.ownedPaths[path] = runtime.fingerprint(path);
     } catch (error) {
+      if (error instanceof TerminalCancelled) { runtime.save?.(settingsPath(options), record); throw error; }
       failed++;
-      runtime.log(`Failed ${step.label}: ${error instanceof Error ? error.message : String(error)}`);
-      if (!step.link) runtime.log(`Retry from ${options.projectDir}: ${displayCommand(step.command)}`);
-      runtime.log(`Installer retry (explicitly updates all saved ordinary selections): ${displayCommand(["bun", resolve(coreSource === "clzmj/skills" ? root : coreSource, "scripts/init.ts"), "--update", "--yes", "--scope", options.scope, ...(options.scope === "project" ? ["--project-dir", options.projectDir] : [])])}`);
-      // Skills CLI can partially create a destination before failing; do not claim ownership of partial output.
+      const details = [`Failed ${step.label}: ${error instanceof Error ? error.message : String(error)}`];
+      if (!step.link) details.push(`Retry from ${options.projectDir}: ${displayCommand(step.command)}`);
+      details.push(`Installer retry (explicitly updates all saved ordinary selections): ${displayCommand(["bun", resolve(coreSource === "clzmj/skills" ? root : coreSource, "scripts/init.ts"), "--update", "--yes", "--scope", options.scope, ...(options.scope === "project" ? ["--project-dir", options.projectDir] : [])])}`);
+      errors.push(...details); if (!runtime.ui) details.forEach(runtime.log);
     }
+    runtime.save?.(settingsPath(options), record);
+    runtime.ui?.progress({ completed, total: plan!.steps.length, failed, label: completed + failed === plan!.steps.length ? "Finished" : "Preparing next operation", elapsedMs: 0 });
   }
   runtime.save?.(settingsPath(options), record);
   if (!failed) await runtime.finish?.(options, coreSource);
-  runtime.log(`\nSummary: ${completed} commands completed; ${plan.skipped.length} skipped; ${failed} failed.`);
-  for (const path of changed) runtime.log(`Changed path: ${path}`);
-  if (options.hooks && options.scope === "global") runtime.log("Hook settings may have changed; review each host's /hooks menu. Uninstall retains shared host hook settings.");
-  if (failed) throw new Error(`${failed} installation command(s) failed; completed installations were preserved. Retry with the same choices.`);
+  const result = [`Summary: ${completed} commands completed; ${plan!.skipped.length} skipped; ${failed} failed.`, ...[...changed].map(path => `Changed path: ${path}`)];
+  if (options.hooks && options.scope === "global") result.push("Hook settings may have changed; review each host's /hooks menu. Uninstall retains shared host hook settings.");
+  if (!runtime.ui) result.forEach(runtime.log);
+  if (failed) throw new Error(`${failed} installation command(s) failed; completed installations were preserved. Retry with the same choices.\n${errors.join("\n")}\n${result.join("\n")}`);
+  if (runtime.ui) await runtime.ui.finish("Installation complete", [
+    result[0],
+    `Agents: ${options.agents.join(", ")}`,
+    `Scope: ${options.scope}${options.scope === "project" ? ` at ${options.projectDir}` : " (user home)"}`,
+    `Method: ${options.method}`,
+    `Core: ${options.core.join(", ") || "none"}`,
+    ...selected!.map(favorite => `Pack: ${favorite.source}${favorite.type === "skills" ? ` · ${favorite.skills.length} skills` : " · native plugin"}`),
+    `Launcher: ${launcherPath({ scope: options.scope, projectRoot: options.projectDir })}`,
+    `Next: ${options.scope === "global" ? "clzmj-skills help" : `${launcherPath({ scope: options.scope, projectRoot: options.projectDir })} help`}`,
+    ...(options.hooks && options.scope === "global" ? ["Review new hooks in each host's /hooks menu."] : []),
+  ]);
 }
 
 export const helpText = `Usage: clzmj-skills [install|update] [options]\n  --agents codex claude-code   Select hosts (detected hosts preselected)\n  --scope global|project       Global default; project uses exact --project-dir\n  --project-dir /absolute/dir  Existing project working directory\n  --method symlink|copy        Ordinary skills; symlink default\n  --core rex python-tooling    Selected core skills, or --core none\n  --core-only                 No favorite packs (default)\n  --all-favorites             All curated packs\n  --favorites owner/repo ...  Select favorite packs\n  --skills owner/repo:a,b      Individual ordinary pack skills\n  --hooks / --no-hooks         Independent global hook choice (default off)\n  --update                    Explicitly reinstall selected ordinary skills\n  --yes                       Accept choices without a terminal\n  --dry-run                   Preview; no subprocesses or writes\n  --help                      Show this help\nProject scope skips unsupported native plugins and hooks. Existing skills and native plugins are preserved by default.`;
 
-export function readTerminalAnswer(fd: number, fallback: string): string {
-  const bytes: number[] = [], byte = Buffer.alloc(1);
+// Drain both pipes concurrently and retain only bounded diagnostics. Child output
+// never writes into the terminal pages, including noisy upstream installers.
+async function boundedOutput(stream: ReadableStream<Uint8Array>, maximum: number): Promise<{ text: string; overflow: boolean }> {
+  const reader = stream.getReader();
+  let bytes = Buffer.alloc(0), overflow = false;
   while (true) {
-    if (readSync(fd, byte, 0, 1, null) === 0) throw new Error("Terminal input ended; installation cancelled. Pass --yes for unattended installation.");
-    if (byte[0] === 10) break;
-    if (byte[0] !== 13) bytes.push(byte[0]);
+    const { value, done } = await reader.read(); if (done) break;
+    if (bytes.length + value.length > maximum) overflow = true;
+    bytes = Buffer.concat([bytes, Buffer.from(value)]).subarray(-maximum);
   }
-  return Buffer.from(bytes).toString("utf8").trim() || fallback;
+  return { text: bytes.toString("utf8").replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, ""), overflow };
 }
-export function openTerminal(): { ask: NonNullable<Runtime["ask"]>; close: () => void } | undefined {
-  let fd: number;
-  try { fd = openSync("/dev/tty", "r+"); } catch { return undefined; }
-  return {
-    ask(question, fallback) {
-      writeSync(fd, `${question}${fallback ? ` [${fallback}]` : ""}: `);
-      return readTerminalAnswer(fd, fallback);
-    },
-    close: () => closeSync(fd),
+
+export async function runSubprocess(command: Command, capture: boolean, cwd?: string, active?: (child?: Bun.Subprocess) => void): Promise<string> {
+  const child = Bun.spawn(command, { cwd, detached: process.platform !== "win32", stdin: "inherit", stdout: "pipe", stderr: "pipe" });
+  active?.(child);
+  try {
+    const [code, stdout, stderr] = await Promise.all([child.exited, boundedOutput(child.stdout, capture ? 2 * 1024 * 1024 : 128 * 1024), boundedOutput(child.stderr, 128 * 1024)]);
+    if (code !== 0) throw new Error(`Command failed (${code}): ${displayCommand(command)}\n${stderr.text || stdout.text}`);
+    if (capture && stdout.overflow) throw new Error(`Inventory output exceeded the 2 MiB limit: ${displayCommand(command)}`);
+    return capture ? stdout.text : "";
+  } finally { active?.(); }
+}
+
+async function terminateProcessGroup(child: Bun.Subprocess): Promise<void> {
+  const send = (signal: NodeJS.Signals) => {
+    try { if (process.platform === "win32") child.kill(signal); else process.kill(-child.pid, signal); }
+    catch (error: any) { if (error.code !== "ESRCH") throw error; }
   };
+  send("SIGTERM");
+  // A descendant may keep the pipes open after the leader exits or ignore TERM.
+  await new Promise(resolve => setTimeout(resolve, 250));
+  send("SIGKILL");
+  await child.exited;
 }
 
 if (import.meta.main) {
-  let terminal: ReturnType<typeof openTerminal>;
+  let terminal: TerminalUI | undefined;
+  let child: Bun.Subprocess | undefined;
+  let work: Promise<string> | undefined;
+  const controller = new AbortController();
+  let cancellation: Promise<void> | undefined, interrupted: NodeJS.Signals | undefined;
+  const cancel = () => cancellation ??= (async () => {
+    controller.abort();
+    const pending = work, current = child;
+    if (current) await terminateProcessGroup(current);
+    if (pending) await pending.catch(() => {});
+  })();
+  const stop = (signal: NodeJS.Signals) => { interrupted = signal; terminal?.close(); void cancel(); };
   try {
     const args = process.argv.slice(2);
     const options = parseOptions(args, detectAgents(name => Bun.which(name)));
     if (options.help) console.log(helpText);
     else {
-      if (!options.yes && !options.dryRun) terminal = openTerminal();
+      if (!options.yes && !options.dryRun) terminal = openTerminalUI({ onSignal: stop });
+      if (!terminal) for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.once(signal, stop);
       await initialize(JSON.parse(readFileSync(resolve(root, "favorites.json"), "utf8")), options, {
-        which: name => Bun.which(name), log: console.log, ask: terminal?.ask,
+        which: name => Bun.which(name), log: message => { if (!terminal) console.log(message); }, ui: terminal,
+        cancel, signal: controller.signal,
         load(path) { if (!existsSync(path)) return undefined; const record = JSON.parse(readFileSync(path, "utf8")); if (record.version !== 1 || !record.options || !record.ownedPaths) throw new Error(`Invalid installer settings: ${path}`); return record; },
         save(path, record) { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, JSON.stringify(record, null, 2) + "\n", { mode: 0o600 }); },
         prepare: (chosen, source) => source === "clzmj/skills" ? source : prepareHostedRelease({ scope: chosen.scope, projectRoot: chosen.projectDir, dryRun: false, source }),
-        finish: async (chosen, source) => { const path = await registerLauncher({ scope: chosen.scope, projectRoot: chosen.projectDir, dryRun: false, source: source === "clzmj/skills" ? root : source }); if (path) console.log(`Launcher: ${path}`); },
+        finish: async (chosen, source) => { const path = await registerLauncher({ scope: chosen.scope, projectRoot: chosen.projectDir, dryRun: false, source: source === "clzmj/skills" ? root : source }); if (path && !terminal) console.log(`Launcher: ${path}`); },
         fingerprint,
         link(source, destination) { mkdirSync(dirname(destination), { recursive: true }); symlinkSync(source, destination); },
-        run(command, capture, cwd) {
-          const result = Bun.spawnSync(command, { cwd, stdout: capture ? "pipe" : "inherit", stderr: "inherit", stdin: "inherit" });
-          if (result.error) throw result.error;
-          if (result.exitCode !== 0) throw new Error(`Command failed (${result.exitCode}): ${displayCommand(command)}`);
-          return capture ? result.stdout.toString() : "";
+        run: async (command, capture, cwd) => {
+          const pending = runSubprocess(command, capture, cwd, current => { child = current; }); work = pending;
+          try { return await pending; } finally { if (work === pending) work = undefined; }
         },
       }, undefined, resolveCoreSource(process.env.CLZMJ_SKILLS_SOURCE));
     }
   } catch (error) {
-    console.error(`Initialization failed: ${error instanceof Error ? error.message : String(error)}`);
-    process.exitCode = 1;
-  } finally { terminal?.close(); }
+    if (interrupted) { await cancellation; process.exitCode = interrupted === "SIGINT" ? 130 : interrupted === "SIGTERM" ? 143 : 129; }
+    else if (error instanceof TerminalCancelled) { terminal?.close(); console.error("Installation cancelled; completed installations were preserved."); process.exitCode = 130; }
+    else {
+      const message = `Initialization failed: ${error instanceof Error ? error.message : String(error)}`;
+      if (terminal) { try { await terminal.finish("Installation failed", message.split("\n")); } catch {} }
+      else console.error(message);
+      process.exitCode = 1;
+    }
+  } finally {
+    if (interrupted) { await cancellation; process.exitCode = interrupted === "SIGINT" ? 130 : interrupted === "SIGTERM" ? 143 : 129; }
+    terminal?.close();
+    for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.off(signal, stop);
+  }
 }
