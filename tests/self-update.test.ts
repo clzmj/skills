@@ -1,6 +1,7 @@
 import { afterAll, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, lstatSync, symlinkSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { buildRelease } from "../scripts/build-release";
 import { extractArchive } from "../distribution/archive";
@@ -90,4 +91,25 @@ test("launcher receipt commit failure restores the previous working launcher", (
   rmSync(receipt); mkdirSync(receipt);
   expect(() => registerLauncher({ ...options, source: "/new/release" })).toThrow();
   expect(readFileSync(launcher, "utf8")).toBe(previous);
+});
+
+test("the unchanged c5 release self-updater can install the latest archive and execute its initializer", async () => {
+  // Frozen public source: this gate remains runnable in shallow CI checkouts.
+  const fixture = JSON.parse(readFileSync(new URL("./fixtures/legacy-c5-release.json", import.meta.url), "utf8"));
+  const legacy = join(temporary, "legacy-c5");
+  for (const [path, source] of Object.entries(fixture.files) as [string, string][]) {
+    expect(createHash("sha256").update(source).digest("hex")).toBe(fixture.sha256[path]);
+    mkdirSync(join(legacy, path, ".."), { recursive: true }); writeFileSync(join(legacy, path), source);
+  }
+  const prior = await import(join(legacy, "scripts/self-update.ts"));
+  const options = location("legacy-upgrade");
+  mkdirSync(join(options.projectRoot, ".clzmj-skills"), { recursive: true });
+  const config = join(options.projectRoot, ".clzmj-skills/install.json"); writeFileSync(config, "saved scope and selections");
+  const source = await prior.selfUpdate({ ...options, source: legacy }, { fetch: runtime().fetch, log: () => {} });
+  expect(readFileSync(config, "utf8")).toBe("saved scope and selections");
+  expect(existsSync(join(source, "scripts/terminal-ui.ts"))).toBe(false);
+  const initializer = Bun.spawnSync([process.execPath, join(source, "scripts/init.ts"), "--help"]);
+  expect(initializer.exitCode).toBe(0); expect(initializer.stdout.toString()).toContain("Usage:");
+  const launcher = Bun.spawnSync([launcherPath(options), "--help"]);
+  expect(launcher.exitCode).toBe(0);
 });

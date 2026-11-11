@@ -28,7 +28,7 @@ export const archiveExtractor = String.raw`async function extractArchive(compres
     offset += 512 + Math.ceil(size / 512) * 512;
   }
   if (bytes.length - offset < 1024 || !bytes.subarray(offset).every(byte => byte === 0)) throw new Error("Invalid archive trailer");
-  for (const required of ["scripts/init.ts", "scripts/self-update.ts", "scripts/terminal-ui.ts", "distribution/archive.ts", "distribution/archive-source.ts", "favorites.json", "skills/rex/SKILL.md", "skills/python-tooling/SKILL.md"]) if (!files.has(required)) throw new Error("Archive missing " + required);
+  for (const required of ["scripts/init.ts", "scripts/self-update.ts", "distribution/archive.ts", "distribution/archive-source.ts", "favorites.json", "skills/rex/SKILL.md", "skills/python-tooling/SKILL.md"]) if (!files.has(required)) throw new Error("Archive missing " + required);
   for (const name of files.keys()) {
     const parts = name.split("/");
     for (let index = 1; index < parts.length; index++) if (files.has(parts.slice(0, index).join("/"))) throw new Error("Conflicting archive paths");

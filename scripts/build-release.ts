@@ -11,12 +11,16 @@ export function buildRelease(version: string, output = resolve(root, "dist/relea
   if (!validVersion(version)) throw new Error("Unsafe release version");
   const inventory = Bun.spawnSync(["git", "ls-files", "-z", "--", "skills/rex", "skills/python-tooling"], { cwd: root });
   if (inventory.exitCode !== 0) throw new Error("Cannot read tracked release files");
-  const paths = ["scripts/init.ts", "scripts/self-update.ts", "scripts/terminal-ui.ts", "distribution/archive.ts", "distribution/archive-source.ts", "favorites.json", "LICENSE", ...inventory.stdout.toString().split("\0").filter(path => path && !path.split("/").some(part => part.startsWith(".") || part.startsWith("test") || part === "__pycache__"))].sort();
+  // Keep the established archive paths readable by already-installed updaters.
+  // The source UI stays separate; its release code lives inside init.ts.
+  const initializer = Bun.spawnSync([process.execPath, "build", "scripts/init.ts", "--target=bun", "--external=./self-update"], { cwd: root });
+  if (initializer.exitCode !== 0) throw new Error("Cannot bundle release initializer: " + initializer.stderr.toString());
+  const paths = ["scripts/init.ts", "scripts/self-update.ts", "distribution/archive.ts", "distribution/archive-source.ts", "favorites.json", "LICENSE", ...inventory.stdout.toString().split("\0").filter(path => path && !path.split("/").some(part => part.startsWith(".") || part.startsWith("test") || part === "__pycache__"))].sort();
   const chunks: Buffer[] = [];
   for (const path of paths) {
     const metadata = lstatSync(resolve(root, path));
     if (Buffer.byteLength(path) > 100 || !metadata.isFile() || metadata.isSymbolicLink()) throw new Error(`Unsupported release file: ${path}`);
-    const contents = readFileSync(resolve(root, path));
+    const contents = path === "scripts/init.ts" ? initializer.stdout : readFileSync(resolve(root, path));
     const header = Buffer.alloc(512);
     header.write(path);
     const octal = (value: number, offset: number, length: number) => header.write(value.toString(8).padStart(length - 1, "0") + "\0", offset, length, "ascii");

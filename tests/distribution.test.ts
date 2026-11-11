@@ -23,13 +23,33 @@ describe("public distribution", () => {
     expect(readFileSync(release.archivePath + ".sha256", "utf8")).toStartWith(release.manifest.sha256);
     const paths = await extractArchive(archive, join(temporary, "extracted"));
     expect(paths).toEqual(release.paths);
+    expect(paths).not.toContain("scripts/terminal-ui.ts");
+    const initializer = readFileSync(join(temporary, "extracted/scripts/init.ts"), "utf8");
+    expect(initializer).toContain("class TerminalUI");
+    expect(initializer).not.toContain('from "./terminal-ui"');
+    expect(initializer).not.toContain("sourceMappingURL");
+    expect(initializer).not.toContain(new URL("../", import.meta.url).pathname);
     expect(statSync(join(temporary, "extracted/skills/python-tooling/scripts/install_hooks.py")).mode & 0o7777).toBe(0o755);
     expect(statSync(join(temporary, "extracted/skills/rex/scripts/install_hooks.py")).mode & 0o7777).toBe(0o755);
     expect(statSync(join(temporary, "extracted/favorites.json")).mode & 0o7777).toBe(0o644);
     expect(paths).toContain("skills/rex/scripts/agents/complex-worker.toml");
     expect(paths.some(path => /test|\.git|runtime|\.state|__pycache__|infra/.test(path))).toBe(false);
-    expect(paths.every(path => path === "scripts/init.ts" || path === "scripts/self-update.ts" || path === "scripts/terminal-ui.ts" || path === "distribution/archive.ts" || path === "distribution/archive-source.ts" || path === "favorites.json" || path === "LICENSE" || path.startsWith("skills/"))).toBe(true);
+    expect(paths.every(path => path === "scripts/init.ts" || path === "scripts/self-update.ts" || path === "distribution/archive.ts" || path === "distribution/archive-source.ts" || path === "favorites.json" || path === "LICENSE" || path.startsWith("skills/"))).toBe(true);
     for (const version of ["", "../escape", "a..b", "/abs", "a/b", "x".repeat(129)]) expect(() => buildRelease(version, temporary)).toThrow("Unsafe release version");
+  });
+
+  test("continues accepting the intermediate separate-UI archive layout", async () => {
+    const raw = gunzipSync(archive);
+    const contents = Buffer.from("// Optional UI module in the intermediate 22-file release.\n");
+    const header = Buffer.from(raw.subarray(0, 512));
+    header.fill(0, 0, 100); header.write("scripts/terminal-ui.ts");
+    header.write(contents.length.toString(8).padStart(11, "0") + "\0", 124, 12, "ascii");
+    header.fill(32, 148, 156);
+    header.write(header.reduce((sum, byte) => sum + byte, 0).toString(8).padStart(6, "0") + "\0 ", 148, 8, "ascii");
+    const withUI = gzipSync(Buffer.concat([raw.subarray(0, -1024), header, contents, Buffer.alloc((512 - contents.length % 512) % 512), Buffer.alloc(1024)]));
+    const paths = await extractArchive(withUI, join(temporary, "intermediate-layout"));
+    expect(paths).toContain("scripts/terminal-ui.ts");
+    expect(paths).toHaveLength(release.paths.length + 1);
   });
 
   test("rejects traversal, symlinks, duplicate entries, corruption and truncation before writes", async () => {

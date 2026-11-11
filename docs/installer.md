@@ -99,6 +99,16 @@ Verified release payloads can remain cached after a later installation failure.
 A failed download, checksum check, or new-command check retains the previous
 launcher.
 
+If an installation from the short-lived `50439c7` release rejects an archive
+during self-update, refresh it once with the current hosted installer:
+
+```sh
+curl -fsSL https://skills.clzmj.dev/install | sh
+```
+
+Choose the same scope and selections. Existing skill files are preserved unless
+you explicitly select an update.
+
 `uninstall` compares owned skill trees against recorded fingerprints. It removes
 unchanged owned skills and its managed launcher/settings. Modified or unverified
 paths stay in place, and settings and launcher remain available for review.
