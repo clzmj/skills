@@ -27,8 +27,8 @@ describe("public distribution", () => {
     expect(statSync(join(temporary, "extracted/skills/rex/scripts/install_hooks.py")).mode & 0o7777).toBe(0o755);
     expect(statSync(join(temporary, "extracted/favorites.json")).mode & 0o7777).toBe(0o644);
     expect(paths).toContain("skills/rex/scripts/agents/complex-worker.toml");
-    expect(paths.some(path => /test|\.git|runtime|\.state|__pycache__|infra|distribution/.test(path))).toBe(false);
-    expect(paths.every(path => path === "scripts/init.ts" || path === "favorites.json" || path === "LICENSE" || path.startsWith("skills/"))).toBe(true);
+    expect(paths.some(path => /test|\.git|runtime|\.state|__pycache__|infra/.test(path))).toBe(false);
+    expect(paths.every(path => path === "scripts/init.ts" || path === "scripts/self-update.ts" || path === "distribution/archive.ts" || path === "distribution/archive-source.ts" || path === "favorites.json" || path === "LICENSE" || path.startsWith("skills/"))).toBe(true);
     for (const version of ["", "../escape", "a..b", "/abs", "a/b", "x".repeat(129)]) expect(() => buildRelease(version, temporary)).toThrow("Unsafe release version");
   });
 
@@ -158,6 +158,16 @@ describe("public distribution", () => {
       const result = Bun.spawnSync([process.execPath, "--preload", preload, "-", ...args], { stdin: Buffer.from(body), env: { ...process.env, HOME: home, TEST_MANIFEST: JSON.stringify(manifest), TEST_ARCHIVE: release.archivePath, TEST_CALL: call } });
       return { home, call, result };
     };
+    for (const args of [["--help"], ["--unknown"], ["--scope", "invalid"], ["--method"], ["--agents", "invalid"]]) {
+      const checked = run("arguments-" + args.join("-"), args);
+      expect(checked.result.exitCode).toBe(args.includes("--help") ? 0 : 1);
+      expect(existsSync(checked.call)).toBe(false);
+      expect(existsSync(join(checked.home, ".local/share/clzmj-skills"))).toBe(false);
+      expect(existsSync(join(checked.home, ".local/bin/clzmj-skills"))).toBe(false);
+    }
+    const alias = run("short-yes-alias", ["--agents", "codex", "-y"]);
+    expect(alias.result.exitCode).toBe(0);
+    expect(JSON.parse(readFileSync(alias.call, "utf8")).command.slice(2)).toEqual(["--agents", "codex", "-y"]);
     const dry = run("dry-home", ["--dry-run", "--agents", "codex"]);
     expect(dry.result.exitCode).toBe(0);
     expect(dry.result.stdout.toString()).toContain("no persistent release");
@@ -169,8 +179,9 @@ describe("public distribution", () => {
     expect(installed.result.stderr.toString()).toBe("");
     expect(installed.result.exitCode).toBe(0);
     const call = JSON.parse(readFileSync(installed.call, "utf8"));
-    expect(call.source).toBe(join(installed.home, ".local/share/clzmj-skills/releases/test-123"));
-    expect(existsSync(join(call.source, "skills/rex/SKILL.md"))).toBe(true);
+    expect(call.source).toContain("clzmj-skills-");
+    expect(existsSync(call.source)).toBe(false);
+    expect(existsSync(join(installed.home, ".local/share/clzmj-skills"))).toBe(false);
     expect(run("installed-home", []).result.exitCode).toBe(0);
     const invalid = run("bad-checksum", [], { ...release.manifest, sha256: "0".repeat(64) });
     expect(invalid.result.exitCode).toBe(1);
@@ -185,7 +196,8 @@ describe("public distribution", () => {
     expect(syntax.exitCode).toBe(0);
     expect(script).toContain('CLZMJ_SKILLS_SOURCE: source');
     expect(script).toContain('createHash("sha256")');
-    expect(script).toContain('.local/share/clzmj-skills/releases');
+    expect(script).toContain('CLZMJ_SKILLS_VERSION: version');
+    expect(script).toContain('openSync("/dev/tty", "r")');
     expect(script).toContain('no persistent release or installation writes');
     expect(script).not.toMatch(/gh auth|GITHUB_TOKEN|CLOUDFLARE_API_TOKEN|git clone/);
   });

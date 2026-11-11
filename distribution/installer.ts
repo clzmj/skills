@@ -17,15 +17,38 @@ CLZMJ_INSTALLER
 }
 
 const bootstrap = String.raw`
-const { mkdtempSync, mkdirSync, rmSync, renameSync, existsSync, readFileSync, writeFileSync, lstatSync } = await import("node:fs");
-const { resolve, join } = await import("node:path");
-const { homedir, tmpdir } = await import("node:os");
+const { mkdtempSync, rmSync } = await import("node:fs");
+const { join } = await import("node:path");
+const { tmpdir } = await import("node:os");
 const { createHash } = await import("node:crypto");
 const origin = "https://skills.clzmj.dev";
 const args = process.argv.slice(2);
 const dryRun = args.includes("--dry-run");
 let temporary;
 try {
+  if (args.includes("--help") || args.includes("-h")) {
+    console.log("clzmj-skills installer: --scope global|project --project-dir PATH --method copy|symlink --agents codex claude-code --core rex python-tooling --favorites SOURCE --skills SOURCE:SKILL --hooks --no-hooks --yes --dry-run --update\nAfter installation: clzmj-skills install|update|self-update|uninstall|help");
+    process.exit(0);
+  }
+  const booleans = new Set(["--core-only", "--all-favorites", "--hooks", "--no-hooks", "--yes", "-y", "--update", "--dry-run"]);
+  const choices = { "--scope": ["global", "project"], "--method": ["copy", "symlink"] };
+  const lists = new Set(["--agents", "--core", "--favorites", "--skills"]);
+  for (let index = 0; index < args.length; index++) {
+    const flag = args[index];
+    if (booleans.has(flag)) continue;
+    if (flag in choices || flag === "--project-dir") {
+      const value = args[++index];
+      if (!value || value.startsWith("--") || (flag in choices && !choices[flag].includes(value)) || (flag === "--project-dir" && !value.startsWith("/"))) throw new Error("Invalid value for " + flag);
+    } else if (lists.has(flag)) {
+      let count = 0;
+      while (args[index + 1] && !args[index + 1].startsWith("-")) {
+        const value = args[++index]; count++;
+        if ((flag === "--agents" && !value.split(",").every(agent => ["codex", "claude-code"].includes(agent))) || (flag === "--core" && !value.split(",").every(skill => ["rex", "python-tooling", "none"].includes(skill)))) throw new Error("Invalid value for " + flag);
+        if (flag === "--skills" && !/^[\w.-]+\/[\w.-]+:[A-Za-z0-9][A-Za-z0-9._-]*(,[A-Za-z0-9][A-Za-z0-9._-]*)*$/.test(value)) throw new Error("Invalid value for --skills");
+      }
+      if (!count) throw new Error("Missing value for " + flag);
+    } else throw new Error("Unknown argument: " + flag);
+  }
   const manifestResponse = await fetch(origin + "/latest.json", { redirect: "error" });
   if (!manifestResponse.ok) throw new Error("Release manifest download failed: " + manifestResponse.status);
   const manifest = await manifestResponse.json();
@@ -39,38 +62,12 @@ try {
   temporary = mkdtempSync(join(tmpdir(), "clzmj-skills-"));
   const extracted = join(temporary, "release");
   await extractArchive(archive, extracted);
-  let source = extracted;
+  const source = extracted;
   if (dryRun) console.log("Bootstrap dry run: downloaded and verified in temporary storage; no persistent release or installation writes.");
-  else {
-    const releases = resolve(homedir(), ".local/share/clzmj-skills/releases");
-    mkdirSync(releases, { recursive: true });
-    source = join(releases, version);
-    if (existsSync(source)) {
-      if (!lstatSync(source).isDirectory() || lstatSync(source).isSymbolicLink() || readFileSync(join(source, ".release-sha256"), "utf8") !== sha256) throw new Error("Existing release directory does not match this release: " + source);
-      // Reuse the persistent path, but verify every packaged file against the fresh archive.
-      const { readdirSync } = await import("node:fs");
-      const verify = directory => {
-        for (const entry of readdirSync(directory, { withFileTypes: true })) {
-          const relative = join(directory, entry.name).slice(extracted.length + 1);
-          const actual = join(source, relative);
-          if (lstatSync(actual).isSymbolicLink()) throw new Error("Unexpected symlink in existing release");
-          if (entry.isDirectory()) verify(join(directory, entry.name));
-          else if (!readFileSync(actual).equals(readFileSync(join(directory, entry.name)))) throw new Error("Existing release file differs: " + relative);
-        }
-      };
-      verify(extracted);
-    } else {
-      writeFileSync(join(extracted, ".release-sha256"), sha256);
-      // Stage on the destination filesystem so rename is atomic even when /tmp is separate.
-      const staging = mkdtempSync(join(releases, ".install-"));
-      try {
-        const { cpSync } = await import("node:fs");
-        cpSync(extracted, join(staging, "release"), { recursive: true, errorOnExist: true });
-        renameSync(join(staging, "release"), source);
-      } finally { rmSync(staging, { recursive: true, force: true }); }
-    }
-  }
-  const result = Bun.spawnSync([process.execPath, join(source, "scripts/init.ts"), ...args], { env: { ...process.env, CLZMJ_SKILLS_SOURCE: source }, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+  // The shell/Bun heredoc consumes stdin; reconnect interactive children to the terminal.
+  let input = "inherit";
+  try { input = (await import("node:fs")).openSync("/dev/tty", "r"); } catch {}
+  const result = Bun.spawnSync([process.execPath, join(source, "scripts/init.ts"), ...args], { env: { ...process.env, CLZMJ_SKILLS_SOURCE: source, CLZMJ_SKILLS_VERSION: version, CLZMJ_SKILLS_SHA256: sha256 }, stdin: input, stdout: "inherit", stderr: "inherit" });
   if (result.error) throw result.error;
   process.exitCode = result.exitCode;
 } catch (error) {

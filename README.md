@@ -9,55 +9,70 @@ Two independent personal skills, plus a bootstrap for favorite upstream packs.
 
 Both are self-contained and installable on their own. Python scripts use uv shebangs and inline PEP 723 metadata; entry points run with `uv run --script`.
 
-## Initialize a machine
-
-Install the public release without cloning the private repository:
+## Install
 
 ```sh
 curl -fsSL https://skills.clzmj.dev/install | sh
 ```
 
-The bootstrap verifies a SHA-256 checksum and validates the archive before writing files. Releases contain only the two skills, initializer, favorites manifest, and license; source history, secrets, Terraform state, infrastructure, and CI files are excluded. Verified releases persist under `~/.local/share/clzmj-skills/releases/VERSION`. Hosted dry runs use temporary storage and remove it afterward. Run the installer again for hosted core-skill updates. Private-repository users can still clone and run `bun run init`.
+The installer guides you through agents, global or project scope, copy or
+symlink installation, skills, favorites, and optional hooks. It shows a preview
+and asks before applying changes. Defaults are global scope, copied core skills,
+detected agents, and no hooks or upstream favorites. A project install keeps its
+files in the selected project and skips global hooks and native plugins.
+
+For unattended installation, use explicit choices and `--yes`:
 
 ```sh
-curl -fsSL https://skills.clzmj.dev/install | sh -s -- --dry-run
-curl -fsSL https://skills.clzmj.dev/install | sh -s -- --agents codex
+curl -fsSL https://skills.clzmj.dev/install | sh -s -- --yes --agents codex --core-only
+curl -fsSL https://skills.clzmj.dev/install | sh -s -- --yes --scope project --project-dir "$PWD" --core-only
+curl -fsSL https://skills.clzmj.dev/install | sh -s -- --dry-run --yes --core-only
 ```
 
-`init` installs both personal skills, registers their independent hooks, and installs the favorites in [favorites.json](favorites.json). Edit that file to change the list.
+`--method copy` is the default; choose `--method symlink` explicitly. Existing
+skills are preserved unless you request an update. Hooks are independently
+optional: `--hooks` enables both the Rex and Python hook integrations,
+independently of the core skills selected;
+`--no-hooks` skips them. Review new hooks in each host's `/hooks` menu. The
+installer never approves hooks or expands tool permissions.
 
-| Favorite | Upstream owner | Installation |
+The bootstrap verifies a SHA-256 checksum and validates archive paths before
+writing its payload. Public releases contain only the two skills, installer
+modules, favorites manifest, and license. Git history, infrastructure, CI files,
+secrets, and Terraform state are excluded. Verified global releases live under
+`~/.local/share/clzmj-skills/releases/VERSION`; project releases stay under
+`.clzmj-skills/releases/VERSION`. See [installer details](docs/installer.md) for
+selection flags, retry behavior, and removal.
+
+| Optional favorite | Upstream owner | Installation |
 | --- | --- | --- |
 | ADHD | [Udit Akhouri](https://github.com/UditAkhourii/adhd) | Skills CLI |
 | Security audit | [Cloudflare](https://github.com/cloudflare/security-audit-skill) | Skills CLI |
 | Elephant & Goldfish | [Google](https://github.com/google/elephant-goldfish-model) | Complete native plugin |
 | Ponytail | [DietrichGebert](https://github.com/DietrichGebert/ponytail) | Complete native plugin |
-| Matt Pocock's skills | [Matt Pocock](https://github.com/mattpocock/skills) | Full skill pack |
+| Matt Pocock's skills | [Matt Pocock](https://github.com/mattpocock/skills) | Select skills from the pack |
 
-EGM and Ponytail need their complete plugin resources and integration. Existing native plugins, disabled states, and pinned versions are preserved; Ponytail's known curated Codex alias also counts as installed. Ordinary skill entries are refreshed from their upstream source. Plannotator is excluded for now.
+Choose favorites interactively or with `--favorites owner/repo`; use
+`--skills owner/repo:name1,name2` to select individual skills. Wildcard packs are
+discovered before selection so you can inspect their available skills. Complete
+native plugins retain their resources and integration. Existing plugins,
+disabled states, pinned versions, and supported curated aliases are preserved.
+Edit [favorites.json](favorites.json) to change the available packs.
 
-Skills CLI commands use `bunx --bun` to run under Bun; the initializer does not require Node. Upstream skills may document Node commands for their own workflows.
-
-Requirements: Bun/bunx, uv, Git, and the selected agent CLIs. Rex needs the installed local Rex CLI. Authentication is handled by your existing Git/agent configuration. Init validates its manifest and prerequisites, reads host inventories before modifying anything, and stops on command failure.
-
-```sh
-bun run init --dry-run
-bun run init --agents codex
-bun run init --no-hooks
-```
-
-The initializer dry run makes no subprocess calls or writes; its native plugin commands are conditional because it does not inspect host state. `--agents` selects Codex and/or Claude Code (both by default). `--no-hooks` skips the two personal hook installers; native plugins retain their own packaged behavior.
-
-Review new or changed hooks in the host's `/hooks` menu, then start/resume a session. Init never approves hooks or expands tool permissions.
+Requirements depend on your choices: Bun/bunx, Git, uv for hooks, and the selected
+agent CLIs for native plugins. Rex workflows also need the installed local Rex
+CLI. Skills CLI runs through `bunx --bun`; upstream skills may document Node
+commands for their own workflows. Git and agent authentication use your existing
+configuration. Source checkouts can run `bun run init` with the same options.
 
 ## Install individual skills
 
 ```sh
-bunx --bun skills add clzmj/skills --skill python-tooling -g -a codex claude-code -y
-bunx --bun skills add clzmj/skills --skill rex -g -a codex claude-code -y
+bunx --bun skills add clzmj/skills --skill python-tooling -g -a codex claude-code --copy -y
+bunx --bun skills add clzmj/skills --skill rex -g -a codex claude-code --copy -y
 ```
 
-For private-repository SSH authentication, use `git@github.com:clzmj/skills.git` as the source. Skills CLI installs the files; each skill registers only its own hooks:
+Skills CLI installs the files; each skill registers only its own hooks:
 
 ```sh
 uv run --script ~/.agents/skills/python-tooling/scripts/install_hooks.py
@@ -72,7 +87,30 @@ Rex jobs and agent views reuse the existing main session, close completed owned 
 
 ## Update and remove
 
-Run `bunx --bun skills update python-tooling rex -g`, then rerun the relevant hook installers. Existing legacy runtime locations remain compatible. Remove only the corresponding owned hook definitions before `bunx --bun skills remove NAME -g -y`. Removing Rex also requires removing its marked instruction blocks; preserve running and unrelated work.
+Global installs provide `~/.local/bin/clzmj-skills`; add `~/.local/bin` to your
+`PATH`. Project installs provide `.clzmj-skills/bin/clzmj-skills`.
+
+```sh
+clzmj-skills update --yes
+clzmj-skills self-update
+clzmj-skills uninstall --dry-run
+clzmj-skills uninstall
+```
+
+`update` reuses saved selections and explicitly updates ordinary skills.
+`self-update` replaces the installer with a verified release; installed skills,
+hooks, native plugins, and saved choices stay as they are. Native plugin versions
+and disabled states remain under the host's control.
+
+Uninstall removes only owned skills whose recorded contents are unchanged,
+plus its managed launcher and settings. Modified paths are preserved for review.
+Hooks, native plugins, and cached releases remain; remove the corresponding
+owned hooks and Rex instruction blocks separately while preserving unrelated
+configuration and running work.
+
+Individual Skills CLI installations can instead use
+`bunx --bun skills update python-tooling rex -g`, followed by their selected hook
+installers. Remove their owned hooks before `bunx --bun skills remove NAME -g -y`.
 
 ## Check
 

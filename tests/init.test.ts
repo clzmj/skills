@@ -1,127 +1,210 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { initialize, parseManifest, parseOptions, parseState, planCommands, resolveCoreSource, type Options } from "../scripts/init";
+import { readFileSync, mkdtempSync, rmSync, mkdirSync, symlinkSync, openSync, closeSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
+import { initialize, parseManifest, parseOptions, parseState, buildPlan, resolveCoreSource, detectAgents, skillDirectory, settingsPath, readTerminalAnswer, type Runtime, type Options, type InstallRecord } from "../scripts/init";
 
 const manifest = JSON.parse(readFileSync(new URL("../favorites.json", import.meta.url), "utf8"));
-const options: Options = { agents: ["codex", "claude-code"], dryRun: false, hooks: true };
+const options = (args: string[] = []) => parseOptions(["--agents", "codex", "claude-code", "--yes", ...args]);
+function mock(existing = new Set<string>()) {
+  const logs: string[] = [], calls: { command: string[]; capture: boolean; cwd?: string }[] = [];
+  const saved: { path: string; record: InstallRecord }[] = [];
+  const runtime: Runtime = {
+    which: () => "/bin/tool", exists: path => existing.has(path), log: line => logs.push(line),
+    discover: async () => [{ name: "tdd", description: "Test first" }, { name: "research", description: "Research primary sources" }],
+    run(command, capture, cwd) {
+      calls.push({ command, capture, cwd });
+      if (capture) return command[0] === "codex" ? JSON.stringify(command.includes("marketplace") ? { marketplaces: [] } : { installed: [] }) : "[]";
+      return "";
+    },
+    save: (path, record) => saved.push({ path, record }), fingerprint: () => "a".repeat(64), link: (_source, destination) => existing.add(destination),
+  };
+  return { logs, calls, runtime, saved, existing };
+}
 
-describe("favorite installation", () => {
-  test("hosted mode uses this extracted release while clone mode keeps GitHub tracking", () => {
+describe("installer choices and plans", () => {
+  test("defaults to detected agents, global copy, core-only and opt-in hooks", () => {
+    const parsed = parseOptions([], ["codex"], "/project");
+    expect(parsed).toMatchObject({ agents: ["codex"], scope: "global", method: "copy", core: ["rex", "python-tooling"], favorites: [], hooks: false, yes: false, projectDir: "/project" });
+    expect(detectAgents(name => name === "claude" ? "/claude" : null, () => false)).toEqual(["claude-code"]);
+    expect(parseOptions(["--agents", "codex", "-y"])).toMatchObject({ agents: ["codex"], yes: true });
+    expect(parseOptions(["--core", "none", "-y"])).toMatchObject({ core: [], yes: true });
+    expect(() => parseOptions(["--agents"])).toThrow();
+    expect(() => parseOptions(["--agents", "other"])).toThrow();
+    expect(() => parseOptions(["--method", "hardlink"])).toThrow();
+    expect(() => parseOptions(["--scope", "project", "--yes"])).toThrow("--project-dir");
+    expect(() => parseOptions(["--project-dir", "relative"])).toThrow("absolute");
+    expect(() => parseOptions(["--wat"])).toThrow();
+  });
+  test("uses verified copy flags, selected hosts and exact project cwd without global options", async () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "skills-project-"));
+    try {
+      const { runtime, calls } = mock();
+      await initialize(manifest, options(["--scope", "project", "--project-dir", dir, "--all-favorites", "--hooks"]), runtime);
+      expect(calls.length).toBe(8); // Four ordinary sources, one batch per selected agent
+      expect(calls.every(call => call.cwd === dir && !call.capture && call.command.includes("--copy") && !call.command.includes("-g") && call.command[1] !== "plugin" && call.command[0] !== "uv")).toBe(true);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  test("symlink method omits --copy, native plugins retain complete host packaging", () => {
+    const chosen = options(["--all-favorites", "--method", "symlink"]);
+    const plan = buildPlan(parseManifest(manifest).filter(f => f.type === "plugin" || !f.skills.includes("*")), chosen, {}, "clzmj/skills", () => false);
+    expect(plan.steps.filter(s => s.kind === "skill").every(s => !s.command.includes("--copy") && s.command.includes("-g"))).toBe(true);
+    expect(plan.steps.map(s => s.command)).toContainEqual(["codex", "plugin", "add", "egm@egm"]);
+    expect(plan.steps.map(s => s.command)).toContainEqual(["claude", "plugin", "install", "ponytail@ponytail"]);
+  });
+  test("retains disabled, pinned and curated-alias native installations even on explicit skill update", () => {
+    const state = parseState("codex", { installed: [{ pluginId: "egm@egm", enabled: false, version: "0.1" }, { pluginId: "engineering-suite-ponytail@openai-curated-remote", enabled: false }] }, { marketplaces: [] });
+    const plan = buildPlan(parseManifest(manifest).filter(f => f.type === "plugin"), options(["--update"]), { codex: state }, "clzmj/skills", () => false);
+    expect(plan.steps.filter(s => s.command[0] === "codex" && s.kind === "plugin")).toEqual([]);
+    expect(plan.skipped.filter(s => s.includes("already-installed"))).toHaveLength(2);
+    expect(() => parseState("codex", {}, {})).toThrow("Unexpected codex");
+  });
+  test("preserves existing skills per host and does not silently overwrite shared symlink canonical paths", () => {
+    const chosen = options();
+    const codexRex = resolve(skillDirectory("codex", chosen), "rex");
+    const plan = buildPlan([], chosen, {}, "clzmj/skills", path => path === codexRex);
+    expect(plan.steps.some(s => s.command.includes("rex") && s.command.includes("claude-code"))).toBe(true);
+    expect(plan.steps.some(s => s.command.includes("rex") && s.command.includes("codex"))).toBe(false);
+    expect(plan.skipped[0]).toContain("already-installed");
+    const linked = buildPlan([], { ...chosen, method: "symlink" }, {}, "clzmj/skills", path => path === codexRex || path === resolve(codexRex, "SKILL.md"));
+    expect(linked.steps.some(step => step.link?.source === codexRex && step.link.destination.endsWith(".claude/skills/rex"))).toBe(true);
+    const updated = buildPlan([], { ...chosen, update: true }, {}, "clzmj/skills", () => true);
+    expect(updated.steps.filter(s => s.kind === "skill")).toHaveLength(2);
+  });
+  test("adding a symlink agent preserves canonical contents and owns only the new link", async () => {
+    const chosen = options(["--agents", "claude-code", "--core", "rex", "--method", "symlink"]);
+    const canonical = resolve(skillDirectory("codex", chosen), "rex");
+    const destination = resolve(skillDirectory("claude-code", chosen), "rex");
+    const fixture = mock(new Set([canonical, resolve(canonical, "SKILL.md")]));
+    await initialize(manifest, chosen, fixture.runtime);
+    expect(fixture.calls).toEqual([]);
+    expect(fixture.existing.has(destination)).toBe(true);
+    expect(fixture.saved[0].record.ownedPaths).toEqual({ [destination]: "a".repeat(64) });
+  });
+  test("preserves broken symlinks by default", () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "skills-broken-"));
+    try {
+      mkdirSync(resolve(dir, ".agents/skills"), { recursive: true });
+      symlinkSync(resolve(dir, "missing"), resolve(dir, ".agents/skills/rex"));
+      const plan = buildPlan([], options(["--scope", "project", "--project-dir", dir]), {}, "clzmj/skills");
+      expect(plan.skipped.some(line => line.includes("rex for codex"))).toBe(true);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  test("independent hook choice can install hooks without ordinary core skills", () => {
+    const plan = buildPlan([], options(["--core", "none", "--hooks"]), {}, "clzmj/skills", () => false);
+    expect(plan.steps).toHaveLength(2);
+    expect(plan.steps.every(s => s.kind === "hook" && s.command[0] === "uv" && s.command[3].includes("install_hooks.py"))).toBe(true);
+  });
+});
+
+describe("safe installer execution", () => {
+  test("dry run expands wildcard into concrete names and never spawns or persists", async () => {
+    const { runtime, calls, logs, saved } = mock();
+    runtime.run = () => { throw new Error("spawned"); };
+    runtime.prepare = () => { throw new Error("prepared release"); };
+    await initialize(manifest, options(["--all-favorites", "--dry-run"]), runtime);
+    expect(calls).toEqual([]); expect(saved).toEqual([]);
+    expect(logs.some(s => s.includes("discovered 2 skills"))).toBe(true);
+    expect(logs.some(s => s.includes("--skill tdd"))).toBe(true);
+    expect(logs.some(s => s.includes("--skill '*'"))).toBe(false);
+    expect(logs.some(s => s.includes("no subprocesses or writes"))).toBe(true);
+  });
+  test("noninteractive execution requires explicit --yes and rejects before discovery or inventories", async () => {
+    const { runtime, calls } = mock();
+    runtime.discover = async () => { throw new Error("discovered"); };
+    await expect(initialize(manifest, parseOptions(["--agents", "codex", "--all-favorites"]), runtime)).rejects.toThrow("No controlling terminal");
+    expect(calls).toEqual([]);
+  });
+  test("interactive preview is default-no and no installation mutations happen before approval", async () => {
+    const { runtime, calls, logs, saved } = mock();
+    const answers = ["codex", "global", "copy", "rex", "none", "no", "no"];
+    runtime.ask = (question, fallback) => { if (question.startsWith("Install this plan")) expect(logs.some(s => s.includes("Installation preview"))).toBe(true); return answers.shift() ?? fallback; };
+    runtime.prepare = () => { throw new Error("mutation before confirmation"); };
+    await initialize(manifest, parseOptions([], ["codex"]), runtime);
+    expect(calls).toEqual([]); expect(saved).toEqual([]);
+    expect(logs.at(-1)).toContain("Cancelled");
+  });
+  test("interactive wildcard selection shows count and accepts individual skills", async () => {
+    const { runtime, calls } = mock();
+    const answers = ["codex", "global", "copy", "none", "mattpocock/skills", "no", "tdd", "yes"];
+    runtime.ask = (_question, fallback) => answers.shift() ?? fallback;
+    await initialize(manifest, parseOptions([], ["codex"]), runtime);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].command).toContain("tdd");
+    expect(calls[0].command).not.toContain("research");
+  });
+  test("reads all native inventories before any writes and reports failed commands with exact retry", async () => {
+    const { runtime, calls, logs } = mock();
+    const run = runtime.run;
+    runtime.run = (command, capture, cwd) => { const output = run(command, capture, cwd); if (!capture) throw new Error("install failed"); return output; };
+    await expect(initialize(manifest, options(["--all-favorites"]), runtime)).rejects.toThrow("installation command(s) failed");
+    expect(calls.slice(0, 4).every(call => call.capture)).toBe(true);
+    expect(logs.some(s => s.startsWith("Retry from "))).toBe(true);
+    expect(logs.some(s => s.includes("failed."))).toBe(true);
+  });
+  test("hosted failure retry uses the durable staged installer path", async () => {
+    const { runtime, logs } = mock();
+    runtime.prepare = () => "/durable/release";
+    runtime.run = () => { throw new Error("failed install"); };
+    await expect(initialize(manifest, options(), runtime, undefined, "/temporary/extraction")).rejects.toThrow("installation command(s) failed");
+    expect(logs.some(line => line.startsWith("Installer retry") && line.includes("/durable/release/scripts/init.ts"))).toBe(true);
+    expect(logs.some(line => line.startsWith("Installer retry") && line.includes("/temporary/extraction"))).toBe(false);
+  });
+  test("validates full manifest, selections and required tools before commands", async () => {
+    const { runtime, calls } = mock();
+    await expect(initialize({ favorites: [...manifest.favorites, { type: "skills", source: "bad", skills: ["ok"] }] }, options(), runtime)).rejects.toThrow("Invalid favorites entry");
+    await expect(initialize(manifest, options(["--favorites", "other/repo"]), runtime)).rejects.toThrow("Unknown favorite");
+    runtime.which = name => name === "uv" ? null : "/tool";
+    await expect(initialize(manifest, options(["--hooks"]), runtime)).rejects.toThrow("Missing required tools: uv");
+    expect(calls).toEqual([]);
+    expect(() => parseManifest({ favorites: [{ type: "skills", source: "a/b", skills: ["*", "foo"] }] })).toThrow();
+  });
+  test("persists only newly created ownership and refreshes only previously owned paths", async () => {
+    const chosen = options(["--agents", "codex", "--core", "rex"]);
+    const { runtime, saved, existing } = mock();
+    const path = resolve(skillDirectory("codex", chosen), "rex");
+    runtime.run = () => { existing.add(path); return ""; };
+    await initialize(manifest, chosen, runtime);
+    expect(saved[0].record.ownedPaths).toEqual({ [path]: "a".repeat(64) });
+    const another = mock(new Set([path]));
+    await initialize(manifest, { ...chosen, update: true }, another.runtime);
+    expect(another.saved[0].record.ownedPaths).toEqual({});
+  });
+  test("explicit update loads saved selections without resetting them to defaults", async () => {
+    const { runtime, calls } = mock();
+    const savedOptions = options(["--agents", "claude-code", "--core", "rex", "--favorites", "UditAkhourii/adhd", "--method", "symlink"]);
+    runtime.load = () => ({ version: 1, options: savedOptions, ownedPaths: {} });
+    await initialize(manifest, parseOptions(["--yes", "--update"], ["codex"]), runtime);
+    expect(calls).toHaveLength(2);
+    expect(calls.every(c => c.command.includes("claude-code") && !c.command.includes("--copy"))).toBe(true);
+    expect(calls.some(c => c.command.includes("adhd"))).toBe(true);
+  });
+  test("saved all-favorites becomes exact selections and narrowing update prunes inherited pack choices", async () => {
+    const first = mock();
+    await initialize(manifest, options(["--all-favorites"]), first.runtime);
+    expect(first.saved[0].record.options.favorites).toEqual(manifest.favorites.map((f: any) => f.source));
+    const second = mock();
+    second.runtime.load = () => first.saved[0].record;
+    await initialize(manifest, parseOptions(["--yes", "--update", "--core-only", "--core", "rex", "--method", "symlink", "--agents", "codex"]), second.runtime);
+    expect(second.calls).toHaveLength(1);
+    expect(second.calls[0].command).not.toContain("--copy");
+    expect(second.saved[0].record.options).toMatchObject({ favorites: [], packSkills: {}, core: ["rex"], agents: ["codex"], method: "symlink" });
+  });
+  test("terminal EOF aborts even when defaults exist", () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "skills-eof-"));
+    try {
+      const path = resolve(dir, "input");
+      writeFileSync(path, ""); const empty = openSync(path, "r");
+      try { expect(() => readTerminalAnswer(empty, "yes")).toThrow("Terminal input ended"); } finally { closeSync(empty); }
+      writeFileSync(path, "\n"); const newline = openSync(path, "r");
+      try { expect(readTerminalAnswer(newline, "no")).toBe("no"); } finally { closeSync(newline); }
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  test("hosted source validation only accepts the current extracted release", () => {
     const release = new URL("../", import.meta.url).pathname.replace(/\/$/, "");
     expect(resolveCoreSource(undefined)).toBe("clzmj/skills");
     expect(resolveCoreSource(release)).toBe(release);
     expect(() => resolveCoreSource("relative")).toThrow("extracted release root");
     expect(() => resolveCoreSource("/tmp")).toThrow("extracted release root");
-    const commands = planCommands(parseManifest(manifest), options, {}, "/agents", release);
-    expect(commands[0][4]).toBe(release);
-    expect(commands.find(command => command[4] === "mattpocock/skills")).toBeDefined();
-    const logs: string[] = [];
-    initialize(manifest, { ...options, dryRun: true }, { which: () => "/bin/tool", log: line => logs.push(line), run: () => { throw new Error("spawned"); } }, "/agents", release);
-    expect(logs.some(line => line.includes(`skills add ${release}`))).toBe(true);
-  });
-  test("plans both local skills, independent uv hook installers, and complete upstream packs", () => {
-    const commands = planCommands(parseManifest(manifest), options, {}, "/repo");
-    expect(commands[0]).toEqual(["bunx", "--bun", "skills", "add", "clzmj/skills", "--skill", "rex", "python-tooling", "-g", "-a", "codex", "claude-code", "-y"]);
-    expect(commands[1]).toEqual(["uv", "run", "--script", "/repo/skills/rex/scripts/install_hooks.py", "--agents", "codex", "claude-code"]);
-    expect(commands[2][3]).toBe("/repo/skills/python-tooling/scripts/install_hooks.py");
-    expect(commands).toContainEqual(["codex", "plugin", "add", "egm@egm"]);
-    expect(commands).toContainEqual(["claude", "plugin", "install", "ponytail@ponytail"]);
-    expect(commands).toContainEqual(["bunx", "--bun", "skills", "add", "mattpocock/skills", "--skill", "*", "-g", "-a", "codex", "claude-code", "-y"]);
-    expect(JSON.stringify(commands)).not.toMatch(/plannotator/i);
-  });
-
-  test("installs Cloudflare security-audit by default and only for selected agents", () => {
-    const favorites = parseManifest(manifest);
-    for (const selected of [options.agents, ["codex"], ["claude-code"]] as Options["agents"][]) {
-      const commands = planCommands(favorites, { ...options, agents: selected }, {});
-      expect(commands.filter(command => command[4] === "cloudflare/security-audit-skill")).toEqual([
-        ["bunx", "--bun", "skills", "add", "cloudflare/security-audit-skill", "--skill", "security-audit", "-g", "-a", ...selected, "-y"],
-      ]);
-    }
-  });
-
-  test("keeps installed disabled plugins and versions untouched, adds only missing marketplaces", () => {
-    const state = parseState("codex", { installed: [{ pluginId: "egm@egm", enabled: false, version: "0.1.0" }] }, { marketplaces: [{ name: "egm" }, { name: "ponytail" }] });
-    const commands = planCommands(parseManifest(manifest), { ...options, agents: ["codex"], hooks: false }, { codex: state });
-    expect(commands.filter(c => c[1] === "plugin")).toEqual([["codex", "plugin", "add", "ponytail@ponytail"]]);
-    expect(planCommands(parseManifest(manifest), { ...options, agents: ["claude-code"], hooks: false }, {
-      "claude-code": parseState("claude-code", [{ id: "ponytail@ponytail", enabled: false }], [{ name: "ponytail" }]),
-    })).not.toContainEqual(["claude", "plugin", "install", "ponytail@ponytail"]);
-  });
-
-  test("dry run never spawns even inventory subprocesses", () => {
-    const logs: string[] = [];
-    initialize(manifest, { ...options, dryRun: true }, {
-      which: () => "/bin/tool", log: line => logs.push(line),
-      run: () => { throw new Error("dry run spawned a process"); },
-    });
-    expect(logs[0]).toContain("no subprocesses or writes");
-    expect(logs.some(line => line.includes("conditional"))).toBe(true);
-  });
-
-  test("keeps an existing curated Ponytail alias without adding its native marketplace", () => {
-    const state = parseState("codex", { installed: [{ pluginId: "engineering-suite-ponytail@openai-curated-remote", enabled: false, version: "2.0.0" }] }, { marketplaces: [] });
-    const commands = planCommands(parseManifest(manifest), { ...options, agents: ["codex"] }, { codex: state });
-    expect(commands).not.toContainEqual(["codex", "plugin", "add", "ponytail@ponytail"]);
-    expect(commands).not.toContainEqual(["codex", "plugin", "marketplace", "add", "DietrichGebert/ponytail"]);
-    expect(commands).toContainEqual(["codex", "plugin", "add", "egm@egm"]);
-    for (const installedAs of [["invalid"], ["name@market@extra"], ["-bad@market"], "name@market", ["x@y", "x@y"]]) {
-      expect(() => parseManifest({ favorites: [{ type: "plugin", source: "owner/repo", marketplace: "market", plugin: "name", installedAs }] })).toThrow("Invalid favorites entry");
-    }
-  });
-
-  test("validates the entire manifest and all prerequisites before any subprocess", () => {
-    let calls = 0;
-    const runtime = { which: () => "/bin/tool", log: () => {}, run: () => { calls++; return ""; } };
-    expect(() => initialize({ favorites: [...manifest.favorites, { type: "skills", source: "bad", skills: ["ok"] }] }, options, runtime)).toThrow("Invalid favorites entry");
-    expect(() => initialize(manifest, options, { ...runtime, which: name => name === "uv" ? null : "/bin/tool" })).toThrow("Missing required tools: uv");
-    expect(calls).toBe(0);
-    expect(() => parseManifest({ favorites: [{ type: "skills", source: "a/b", skills: ["*", "foo"] }] })).toThrow();
-    expect(() => parseManifest({ favorites: [manifest.favorites[0], manifest.favorites[0]] })).toThrow("Duplicate favorite");
-  });
-
-  test("plans all favorites without Node and forces Skills CLI to use Bun", () => {
-    let calls = 0;
-    const logs: string[] = [];
-    expect(() => initialize(manifest, { ...options, dryRun: true }, {
-      which: name => name === "node" ? null : "/bin/tool",
-      log: line => logs.push(line),
-      run: () => { calls++; return ""; },
-    })).not.toThrow();
-    expect(calls).toBe(0);
-    expect(logs.some(line => line.includes("cloudflare/security-audit-skill"))).toBe(true);
-    expect(logs.some(line => line.includes("ponytail@ponytail"))).toBe(true);
-    const commands = planCommands(parseManifest(manifest), options, {});
-    const skillCommands = commands.filter(command => command[0] === "bunx");
-    expect(skillCommands.length).toBeGreaterThan(0);
-    expect(skillCommands.every(command => command.slice(0, 4).join(" ") === "bunx --bun skills add")).toBe(true);
-  });
-
-  test("reads all host inventories before mutations and stops immediately on a command failure", () => {
-    const calls: string[][] = [];
-    const logs: string[] = [];
-    expect(() => initialize(manifest, options, {
-      which: () => "/bin/tool", log: line => logs.push(line),
-      run(command, capture) {
-        calls.push(command);
-        if (!capture) throw new Error("install failed");
-        return command[0] === "codex" ? JSON.stringify(command.includes("marketplace") ? { marketplaces: [] } : { installed: [] }) : "[]";
-      },
-    })).toThrow("install failed");
-    expect(calls).toHaveLength(5);
-    expect(calls.slice(0, 4).every(c => c.at(-1) === "--json")).toBe(true);
-    expect(logs.some(line => line.includes("Initialization completed"))).toBe(false);
-  });
-
-  test("rejects malformed inventory instead of treating it as an empty installation", () => {
-    expect(() => parseState("codex", {}, { marketplaces: [] })).toThrow("Unexpected codex");
-    expect(() => parseState("claude-code", [{ enabled: false }], [])).toThrow("Unexpected claude");
-  });
-
-  test("supports selected hosts and rejects unknown arguments", () => {
-    expect(parseOptions(["--agents", "claude-code", "--no-hooks", "--dry-run"])).toEqual({ agents: ["claude-code"], hooks: false, dryRun: true });
-    expect(() => parseOptions(["--agents"])).toThrow();
-    expect(() => parseOptions(["--agents", "other"])).toThrow();
-    expect(() => parseOptions(["--wat"])).toThrow();
   });
 });

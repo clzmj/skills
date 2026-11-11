@@ -1,9 +1,9 @@
 {
   "favorites": [
-    { "type": "skills", "source": "UditAkhourii/adhd", "skills": ["adhd"] },
-    { "type": "skills", "source": "cloudflare/security-audit-skill", "skills": ["security-audit"] },
-    { "type": "plugin", "source": "google/elephant-goldfish-model", "marketplace": "egm", "plugin": "egm" },
-    { "type": "plugin", "source": "DietrichGebert/ponytail", "marketplace": "ponytail", "plugin": "ponytail", "installedAs": ["engineering-suite-ponytail@openai-curated-remote"] },
-    { "type": "skills", "source": "mattpocock/skills", "skills": ["*"] }
+    { "type": "skills", "source": "UditAkhourii/adhd", "skills": ["adhd"], "description": "Explore an idea through several reasoning perspectives" },
+    { "type": "skills", "source": "cloudflare/security-audit-skill", "skills": ["security-audit"], "description": "Security reviews and vulnerability investigation" },
+    { "type": "plugin", "source": "google/elephant-goldfish-model", "marketplace": "egm", "plugin": "egm", "description": "Complete Elephant and Goldfish design and review workflows" },
+    { "type": "plugin", "source": "DietrichGebert/ponytail", "marketplace": "ponytail", "plugin": "ponytail", "installedAs": ["engineering-suite-ponytail@openai-curated-remote"], "description": "Complete Ponytail workflows for simpler implementations" },
+    { "type": "skills", "source": "mattpocock/skills", "skills": ["*"], "description": "Discover Matt Pocock's engineering skills and choose individual workflows" }
   ]
 }

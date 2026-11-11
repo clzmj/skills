@@ -1,9 +1,40 @@
 # Installer deployment
 
-The repository stays private. The release archive is public through
+The repository is intended for public source distribution after its publication
+checks pass. Repository visibility is a separate operator action; it is not
+changed by deployment. The release archive is public through
 `https://skills.clzmj.dev`; it contains only the installer payload selected by
 `scripts/build-release.ts`. Terraform state, Git history, secrets, and CI files are
 never release inputs.
+
+## Source publication checks
+
+Before changing repository visibility, refresh branches and tags and review all
+reachable history, the current tree, and the release allowlist:
+
+```sh
+git fetch --all --prune
+git ls-remote --heads --tags origin
+python3 scripts/public-readiness.py
+python3 scripts/public-readiness.py --hosted
+```
+
+The read-only script requires Gitleaks, scans all locally reachable history and
+the current unignored source tree, inventories credential/state/artifact paths,
+and prints only finding metadata. The optional `--hosted` pass inventories
+GitHub Actions artifacts/releases and scans available Actions logs in memory;
+it requires authenticated `gh`. Neither pass prints matching values. Review any
+matches before publishing; pattern scanning cannot prove every possible secret
+is absent. Deleted remote refs, dangling objects, hosted logs/artifacts, issue
+content, and repository settings require separate review. A clean release
+archive does not make source history safe to publish.
+
+Keep the production environment restricted to the `main` branch. Enable and
+verify main-branch protection when the repository becomes public if the current
+GitHub plan does not support it while private. Fork PR checks must remain free
+of deployment credentials; maintainers who can change same-repository PR code
+remain inside the CI credential trust boundary. Repository publication does not
+publish Doppler configs, the private R2 bucket, or Terraform state.
 
 ## Environments and secrets
 

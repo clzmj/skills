@@ -21,14 +21,14 @@ export const archiveExtractor = String.raw`async function extractArchive(compres
     const mode = /^[0-7]+$/.test(modeText) ? parseInt(modeText, 8) : -1;
     if (mode !== 0o644 && mode !== 0o755) throw new Error("Unsafe archive mode");
     if ((header[156] !== 0 && header[156] !== 48) || field(header, 157, 100) || field(header, 345, 155)) throw new Error("Archive links and special entries are forbidden");
-    if (!/^(scripts\/init\.ts|favorites\.json|LICENSE|skills\/(rex|python-tooling)\/[A-Za-z0-9_./-]+)$/.test(name) || name.split("/").some(part => !part || part === "." || part === ".." || part.startsWith(".")) || /(^|\/)(test[^/]*|__pycache__)(\/|$)/.test(name) || files.has(name)) throw new Error("Unsafe archive path: " + name);
+    if (!/^(scripts\/(init|self-update)\.ts|distribution\/archive(-source)?\.ts|favorites\.json|LICENSE|skills\/(rex|python-tooling)\/[A-Za-z0-9_./-]+)$/.test(name) || name.split("/").some(part => !part || part === "." || part === ".." || part.startsWith(".")) || /(^|\/)(test[^/]*|__pycache__)(\/|$)/.test(name) || files.has(name)) throw new Error("Unsafe archive path: " + name);
     const end = offset + 512 + size;
     if (!Number.isSafeInteger(size) || end > bytes.length) throw new Error("Truncated archive");
     files.set(name, { contents: bytes.subarray(offset + 512, end), mode });
     offset += 512 + Math.ceil(size / 512) * 512;
   }
   if (bytes.length - offset < 1024 || !bytes.subarray(offset).every(byte => byte === 0)) throw new Error("Invalid archive trailer");
-  for (const required of ["scripts/init.ts", "favorites.json", "skills/rex/SKILL.md", "skills/python-tooling/SKILL.md"]) if (!files.has(required)) throw new Error("Archive missing " + required);
+  for (const required of ["scripts/init.ts", "scripts/self-update.ts", "distribution/archive.ts", "distribution/archive-source.ts", "favorites.json", "skills/rex/SKILL.md", "skills/python-tooling/SKILL.md"]) if (!files.has(required)) throw new Error("Archive missing " + required);
   for (const name of files.keys()) {
     const parts = name.split("/");
     for (let index = 1; index < parts.length; index++) if (files.has(parts.slice(0, index).join("/"))) throw new Error("Conflicting archive paths");
