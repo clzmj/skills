@@ -17,9 +17,12 @@ curl -fsSL https://skills.clzmj.dev/install | sh
 
 The installer guides you through agents, global or project scope, copy or
 symlink installation, skills, favorites, and optional hooks. It shows a preview
-and asks before applying changes. Defaults are global scope, copied core skills,
+and asks before applying changes. Defaults are global scope, symlinked core skills,
 detected agents, and no hooks or upstream favorites. A project install keeps its
-files in the selected project and skips global hooks and native plugins.
+files in the selected project and skips global hooks and native plugins. Symlink
+installation is the default; use `--method copy` for independent copies. Symlink
+sources must remain available. Existing installs keep their saved method when
+updated; changing it requires an explicit `--method` choice.
 
 For unattended installation, use explicit choices and `--yes`:
 
@@ -29,7 +32,7 @@ curl -fsSL https://skills.clzmj.dev/install | sh -s -- --yes --scope project --p
 curl -fsSL https://skills.clzmj.dev/install | sh -s -- --dry-run --yes --core-only
 ```
 
-`--method copy` is the default; choose `--method symlink` explicitly. Existing
+`--method symlink` is the default; choose `--method copy` for copies. Existing
 skills are preserved unless you request an update. Hooks are independently
 optional: `--hooks` enables both the Rex and Python hook integrations,
 independently of the core skills selected;
@@ -68,8 +71,8 @@ configuration. Source checkouts can run `bun run init` with the same options.
 ## Install individual skills
 
 ```sh
-bunx --bun skills add clzmj/skills --skill python-tooling -g -a codex claude-code --copy -y
-bunx --bun skills add clzmj/skills --skill rex -g -a codex claude-code --copy -y
+bunx --bun skills add clzmj/skills --skill python-tooling -g -a codex claude-code -y
+bunx --bun skills add clzmj/skills --skill rex -g -a codex claude-code -y
 ```
 
 Skills CLI installs the files; each skill registers only its own hooks:

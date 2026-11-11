@@ -23,9 +23,9 @@ function mock(existing = new Set<string>()) {
 }
 
 describe("installer choices and plans", () => {
-  test("defaults to detected agents, global copy, core-only and opt-in hooks", () => {
+  test("defaults to detected agents, global symlink, core-only and opt-in hooks", () => {
     const parsed = parseOptions([], ["codex"], "/project");
-    expect(parsed).toMatchObject({ agents: ["codex"], scope: "global", method: "copy", core: ["rex", "python-tooling"], favorites: [], hooks: false, yes: false, projectDir: "/project" });
+    expect(parsed).toMatchObject({ agents: ["codex"], scope: "global", method: "symlink", core: ["rex", "python-tooling"], favorites: [], hooks: false, yes: false, projectDir: "/project" });
     expect(detectAgents(name => name === "claude" ? "/claude" : null, () => false)).toEqual(["claude-code"]);
     expect(parseOptions(["--agents", "codex", "-y"])).toMatchObject({ agents: ["codex"], yes: true });
     expect(parseOptions(["--core", "none", "-y"])).toMatchObject({ core: [], yes: true });
@@ -40,7 +40,7 @@ describe("installer choices and plans", () => {
     const dir = mkdtempSync(resolve(tmpdir(), "skills-project-"));
     try {
       const { runtime, calls } = mock();
-      await initialize(manifest, options(["--scope", "project", "--project-dir", dir, "--all-favorites", "--hooks"]), runtime);
+      await initialize(manifest, options(["--scope", "project", "--project-dir", dir, "--all-favorites", "--hooks", "--method", "copy"]), runtime);
       expect(calls.length).toBe(8); // Four ordinary sources, one batch per selected agent
       expect(calls.every(call => call.cwd === dir && !call.capture && call.command.includes("--copy") && !call.command.includes("-g") && call.command[1] !== "plugin" && call.command[0] !== "uv")).toBe(true);
     } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -60,7 +60,7 @@ describe("installer choices and plans", () => {
     expect(() => parseState("codex", {}, {})).toThrow("Unexpected codex");
   });
   test("preserves existing skills per host and does not silently overwrite shared symlink canonical paths", () => {
-    const chosen = options();
+    const chosen = options(["--method", "copy"]);
     const codexRex = resolve(skillDirectory("codex", chosen), "rex");
     const plan = buildPlan([], chosen, {}, "clzmj/skills", path => path === codexRex);
     expect(plan.steps.some(s => s.command.includes("rex") && s.command.includes("claude-code"))).toBe(true);
@@ -172,11 +172,11 @@ describe("safe installer execution", () => {
   });
   test("explicit update loads saved selections without resetting them to defaults", async () => {
     const { runtime, calls } = mock();
-    const savedOptions = options(["--agents", "claude-code", "--core", "rex", "--favorites", "UditAkhourii/adhd", "--method", "symlink"]);
+    const savedOptions = options(["--agents", "claude-code", "--core", "rex", "--favorites", "UditAkhourii/adhd", "--method", "copy"]);
     runtime.load = () => ({ version: 1, options: savedOptions, ownedPaths: {} });
     await initialize(manifest, parseOptions(["--yes", "--update"], ["codex"]), runtime);
     expect(calls).toHaveLength(2);
-    expect(calls.every(c => c.command.includes("claude-code") && !c.command.includes("--copy"))).toBe(true);
+    expect(calls.every(c => c.command.includes("claude-code") && c.command.includes("--copy"))).toBe(true);
     expect(calls.some(c => c.command.includes("adhd"))).toBe(true);
   });
   test("saved all-favorites becomes exact selections and narrowing update prunes inherited pack choices", async () => {

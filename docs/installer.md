@@ -16,7 +16,7 @@ hosted bootstrap downloads and verifies its temporary payload.
 | --- | --- |
 | `--scope global` | Default; configure the selected agents for this user |
 | `--scope project --project-dir "$PWD"` | Use an existing absolute project directory; skip global hooks and native plugins |
-| `--method copy` / `--method symlink` | Copy by default; symlinks require their source to remain available |
+| `--method symlink` / `--method copy` | Symlink by default; use `copy` for independent copies; symlink sources must remain available |
 | `--agents codex claude-code` | Select one or both agents; detected hosts are preselected |
 | `--core rex python-tooling` / `--core none` | Select personal skills |
 | `--core-only` | Install personal skills without upstream favorites |
