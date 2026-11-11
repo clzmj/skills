@@ -12,6 +12,7 @@ import struct
 import sys
 import termios
 import time
+import unicodedata
 
 ANSI = re.compile(rb'\x1b\[[0-?]*[ -/]*[@-~]')
 def diagnostic(output):
@@ -30,7 +31,7 @@ class Session:
             if mode == 'yes':
                 command += ' -s -- --yes --agents codex --core-only --no-hooks'
             os.execv('/bin/sh', ['sh', '-c', command])
-        self.rows, self.columns = (16, 62) if mode in ('catalog', 'backpressure') else (24, 90)
+        self.rows, self.columns = (16, 40) if mode == 'narrow-aggregate' else (16, 62) if mode in ('catalog', 'backpressure', 'duplicate-other') else (24, 90)
         fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack('HHHH', self.rows, self.columns, 0, 0))
         self.output = b''
         self.mark = 0
@@ -99,6 +100,10 @@ class Session:
         for frame in self.output.split(b'\x1b[H\x1b[2J')[1:]:
             frame = frame.split(b'\x1b[?1049l')[0]
             assert len(frame.split(b'\r\n')) <= self.rows, 'Page scrolls beyond viewport'
+            for line in ANSI.sub(b'', frame).decode(errors='replace').split('\r\n'):
+                cells = sum(0 if unicodedata.combining(char) else 2 if unicodedata.east_asian_width(char) in ('W', 'F') else 1 for char in line)
+                assert cells <= self.columns, 'Page wraps beyond terminal columns'
+        assert b'\x1b[999C' not in self.output and b'\x1b]0;AGGREGATE-INJECTION' not in self.output, 'Catalog data injected terminal controls'
         return code
 
     def close(self):
@@ -115,8 +120,8 @@ def core_pages(session):
     session.page('Agents', b'a' + ENTER)
     session.page('Installation scope')
     session.page('Installation method')
-    session.page('Core skills', b'a' + ENTER)
     session.page('Favorite packs', b'n' + ENTER)
+    session.page('Individual skills', b'a' + ENTER)
     session.page('Hooks', b'n')
     session.expect('Review installation')
 
@@ -161,7 +166,14 @@ def progress(session, cancelled=False, external_signal=False):
     assert b'FIXTURE_CHILD_LOG_SENTINEL' not in re.split(b'Installation needs attention|Installation failed', session.output)[0], 'Child logs destroyed page layout'
 
 
-def catalog_pages(session, cancel_discovery=False, burst=False):
+def apply_filter(session, query):
+    session.send(b'/' + query.encode() + ENTER)
+    frame = session.settle()
+    assert 'Individual skills' in frame and 'Filter:' in frame
+    return frame
+
+
+def catalog_pages(session, cancel_discovery=False, burst=False, opposite_duplicate=False):
     frame = session.expect('Agents')
     assert '2 selected' in frame
     session.send(b'n')
@@ -176,10 +188,8 @@ def catalog_pages(session, cancel_discovery=False, burst=False):
     session.page('Project directory', DOWN + DOWN + ENTER)
     session.page('Project directory', ENTER)
     session.page('Installation method', END + ENTER)
-    session.page('Core skills', b' ')
-    assert '1 selected' in session.expect('Core skills')
-    session.send(b'a' + ENTER)
-    session.page('Favorite packs', END + b' ' + ENTER)
+    # Two ordinary repositories plus our own core become one catalog.
+    session.page('Favorite packs', HOME + DOWN + b' ' + END + b' ' + ENTER)
     if cancel_discovery:
         session.expect('Discovering mattpocock/skills')
         started = time.monotonic()
@@ -187,32 +197,51 @@ def catalog_pages(session, cancel_discovery=False, burst=False):
         session.finish(False)
         assert time.monotonic() - started < 2, 'Discovery cancellation took more than two seconds'
         return
-    session.expect('Individual skills: mattpocock/skills')
+    frame = session.expect('Individual skills')
+    assert '42 selected' in frame
+    raw = session.output.split(b'\x1b[H\x1b[2J')[-1]
+    assert b'\x1b[36mclzmj/skills/' in raw and b'\x1b[1;33mrex' in raw, 'Source and skill need distinct trusted colors'
+    assert b'Core skills' not in session.output and b'Individual skills:' not in session.output
     if burst:
-        # Keep the PTY consumer stopped while hundreds of full-page redraws
-        # fill the output buffer. A nonblocking short-write bug loses footers.
         session.send((DOWN + b'\x1b[A') * 80)
         time.sleep(0.5)
         frame = session.settle()
-        assert 'Individual skills: mattpocock/skills' in frame
-        assert 'Ctrl-C Cancel' in frame, 'Footer was dropped under real PTY backpressure'
+        assert 'Individual skills' in frame and 'Ctrl-C Cancel' in frame, 'Footer was dropped under real PTY backpressure'
     session.send(END)
-    frame = session.expect('lesson-39')
-    assert '39/39' in frame and '39 selected' in frame
+    frame = session.expect('security-audit')
+    assert '42/42' in frame and '42 selected' in frame
     session.send(HOME)
-    session.expect('lesson-01')
+    session.expect('clzmj/skills/')
     session.send(b'\x1b[6~')
-    session.expect('Individual skills: mattpocock/skills')
-    session.send(b'n')
-    assert '0 selected' in session.expect('Individual skills: mattpocock/skills')
-    session.send(b'a' + ENTER)
-    session.expect('Review installation')
-    # Back returns the completed catalog selection, preserving all 39 choices.
+    session.expect('Individual skills')
+    # The query contains n/a characters: editing must not execute shortcuts.
+    assert '42 selected' in apply_filter(session, 'lesson-01')
     session.send(b'\x1b')
-    assert '39 selected' in session.expect('Individual skills: mattpocock/skills')
+    session.expect('Individual skills')
+    frame = apply_filter(session, 'security-audit')
+    assert '42 selected' in frame
+    session.send(b'n')
+    assert '0 selected' in session.expect('Individual skills'), 'None must clear the whole catalog, including hidden rows'
+    session.send(b'a')
+    assert '42 selected' in session.expect('Individual skills'), 'All must select the whole catalog, not just the two matches'
+    # Same-named skills are independently selectable by their qualified IDs.
+    session.send((HOME if opposite_duplicate else END) + b' ')
+    assert '41 selected' in session.expect('Individual skills')
+    session.send(b'\x1b')
+    assert '41 selected' in session.expect('Individual skills'), 'Clearing a filter lost hidden selections'
     session.send(ENTER)
     session.expect('Review installation')
-    session.send(b'y')
+    session.send(b'\x1b')
+    assert '41 selected' in session.expect('Individual skills'), 'Review Back lost choices across sources'
+    # Back from an active filter clears it first, then reaches Favorite packs.
+    assert '41 selected' in apply_filter(session, 'mattpocock/skills/')
+    session.send(b'\x1b')
+    session.expect('Individual skills')
+    session.send(b'\x1b')
+    session.page('Favorite packs')
+    assert '41 selected' in session.expect('Individual skills'), 'Reopening the aggregate page reset approved selections'
+    session.send(ENTER)
+    session.page('Review installation', b'y')
     progress(session)
     session.page('Installation complete')
     session.finish()
@@ -241,8 +270,8 @@ def exercise(shell, directory, mode):
             else:
                 session.send(b'\x04' if mode == 'eof' else b'\x03')
             session.finish(False)
-        elif mode in ('catalog', 'discovery-cancel', 'backpressure'):
-            catalog_pages(session, mode == 'discovery-cancel', mode == 'backpressure')
+        elif mode in ('catalog', 'discovery-cancel', 'backpressure', 'duplicate-other', 'narrow-aggregate'):
+            catalog_pages(session, mode == 'discovery-cancel', mode == 'backpressure', mode == 'duplicate-other')
         elif mode == 'real-project':
             # One-off official Skills CLI proof uses the same raw-key driver;
             # routine tests continue to use only disposable command fixtures.
@@ -250,8 +279,8 @@ def exercise(shell, directory, mode):
             session.page('Installation scope', DOWN + ENTER)
             session.page('Project directory')
             session.page('Installation method')
-            session.page('Core skills', b'a' + ENTER)
             session.page('Favorite packs', b'n' + ENTER)
+            session.page('Individual skills', b'a' + ENTER)
             session.page('Review installation', b'y')
             frame = session.expect('Installation complete', timeout=60)
             assert 'Changed path:' not in frame, 'Interactive success should show a concise result'

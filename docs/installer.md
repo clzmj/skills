@@ -7,25 +7,31 @@ curl -fsSL https://skills.clzmj.dev/install | sh
 ```
 
 Each interactive step replaces the terminal page. Select agents, scope, an
-existing project folder when needed, installation method, core skills, favorite
-packs, individual pack skills, and optional global hooks. Descriptions and owners
-appear alongside the current choice. Project scope skips global hooks and native
-plugins.
+existing project folder when needed, installation method, and favorite packs.
+Then choose ordinary skills on **one Individual skills page** combining the core
+skills and all selected repositories. Rows use qualified `repo/skill` labels,
+with source and skill name in distinct colors, so same-named skills remain
+separate choices. Descriptions appear alongside the highlighted row. Native
+plugins remain complete bundles. Global hooks follow the skill selection;
+project scope skips global hooks and native plugins.
 
 | Key | Action |
 | --- | --- |
 | ↑ / ↓ | Move between choices; scroll review and summary pages |
 | Space | Toggle the highlighted item in a multiple-selection list |
-| `a` / `n` | Select all / clear all in a multiple-selection list |
+| `a` / `n` | Select all / clear all in the entire list, including filtered-out items |
+| `/` | Edit a filter on the same multiple-selection page; Enter ends filter editing |
 | Enter | Continue with the current selection |
-| Esc | Go back to the previous page, retaining completed choices |
+| Esc | Clear an active filter first, then go back, retaining completed choices |
 | `y` / `n` | Accept or decline a yes/no page, including the final review |
 | Ctrl-C | Cancel and restore the terminal |
 
 Home, End, Page Up, and Page Down navigate long lists. The folder browser offers
 the current folder, its parent, and existing child folders; select a folder to
 enter it, then choose **Use this folder**. Long skill catalogs scroll within the
-page. Selecting all applies to the whole list, including items below the screen.
+page. Filtering hides rows without changing their selection. Selecting all or
+none applies to the whole list, including filtered-out rows and items below the
+screen. There are no separate core or per-repository individual-skill questions.
 The final review defaults to No. Before approval, Esc returns to the last choice
 page; `n` leaves without installing anything.
 

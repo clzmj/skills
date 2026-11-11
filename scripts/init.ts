@@ -194,34 +194,45 @@ function validateCatalog(skills: Skill[], source: string): Skill[] {
   return skills;
 }
 
-export async function chooseOptions(options: Options, favorites: Favorite[], runtime: Runtime, resume = false): Promise<Options> {
+export async function chooseOptions(options: Options, favorites: Favorite[], runtime: Runtime, resume = false, catalogs = new Map<string, Skill[]>()): Promise<Options> {
   if (options.yes || options.dryRun) return options;
   const ui = runtime.ui;
   if (!ui) throw new Error("No controlling terminal. Run in a terminal or pass --yes with explicit choices for unattended installation.");
   const chosen = { ...options, packSkills: { ...options.packSkills } };
-  const catalogs = new Map<string, Skill[]>();
   let page = resume ? Number.MAX_SAFE_INTEGER : 0;
   while (true) {
-    const selectedPacks = favorites.filter(favorite => (chosen.favorites === undefined || chosen.favorites.includes(favorite.source)) && favorite.type === "skills");
     const pages: (() => void | Promise<void>)[] = [
       async () => { chosen.agents = await ui.multiselect("Agents", agents.map(name => ({ name, description: name === "codex" ? "OpenAI Codex" : "Claude Code" })), chosen.agents, undefined, 1) as Agent[]; },
       async () => { chosen.scope = await ui.select("Installation scope", [{ name: "global", description: "Install for your user account" }, { name: "project", description: "Install only in one project directory" }], chosen.scope) as Options["scope"]; },
       ...(chosen.scope === "project" ? [async () => { chosen.projectDir = realpathSync(await ui.directory("Project directory", chosen.projectDir)); }] : []),
       async () => { chosen.method = await ui.select("Installation method", [{ name: "symlink", description: "Keep one shared canonical copy per scope" }, { name: "copy", description: "Copy ordinary skills into each selected agent" }], chosen.method, "Native plugins keep their complete host packaging.") as Options["method"]; },
-      async () => { chosen.core = await ui.multiselect("Core skills", coreSkills, chosen.core, "Owner: clzmj"); },
       async () => {
         const available = favorites.filter(favorite => chosen.scope !== "project" || favorite.type === "skills");
         chosen.favorites = await ui.multiselect("Favorite packs", available.map(favorite => ({ name: favorite.source, description: `${favorite.description || (favorite.type === "plugin" ? "Complete native plugin pack" : "Upstream skill pack")} · owner ${favorite.source.split("/")[0]}` })), chosen.favorites ?? available.map(favorite => favorite.source), chosen.scope === "project" ? "Native plugins require global scope and are omitted here. Choose none for core-only." : "Choose none for core-only. Native plugins retain their host packaging.");
       },
-      ...selectedPacks.map(favorite => async () => {
-        if (favorite.type !== "skills") return;
-        let rows = catalogs.get(favorite.source);
-        if (!rows) {
-          rows = favorite.skills.includes("*") ? validateCatalog(await activity(runtime, `Discovering ${favorite.source}`, () => (runtime.discover ?? discoverPack)(favorite.source, runtime.signal)), favorite.source) : favorite.skills.map(name => ({ name, description: `From ${favorite.source}` }));
-          catalogs.set(favorite.source, rows);
+      async () => {
+        const rows = coreSkills.map(skill => ({ name: `clzmj/skills/${skill.name}`, source: "clzmj/skills", skill: skill.name, description: skill.description }));
+        const defaults = rows.filter(row => chosen.core.includes(row.skill)).map(row => row.name);
+        const selectedPacks = favorites.filter(favorite => favorite.type === "skills" && (chosen.favorites === undefined || chosen.favorites.includes(favorite.source)));
+        for (const favorite of selectedPacks) {
+          if (favorite.type !== "skills") continue;
+          let catalog = catalogs.get(favorite.source);
+          if (!catalog) {
+            catalog = favorite.skills.includes("*") ? validateCatalog(await activity(runtime, `Discovering ${favorite.source}`, () => (runtime.discover ?? discoverPack)(favorite.source, runtime.signal)), favorite.source) : favorite.skills.map(name => ({ name, description: `From ${favorite.source}` }));
+            catalogs.set(favorite.source, catalog);
+          }
+          const selected = chosen.packSkills[favorite.source] ?? catalog.map(skill => skill.name);
+          for (const skill of catalog) {
+            const row = { name: `${favorite.source}/${skill.name}`, source: favorite.source, skill: skill.name, description: skill.description };
+            rows.push(row);
+            if (selected.includes(skill.name)) defaults.push(row.name);
+          }
         }
-        chosen.packSkills[favorite.source] = await ui.multiselect(`Individual skills: ${favorite.source}`, rows, chosen.packSkills[favorite.source] ?? rows.map(skill => skill.name), `${rows.length} skills · owner ${favorite.source.split("/")[0]}`);
-      }),
+        const keys = new Set(await ui.multiselect("Individual skills", rows, defaults, `${rows.length} skills · ${new Set(rows.map(row => row.source)).size} sources`));
+        if ([...keys].some(key => !rows.some(row => row.name === key))) throw new Error("Unknown individual skill selection");
+        chosen.core = rows.filter(row => row.source === "clzmj/skills" && keys.has(row.name)).map(row => row.skill);
+        for (const favorite of selectedPacks) chosen.packSkills[favorite.source] = rows.filter(row => row.source === favorite.source && keys.has(row.name)).map(row => row.skill);
+      },
       ...(chosen.scope === "global" ? [async () => { chosen.hooks = await ui.confirm("Hooks", chosen.hooks, ["Install independent Rex and Python hooks in your home settings?", "Hooks are separate from ordinary skill selection."]); }] : []),
     ];
     page = Math.min(page, pages.length - 1);
@@ -230,8 +241,7 @@ export async function chooseOptions(options: Options, favorites: Favorite[], run
     // Recompute pages after scope/pack changes; the next page follows this one.
     page++;
     const extraDirectory = chosen.scope === "project" ? 1 : 0;
-    const ordinaryCount = favorites.filter(favorite => favorite.type === "skills" && (chosen.favorites === undefined || chosen.favorites.includes(favorite.source))).length;
-    const length = 5 + extraDirectory + ordinaryCount + (chosen.scope === "global" ? 1 : 0);
+    const length = 5 + extraDirectory + (chosen.scope === "global" ? 1 : 0);
     if (page >= length) break;
   }
   if (chosen.scope === "project") chosen.hooks = false;
@@ -292,8 +302,12 @@ export async function initialize(manifest: unknown, initial: Options, runtime: R
   let selected: Favorite[];
   let states: Partial<Record<Agent, State>>;
   let resume = false;
+  const catalogs = new Map<string, Skill[]>();
+  let interactiveSelections = { ...options.packSkills };
   while (true) {
-    options = await chooseOptions(options, favorites, runtime, resume);
+    if (resume) options.packSkills = { ...interactiveSelections, ...options.packSkills };
+    options = await chooseOptions(options, favorites, runtime, resume, catalogs);
+    interactiveSelections = { ...interactiveSelections, ...options.packSkills };
     if (!options.agents.length) throw new Error("No agents selected/detected. Pass --agents codex and/or claude-code.");
     if (options.scope === "project" && !statSync(options.projectDir).isDirectory()) throw new Error("Project directory must exist");
     if (options.favorites?.some(source => !favorites.some(favorite => favorite.source === source))) throw new Error("Unknown favorite source; use an owner/repo listed in favorites.json");

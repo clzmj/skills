@@ -2,7 +2,8 @@ import { closeSync, constants, openSync, readSync, readdirSync, realpathSync, st
 import { dirname, resolve } from "node:path";
 import { ReadStream } from "node:tty";
 
-export type Choice = { name: string; description?: string };
+export type Choice = { name: string; description?: string; source?: string; skill?: string };
+type SkillLine = { prefix: string; source: string; skill: string };
 export type Progress = { title?: string; completed: number; total: number; failed: number; label: string; elapsedMs?: number };
 export class TerminalBack extends Error { constructor() { super("Back"); this.name = "TerminalBack"; } }
 export class TerminalCancelled extends Error { constructor() { super("Installation cancelled."); this.name = "TerminalCancelled"; } }
@@ -22,6 +23,16 @@ function clip(text: string, columns: number): string {
   for (const char of clean(text)) { const count = width(char); if (used + count > columns) break; used += count; output += char; }
   return output;
 }
+const cellWidth = (text: string) => [...clean(text)].reduce((total, char) => total + width(char), 0);
+const shorten = (text: string, columns: number) => cellWidth(text) <= columns ? clean(text) : columns > 1 ? clip(text, columns - 1) + "…" : clip("…", columns);
+function qualifiedLine(row: SkillLine, columns: number): string {
+  const prefix = clip(row.prefix, columns), available = Math.max(0, columns - cellWidth(prefix));
+  const skill = shorten(row.skill, Math.max(0, available - 2));
+  const sourceBudget = Math.max(0, available - cellWidth(skill) - 1);
+  const source = sourceBudget ? shorten(row.source, sourceBudget) + "/" : "";
+  // Data is sanitized and measured before these fixed, trusted styling sequences are added.
+  return prefix + "\x1b[36m" + source + "\x1b[1;33m" + skill;
+}
 function wrap(text: string, columns: number): string[] {
   const result: string[] = [];
   for (const paragraph of text.split("\n")) {
@@ -30,6 +41,16 @@ function wrap(text: string, columns: number): string[] {
     if (!paragraph) result.push("");
   }
   return result;
+}
+
+function legendLines(legend: string, columns: number): string[] {
+  const lines: string[] = [];
+  for (const shortcut of legend.split("  ")) {
+    const previous = lines.at(-1);
+    if (previous && cellWidth(previous + "  " + shortcut) <= columns) lines[lines.length - 1] = previous + "  " + shortcut;
+    else lines.push(...wrap(shortcut, columns));
+  }
+  return lines;
 }
 
 /** Owns one alternate screen. Selectors yield between synchronous reads so signals can restore it. */
@@ -74,8 +95,8 @@ export class TerminalUI {
         this.pending = this.pending.slice(1);
         throw new TerminalBack();
       }
-      const key = this.pending[0]!;
-      this.pending = this.pending.slice(1);
+      const key = [...this.pending][0]!;
+      this.pending = this.pending.slice(key.length);
       if (key === "\x03" || key === "\x04") { this.close(); throw new TerminalCancelled(); }
       if (key === "\r" || key === "\n") return "enter";
       return key.toLowerCase();
@@ -88,46 +109,68 @@ export class TerminalUI {
   }
   private dimensions() { const size = this.io.size(); return { columns: Math.max(1, size.columns || 80), rows: Math.max(1, size.rows || 24) }; }
   private bodyRows() { return Math.max(1, this.dimensions().rows - (this.dimensions().columns < 76 ? 11 : 9)); }
-  private draw(title: string, body: string[], footer: string, status = "") {
+  private draw(title: string, body: (string | SkillLine)[], footer: string, status = "") {
     if (this.closed) throw new Error("Terminal UI is closed");
     const { columns, rows } = this.dimensions();
     const lineWidth = Math.max(1, columns - 2);
     const header = ["clzmj / skills", "─".repeat(lineWidth), title, ""];
-    const foot = ["", status, "─".repeat(lineWidth), ...wrap(footer, lineWidth)];
+    const foot = ["", status, "─".repeat(lineWidth), ...legendLines(footer, lineWidth)];
     const bodySpace = Math.max(0, rows - header.length - foot.length - 1);
     const lines = [...header, ...body.slice(0, bodySpace), ...Array(Math.max(0, bodySpace - body.length)).fill(""), ...foot].slice(0, Math.max(1, rows - 1));
     this.io.write(`${ESC}[H${ESC}[2J` + lines.map((line, index) => {
-      const content = clip(line, lineWidth);
-      const color = index === 0 || index === 2 ? "\x1b[1;36m" : line.startsWith("›") ? "\x1b[1;32m" : "";
+      const content = typeof line === "string" ? clip(line, lineWidth) : qualifiedLine(line, lineWidth);
+      const marker = typeof line === "string" ? line : line.prefix;
+      const color = index === 0 || index === 2 ? "\x1b[1;36m" : marker.startsWith("›") ? "\x1b[1;32m" : "";
       return ` ${color}${content}${ESC}[0m`;
     }).join("\r\n"));
   }
   private async choose(title: string, rows: Choice[], defaults: string[], multi: boolean, context = "", minSelected = 0): Promise<string[]> {
     const selected = new Set(defaults.filter(name => rows.some(row => row.name === name)));
-    let cursor = Math.max(0, rows.findIndex(row => selected.has(row.name))), offset = 0, validation = "";
+    let cursor = Math.max(0, rows.findIndex(row => selected.has(row.name))), offset = 0, validation = "", query = "", filtering = false;
     while (true) {
+      const visible = query ? rows.filter(row => `${row.name} ${row.description || ""}`.toLowerCase().includes(query.toLowerCase())) : rows;
+      cursor = Math.max(0, Math.min(cursor, visible.length - 1));
       const capacity = Math.max(1, this.bodyRows() - 4);
       offset = Math.max(0, Math.min(offset, cursor));
       if (cursor >= offset + capacity) offset = cursor - capacity + 1;
-      const body = rows.slice(offset, offset + capacity).map((row, index) => `${index + offset === cursor ? "›" : " "} ${multi ? selected.has(row.name) ? "[x]" : "[ ]" : index + offset === cursor ? "●" : "○"} ${row.name}`);
-      if (!rows.length) body.push("No items available.");
-      const detail = rows[cursor]?.description || "";
+      const body: (string | SkillLine)[] = visible.slice(offset, offset + capacity).map((row, index) => {
+        const prefix = `${index + offset === cursor ? "›" : " "} ${multi ? selected.has(row.name) ? "[x]" : "[ ]" : index + offset === cursor ? "●" : "○"} `;
+        return row.source !== undefined && row.skill !== undefined ? { prefix, source: row.source, skill: row.skill } : prefix + row.name;
+      });
+      if (!visible.length) body.push(query ? "No matching items. / Edit filter; Esc Clear." : "No items available.");
+      const detail = visible[cursor]?.description || "";
       body.push("", ...wrap(detail, Math.max(1, this.dimensions().columns - 4)).slice(0, 2));
-      this.draw(title, body, multi ? "↑↓ Move  Space Toggle  a All  n None  Enter Next  Esc Back  Ctrl-C Cancel" : "↑↓ Move  Enter Select  Esc Back  Ctrl-C Cancel", validation || `${context ? context + " · " : ""}${multi ? `${selected.size} selected · ` : ""}${rows.length ? `${cursor + 1}/${rows.length}` : ""}`);
-      const key = await this.key();
+      const footer = filtering ? "Type to filter  Backspace Delete  Enter Choose  Esc Clear  Ctrl-C Cancel" : multi ? "↑↓ Move  Space Toggle  a All catalog  n None  / Filter  Enter Next  Esc Back  Ctrl-C Cancel" : "↑↓ Move  Enter Select  Esc Back  Ctrl-C Cancel";
+      const counts = `${multi ? `${selected.size} selected · ` : ""}`;
+      const status = filtering ? `${counts}${visible.length}/${rows.length} shown · Filter: ${query}▏` : `${counts}${visible.length ? `${cursor + 1}/${visible.length}` : "0"}${query ? ` of ${rows.length} · Filter: ${query}` : ""}${context ? ` · ${context}` : ""}`;
+      this.draw(title, body, footer, validation || status);
+      let key: string;
+      try { key = await this.key(); }
+      catch (error) {
+        if (error instanceof TerminalBack && (filtering || query)) { filtering = false; query = ""; cursor = offset = 0; continue; }
+        throw error;
+      }
       if (key !== "enter") validation = "";
+      if (filtering) {
+        if (key === "enter") filtering = false;
+        else if (key === "\x7f" || key === "\b") { query = [...query].slice(0, -1).join(""); cursor = offset = 0; }
+        else if ([...key].length === 1 && key >= " " && !/[\x7f-\x9f]/.test(key)) { query += key; cursor = offset = 0; }
+        continue;
+      }
+      if (multi && key === "/") { filtering = true; continue; }
       if (key === "up") cursor = Math.max(0, cursor - 1);
-      if (key === "down") cursor = Math.min(rows.length - 1, cursor + 1);
+      if (key === "down") cursor = Math.min(visible.length - 1, cursor + 1);
       if (key === "home") cursor = 0;
-      if (key === "end") cursor = Math.max(0, rows.length - 1);
+      if (key === "end") cursor = Math.max(0, visible.length - 1);
       if (key === "pageup") cursor = Math.max(0, cursor - capacity);
-      if (key === "pagedown") cursor = Math.min(rows.length - 1, cursor + capacity);
+      if (key === "pagedown") cursor = Math.min(visible.length - 1, cursor + capacity);
+      // All and None always address the complete catalog, including filtered-out selections.
       if (multi && key === "a") for (const row of rows) selected.add(row.name);
       if (multi && key === "n") selected.clear();
-      if (multi && key === " " && rows[cursor]) { const name = rows[cursor]!.name; if (selected.has(name)) selected.delete(name); else selected.add(name); }
+      if (multi && key === " " && visible[cursor]) { const name = visible[cursor]!.name; if (selected.has(name)) selected.delete(name); else selected.add(name); }
       if (key === "enter") {
         if (multi && selected.size < minSelected) { validation = `Select at least ${minSelected} ${minSelected === 1 ? "item" : "items"} to continue. Space toggles; a selects all.`; continue; }
-        return multi ? rows.filter(row => selected.has(row.name)).map(row => row.name) : rows[cursor] ? [rows[cursor]!.name] : [];
+        return multi ? rows.filter(row => selected.has(row.name)).map(row => row.name) : visible[cursor] ? [visible[cursor]!.name] : [];
       }
     }
   }

@@ -111,6 +111,75 @@ describe("terminal pages", () => {
     expect(attempts).toBeGreaterThan(2);
     expect(() => writeTerminalFrame(123, "screen", () => 0)).toThrow("Terminal output ended");
   });
+  test("qualified choices color source and skill separately and preserve duplicate skill identities", async () => {
+    const rows = [
+      { name: "mattpocock/skills/ask-matt", source: "mattpocock/skills", skill: "ask-matt", description: "Choose a workflow" },
+      { name: "other/skills/ask-matt", source: "other/skills", skill: "ask-matt", description: "Another owner" },
+    ];
+    const { ui, output } = harness(["a", "\r"]);
+    expect(await ui.multiselect("Individual skills", rows)).toEqual(rows.map(row => row.name));
+    expect(output[1]).toContain("\x1b[36mmattpocock/skills/\x1b[1;33mask-matt");
+    expect(plain(output[1]!)).toContain("mattpocock/skills/ask-matt");
+    ui.close();
+  });
+  test("styled labels strip untrusted terminal controls before adding trusted colors", async () => {
+    const rows = [{ name: "owner/repo/shared", source: "owner/\x1b[41mrepo", skill: "shared\x1b[?25l", description: "Description\x1b[5m" }];
+    const { ui, output } = harness(["\r"]);
+    await ui.multiselect("Individual skills", rows);
+    const frame = output[1]!;
+    expect(frame).toContain("\x1b[36mowner/repo/\x1b[1;33mshared");
+    expect(frame).not.toContain("\x1b[41m");
+    expect(frame).not.toContain("\x1b[?25l");
+    expect(frame).not.toContain("\x1b[5m");
+    ui.close();
+  });
+  test("narrow qualified rows retain the skill name, checkbox and complete footer", async () => {
+    const { ui, output } = harness(["\r"], 40, 16);
+    await ui.multiselect("Individual skills", [{ name: "very-long-owner-name/very-long-repository/ask-matt", source: "very-long-owner-name/very-long-repository", skill: "ask-matt" }]);
+    const frame = plain(output[1]!);
+    expect(frame).toContain("› [ ]");
+    expect(frame).toContain("ask-matt");
+    expect(frame).toContain("/ Filter");
+    expect(frame).toContain("Ctrl-C Cancel");
+    expect(frame.split("\r\n").every(line => [...line].length <= 39)).toBe(true);
+    ui.close();
+  });
+  const filterRows = [
+    { name: "owner/one/shared", source: "owner/one", skill: "shared" },
+    { name: "owner/two/shared", source: "owner/two", skill: "shared" },
+    { name: "owner/two/another", source: "owner/two", skill: "another" },
+  ];
+  test("filter typing suppresses a/n shortcuts and keeps hidden selections", async () => {
+    const { ui, output } = harness(["/anotherx\x7f\r", " ", "\r"]);
+    expect(await ui.multiselect("Individual skills", filterRows, [filterRows[0]!.name])).toEqual([filterRows[0]!.name, filterRows[2]!.name]);
+    expect(output.some(frame => frame.includes("Filter: another"))).toBe(true);
+    expect(output.some(frame => frame.includes("1/1 of 3"))).toBe(true);
+    ui.close();
+  });
+  test("All and None act on the whole catalog while a filter remains active", async () => {
+    const all = harness(["/shared\r", "a", "\r"]);
+    expect(await all.ui.multiselect("Individual skills", filterRows)).toEqual(filterRows.map(row => row.name));
+    all.ui.close();
+    const none = harness(["a", "/shared\r", "n", "\r"]);
+    expect(await none.ui.multiselect("Individual skills", filterRows)).toEqual([]);
+    none.ui.close();
+  });
+  test("Escape clears a filter before navigating Back", async () => {
+    const { ui, output } = harness(["/missing", "\x1b", null, "\x1b", null]);
+    await expect(ui.multiselect("Individual skills", filterRows)).rejects.toBeInstanceOf(TerminalBack);
+    expect(output.some(frame => frame.includes("No matching items"))).toBe(true);
+    expect(plain(output.at(-1)!)).not.toContain("Filter:");
+    ui.close();
+  });
+  test("narrow selection counts and filter matches precede long context and query", async () => {
+    const { ui, output } = harness(["a", "n", "/this-query-is-much-longer-than-the-entire-status-line\r", "\r"], 40, 16);
+    await ui.multiselect("Individual skills", catalog, [], "45 skills across all selected repositories. Native plugins remain complete bundles.");
+    const frames = output.map(plain);
+    expect(frames.some(frame => frame.includes("45 selected · 1/45"))).toBe(true);
+    expect(frames.some(frame => frame.includes("0 selected · 1/45"))).toBe(true);
+    expect(frames.some(frame => frame.includes("0 selected · 0/45 shown"))).toBe(true);
+    ui.close();
+  });
   test("preflight progress honors its operation title", () => {
     const { ui, output } = harness([]);
     ui.progress({ title: "Discovering owner/pack", label: "Reading available skills", completed: 0, total: 0, failed: 0 });

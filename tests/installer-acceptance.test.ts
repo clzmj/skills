@@ -37,10 +37,10 @@ globalThis.fetch = async (url, options = {}) => {
       }
       return Response.json({ default_branch: "main" });
     }
-    if (target.hostname === "api.github.com" && target.pathname === "/repos/mattpocock/skills/git/trees/main") return Response.json({ tree: Array.from({length:39}, (_,i) => ({type:"blob", path:"skills/lesson-"+String(i+1).padStart(2,"0")+"/SKILL.md"})) });
-    if (target.hostname === "raw.githubusercontent.com" && target.pathname.startsWith("/mattpocock/skills/main/skills/lesson-")) {
+    if (target.hostname === "api.github.com" && target.pathname === "/repos/mattpocock/skills/git/trees/main") return Response.json({ tree: [...Array.from({length:38}, (_,i) => ({type:"blob", path:"skills/lesson-"+String(i+1).padStart(2,"0")+"/SKILL.md"})),{type:"blob",path:"skills/security-audit/SKILL.md"}] });
+    if (target.hostname === "raw.githubusercontent.com" && target.pathname.startsWith("/mattpocock/skills/main/skills/")) {
       const name = target.pathname.split("/").at(-2);
-      return new Response("---\\nname: " + name + "\\ndescription: Fixture catalog skill " + name + "\\n---\\n");
+      return new Response("---\\nname: " + name + "\\ndescription: Fixture catalog skill " + name + (name === "lesson-01" ? " \\u001b[999C\\u001b]0;AGGREGATE-INJECTION\\u0007" : "") + "\\n---\\n");
     }
   }
   throw new Error("Acceptance fixture forbids network: " + url);
@@ -199,17 +199,38 @@ for (const mode of ["accept", "yes"]) test(`hosted pages complete ${mode === "ac
   expect(existsSync(join(f.home, ".local/bin/clzmj-skills"))).toBe(true);
 }, 30_000);
 
-test("small terminal selectors browse folder, Back preserves choices, and all 39 catalog skills install with live progress", () => {
+test("one qualified page spans core and two repositories, preserves Back/filter selections, and maps duplicate names to exact sources", () => {
   const f = runTerminal("catalog", { FIXTURE_CATALOG: "1", FIXTURE_DELAY_MS: "750" });
   const project = join(f.project, "target-project");
   expect(readdirSync(f.home)).toEqual([]);
-  expect(f.commands()).toHaveLength(4);
+  expect(f.commands()).toHaveLength(6);
   expect(f.commands().every(command => command.cwd === project && !command.args.includes("-g") && command.args.includes("--copy"))).toBe(true);
   const record = JSON.parse(readFileSync(join(project, ".clzmj-skills/install.json"), "utf8"));
   expect(record.options.agents).toEqual(["codex", "claude-code"]);
-  expect(record.options.packSkills["mattpocock/skills"]).toHaveLength(39);
+  expect(record.options.packSkills["mattpocock/skills"]).toHaveLength(38);
+  expect(record.options.packSkills["mattpocock/skills"]).not.toContain("security-audit");
+  expect(record.options.packSkills["cloudflare/security-audit-skill"]).toEqual(["security-audit"]);
+  const matt = f.commands().filter(command => command.args[3] === "mattpocock/skills");
+  const cloudflare = f.commands().filter(command => command.args[3] === "cloudflare/security-audit-skill");
+  expect(matt).toHaveLength(2); expect(cloudflare).toHaveLength(2);
+  for (const command of matt) expect(command.args.slice(command.args.indexOf("--skill") + 1, command.args.indexOf("-a"))).toEqual(Array.from({ length: 38 }, (_, i) => "lesson-" + String(i + 1).padStart(2, "0")));
+  for (const command of cloudflare) expect(command.args.slice(command.args.indexOf("--skill") + 1, command.args.indexOf("-a"))).toEqual(["security-audit"]);
   expect(record.options.method).toBe("copy");
   expect(record.options.projectDir).toBe(project);
+}, 30_000);
+
+test("duplicate skill names stay qualified when the opposite repository is selected", () => {
+  const f = runTerminal("duplicate-other", { FIXTURE_CATALOG: "1", FIXTURE_DELAY_MS: "500" });
+  const record = JSON.parse(readFileSync(join(f.project, "target-project/.clzmj-skills/install.json"), "utf8"));
+  expect(record.options.packSkills["cloudflare/security-audit-skill"]).toEqual([]);
+  expect(record.options.packSkills["mattpocock/skills"]).toHaveLength(39);
+  expect(record.options.packSkills["mattpocock/skills"]).toContain("security-audit");
+  expect(f.commands().filter(command => command.args[3] === "cloudflare/security-audit-skill")).toHaveLength(0);
+  for (const command of f.commands().filter(command => command.args[3] === "mattpocock/skills")) expect(command.args.slice(command.args.indexOf("--skill") + 1, command.args.indexOf("-a"))).toEqual([...Array.from({ length: 38 }, (_, i) => "lesson-" + String(i + 1).padStart(2, "0")), "security-audit"]);
+}, 30_000);
+
+test("40-column aggregate page keeps complete skill names, status, and footer", () => {
+  runTerminal("narrow-aggregate", { FIXTURE_CATALOG: "1", FIXTURE_DELAY_MS: "500" });
 }, 30_000);
 
 test("raw key bursts keep complete catalog pages under stalled PTY output consumption", () => {

@@ -142,7 +142,7 @@ describe("safe installer execution", () => {
   });
   test("interactive wildcard selection shows count and accepts individual skills", async () => {
     const { runtime, calls } = mock();
-    runtime.ui = pages({ multiselect(title, _rows, defaults) { if (title === "Core skills") return []; if (title === "Favorite packs") return ["mattpocock/skills"]; if (title.startsWith("Individual skills")) return ["tdd"]; return defaults; }, review: () => true });
+    runtime.ui = pages({ multiselect(title, _rows, defaults) { if (title === "Favorite packs") return ["mattpocock/skills"]; if (title === "Individual skills") return ["mattpocock/skills/tdd"]; return defaults; }, review: () => true });
     await initialize(manifest, parseOptions([], ["codex"]), runtime);
     expect(calls).toHaveLength(1);
     expect(calls[0].command).toContain("tdd");
@@ -216,17 +216,17 @@ describe("safe installer execution", () => {
 
 describe("terminal page flow and asynchronous work", () => {
   test("Back revisits a page with its prior choice and review stays default-no", async () => {
-    const fixture = mock(); let back = false; let coreVisits = 0; let reviews = 0;
+    const fixture = mock(); let skillVisits = 0; let reviews = 0; let hookVisits = 0;
     fixture.runtime.ui = pages({
       multiselect(title, _rows, defaults) {
-        if (title === "Core skills") { coreVisits++; if (coreVisits === 2) expect(defaults).toEqual(["rex"]); return ["rex"]; }
-        if (title === "Favorite packs" && !back) { back = true; throw new TerminalBack(); }
+        if (title === "Individual skills") { skillVisits++; if (skillVisits === 2) expect(defaults).toEqual(["clzmj/skills/rex"]); return ["clzmj/skills/rex"]; }
         return defaults;
       },
+      confirm() { if (++hookVisits === 1) throw new TerminalBack(); return false; },
       review() { reviews++; if (reviews === 1) throw new TerminalBack(); return false; },
     });
     await initialize(manifest, parseOptions([], ["codex"]), fixture.runtime);
-    expect(coreVisits).toBe(2); expect(reviews).toBe(2); expect(fixture.saved).toEqual([]); expect(fixture.calls).toEqual([]);
+    expect(skillVisits).toBe(2); expect(reviews).toBe(2); expect(fixture.saved).toEqual([]); expect(fixture.calls).toEqual([]);
   });
   test("project favorite page excludes global native plugins", async () => {
     const directory = mkdtempSync(resolve(tmpdir(), "skills-pages-project-"));
@@ -271,5 +271,63 @@ describe("terminal page flow and asynchronous work", () => {
       await expect(runSubprocess([process.execPath, "-e", 'process.stdout.write("x".repeat(300000));process.stderr.write("e".repeat(300000));await Bun.sleep(150);process.exit(17)'], false)).rejects.toThrow("Command failed (17)");
       expect(ticks).toBeGreaterThan(2);
     } finally { clearInterval(timer); }
+  });
+});
+
+describe("one aggregate ordinary-skills page", () => {
+  const sources = ["alpha/repo", "beta/repo"];
+  const catalogManifest = { favorites: sources.map(source => ({ type: "skills", source, skills: ["*"] })) };
+  const catalog = async (source: string) => [{ name: "shared", description: "Same skill name, different source" }, { name: source.split("/")[0] + "-only", description: "Source-specific skill" }];
+  test("bundles core and all catalogs on one metadata-qualified page without conflating duplicate names", async () => {
+    const fixture = mock(); const titles: string[] = []; fixture.runtime.discover = catalog;
+    fixture.runtime.ui = pages({
+      multiselect(title, rows, defaults) {
+        titles.push(title);
+        if (title === "Favorite packs") return sources;
+        if (title === "Individual skills") {
+          expect(rows.map(row => row.name)).toEqual(["clzmj/skills/rex", "clzmj/skills/python-tooling", "alpha/repo/shared", "alpha/repo/alpha-only", "beta/repo/shared", "beta/repo/beta-only"]);
+          expect(rows[2]).toMatchObject({ source: "alpha/repo", skill: "shared" });
+          expect(defaults).toHaveLength(6);
+          return ["clzmj/skills/rex", "alpha/repo/shared", "beta/repo/beta-only"];
+        }
+        return defaults;
+      }, review: () => true,
+    });
+    await initialize(catalogManifest, parseOptions([], ["codex"]), fixture.runtime);
+    expect(titles.filter(title => title === "Individual skills")).toHaveLength(1);
+    expect(titles.some(title => title === "Core skills" || title.startsWith("Individual skills:"))).toBe(false);
+    expect(fixture.saved.at(-1)!.record.options).toMatchObject({ core: ["rex"], packSkills: { "alpha/repo": ["shared"], "beta/repo": ["beta-only"] } });
+    expect(fixture.calls.map(call => call.command[4])).toEqual(["clzmj/skills", "alpha/repo", "beta/repo"]);
+  });
+  test("saved update defaults and empty deselections survive aggregate mapping", async () => {
+    const fixture = mock(); fixture.runtime.discover = catalog;
+    const savedOptions = options(["--core", "none", "--favorites", ...sources]);
+    savedOptions.packSkills = { "alpha/repo": [], "beta/repo": ["shared"] };
+    fixture.runtime.load = () => ({ version: 1, options: savedOptions, ownedPaths: {} });
+    fixture.runtime.ui = pages({ multiselect(title, _rows, defaults) { if (title === "Individual skills") { expect(defaults).toEqual(["beta/repo/shared"]); return []; } return defaults; }, review: () => true });
+    await initialize(catalogManifest, parseOptions(["--update"], ["codex"]), fixture.runtime);
+    expect(fixture.calls).toEqual([]);
+    expect(fixture.saved.at(-1)!.record.options).toMatchObject({ core: [], packSkills: { "alpha/repo": [], "beta/repo": [] } });
+  });
+  test("Back and review revisits cache catalogs and preserve a deselected source's empty choices", async () => {
+    const fixture = mock(); const discovered: string[] = []; let favoriteVisits = 0, skillVisits = 0, hookVisits = 0, reviews = 0;
+    fixture.runtime.discover = async source => { discovered.push(source); return catalog(source); };
+    fixture.runtime.ui = pages({
+      multiselect(title, _rows, defaults) {
+        if (title === "Favorite packs") return ++favoriteVisits === 2 ? [sources[0]] : sources;
+        if (title === "Individual skills") {
+          skillVisits++;
+          if ([2, 4].includes(skillVisits)) throw new TerminalBack();
+          if (skillVisits === 5) expect(defaults).toEqual(["clzmj/skills/rex", "alpha/repo/shared"]);
+          return ["clzmj/skills/rex", "alpha/repo/shared"];
+        }
+        return defaults;
+      },
+      confirm() { if ([2, 4].includes(++hookVisits)) throw new TerminalBack(); return false; },
+      review() { if (++reviews < 3) throw new TerminalBack(); return false; },
+    });
+    await initialize(catalogManifest, parseOptions([], ["codex"]), fixture.runtime);
+    expect(discovered).toEqual(sources); expect(skillVisits).toBe(5); expect(favoriteVisits).toBe(3);
+    expect(fixture.saved).toEqual([]); expect(fixture.calls).toEqual([]);
   });
 });

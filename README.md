@@ -15,10 +15,15 @@ Both are self-contained and installable on their own. Python scripts use uv sheb
 curl -fsSL https://skills.clzmj.dev/install | sh
 ```
 
-The installer gives each choice its own terminal page: agents, scope, project
-folder, installation method, skills, favorites, and optional hooks. Use the arrow
+The installer guides you through agents, scope, project folder, installation
+method, and favorite packs, then shows **one Individual skills page** containing
+the core skills and every selected ordinary source. Each row shows `repo/skill`
+(for example, `mattpocock/skills/ask-matt`),
+with the source and skill name in distinct colors. Use the arrow
 keys to move, Space to toggle, `a` to select all, and Enter to continue. Browse
-project folders without typing paths. Esc goes back and keeps completed choices.
+project folders without typing paths. `/` filters the same skill page while
+preserving hidden selections; `a` and `n` affect the whole catalog. Esc clears a
+filter first, then goes back and keeps completed choices.
 The review page accepts `y` to install or `n` to cancel; installation shows a
 progress bar, completed steps, and elapsed time. Defaults are global scope, symlinked core skills,
 detected agents, and no hooks or upstream favorites. A project install keeps its
