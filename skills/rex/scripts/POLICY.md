@@ -5,10 +5,12 @@ Run important local commands in the existing main agent Rex session without wait
 Before the first important command, read the installed Rex skill. Resolve the main session from `REX_SESSION`, a stored provider/session binding, or the unique Rex session with a foreground Codex or Claude process. If resolution is ambiguous, stop and report the ambiguity. Choose a stable, descriptive task slug and run:
 
 ```sh
-uv run --script ~/.local/share/agent-tooling/rex/rex_visible.py run --task project-task --kind test --cwd /absolute/project --command 'cargo test'
+uv run --script ~/.local/share/agent-tooling/rex/rex_visible.py run --task project-task --kind test --quiet --cwd /absolute/project --command 'cargo test'
 ```
 
-Use `--detach` for servers and log followers. Supported kinds are `server`, `logs`, `infra`, `deploy`, `test`, `build`, `install`, and `job`. The runner returns the session, pane, and status-file IDs, streams output for finite commands, and returns their actual exit code. A detached launch confirms creation only: capture the returned pane and check readiness separately. Read a detached job's status file for its exit code when it finishes.
+Use `--detach` for servers and log followers. Supported kinds are `server`, `logs`, `infra`, `deploy`, `test`, `build`, `install`, and `job`. The runner returns the session, pane, and status-file IDs, streams finite command output unless `--quiet`, and returns the actual exit code. A detached launch confirms creation only: capture the returned pane and check readiness separately. Read a detached job's status file for its exit code when it finishes.
+
+Use `--quiet` for routine finite checks: the agent receives receipts while full output stays visible in Rex. Save a log artifact when it must outlive pane retention; read a short result summary or relevant warning/failure excerpt once. Omit `--quiet` when live command output is needed for a decision.
 
 The runner uses the main session's Services/Checks/Operations tabs and splits a related owned tab into at most two panes. Preserve focus and unrelated sessions. Use the Rex CLI directly when the work needs a different layout, an interactive program, explicitly supplied environment values, or another specific existing session. Save IDs and verify the resulting layout. Commands run in the Rex server's local login-shell environment and supplied working directory; pass required environment settings explicitly, avoiding secrets in labels or unnecessary output.
 

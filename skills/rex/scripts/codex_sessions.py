@@ -462,7 +462,7 @@ def handle_hook(data):
         immediate_parent = os.environ.get("CODEX_COORD_PARENT", "") if name == "SessionStart" else ""
         register(team, parent, "coordinator-" + parent, cwd=data.get("cwd"), parent=immediate_parent, transcript=data.get("transcript_path") or "", model=data.get("model", "") if name == "SessionStart" else "", provisional_parent=True)
         if name in ("SessionStart", "UserPromptSubmit"):
-            context = f"Use {POLICY} for natural, proactive delegation, scoped session messaging, and Rex agent visibility. Team: {team}; this session: {parent}. Choose useful handoffs and progress updates without asking the user for routine orchestration decisions."
+            context = f"Follow {POLICY} for scoped coordination in the main Rex session. Team: {team}; this session: {parent}. Use direct tools for deterministic work; for bounded delegation select focused_worker with fork_turns=none and a compact handoff. Select Terra, Sol or Astra by the task routes in the guidance. Read guidance once, then consult changed sections."
             if name == "UserPromptSubmit":
                 state(team, parent, "working")
                 reopen_activity(team)

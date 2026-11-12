@@ -19,6 +19,27 @@ spec.loader.exec_module(rv)
 
 
 class RoutingTests(unittest.TestCase):
+    def test_quiet_receipts_preserve_exit_codes_without_echoing_terminal_output(self):
+        with tempfile.TemporaryDirectory() as folder:
+            terminal = "TEST OUTPUT\n" * 1000
+            for quiet in (False, True):
+                for code in (0, 9):
+                    with self.subTest(quiet=quiet, code=code):
+                        def opened(args, identifier, status):
+                            status.write_text(json.dumps({"exit_code": code}))
+                            return {"session_id": "main", "block_id": "owned", "status_file": str(status)}
+
+                        output = io.StringIO()
+                        args = argparse.Namespace(detach=False, quiet=quiet)
+                        capture = rv.subprocess.CompletedProcess([], 0, terminal, "")
+                        with patch.object(rv, "STATE", Path(folder)), patch.object(rv, "state_dir"), patch.object(rv, "open_job", side_effect=opened), patch.object(rv, "rex_cli", return_value=["rex"]), patch.object(rv.subprocess, "run", return_value=capture), contextlib.redirect_stdout(output):
+                            self.assertEqual(rv.run(args), code)
+                        rendered = output.getvalue()
+                        self.assertEqual("TEST OUTPUT" in rendered, not quiet)
+                        self.assertEqual(json.loads(rendered.splitlines()[-1]), {"exit_code": code})
+                        if quiet:
+                            self.assertLess(len(rendered), 400)
+
     def test_important_commands(self):
         for command, kind in [
             ("cd /tmp && terraform -chdir=infra apply", "infra"),

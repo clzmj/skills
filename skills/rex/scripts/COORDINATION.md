@@ -20,11 +20,22 @@ Stop events with background tasks or scheduled wakeups remain waiting. Teammate 
 
 ## Economical model routing
 
-Choose a model supported by the active provider. The following Codex routing guidance applies to Codex, not Claude. Choose the least costly available model that can reliably finish the assigned task. The installed default for delegated agents is `gpt-6-luna` at low effort. Use Luna low for mechanical edits, exact lookups, small tests, formatting, and clearly specified changes; use Luna medium for bounded coding or investigation needing some reasoning. Use `gpt-6.1-sol` low or medium for ambiguous implementation, cross-module reasoning, complex reviews, or a child coordinator managing substantial dependencies. Increase effort only for a concrete difficulty or verification gap. Escalate to a stronger available model when the evidence warrants it; avoid repeating a failing cheap attempt without new information.
+Choose a supported model by task; these routes apply to Codex, not Claude. Use direct tools for deterministic work:
 
-The human-facing coordinator keeps the model selected for that conversation. It should route inexpensive execution to cheaper workers rather than doing all of it with the root model. Select the model and reasoning effort explicitly when spawning. In runtimes that require `fork_turns="none"` for a model override, provide a compact handoff with the objective, relevant paths, ownership, acceptance criteria, and essential findings. In independent CLI workers, pass `--model MODEL -c model_reasoning_effort=EFFORT`. Preserve native permission inheritance; independent sessions must match the parent's authorized scope and sandbox. The task coordinator profile is available for substantial child coordination, and focused/complex worker profiles provide economical defaults. These are capability roles, not fixed named team members.
+| Model | Starting effort | Work |
+| --- | --- | --- |
+| `gpt-6-luna` | low | Clear edits, lookups, triage, routine tests; medium for bounded reasoning or coordination |
+| `gpt-6.1-terra` | low or medium | Scoped code fixes, visual reasoning, computer use with a defined outcome, concise writing |
+| `gpt-6.1-sol` | low or medium | Ambiguous implementation, cross-module reasoning, complex reviews |
+| `gpt-6-astra` | medium | Exceptional analysis or architecture where unresolved uncertainty or a failed Sol approach justifies the extra usage |
 
-Prefer a direct tool or one worker over creating layers of coordinators for a small task. Send relevant context instead of the full history. Reuse a suitable existing worker for follow-ups, stop redundant work, use targeted verification, and keep summaries concise. Record the selected model and reason with the handoff so the human can inspect the routing in Rex. Current built-in defaults and profiles are a fallback; the coordinator's task-specific judgment chooses when to override them.
+These are task routes, not a mandatory escalation ladder. Start with the lightest route likely to pass the acceptance checks. Escalate for concrete difficulty or a verification gap; carry the evidence forward rather than repeating exploration. Preserve the human-selected root model and native permission scope.
+
+For Luna/low use `focused_worker` with `fork_turns="none"` and a compact handoff. For Terra or Astra use `agent_type="default"` with explicit `model`, `reasoning_effort`, and `fork_turns="none"`; fixed-role profiles can override spawn settings. Increase effort only when evidence warrants it.
+
+Reuse an existing worker only when its model and relevant compact context fit the follow-up; do not keep an expensive old agent merely for convenience. Avoid full-history forks unless the work demonstrably depends on that history. Keep native permission inheritance; independent sessions must match the parent's authorized scope and sandbox. The task coordinator profile is for substantial coordination; focused/complex worker profiles provide economical defaults. These are capability roles, not fixed named team members.
+
+Prefer one worker over coordinator layers for small tasks, and parallelize only independent work with clear ownership. Keep handoffs to the objective, owned paths, constraints, checks, and deliverable. Share large logs as artifacts with short summaries and targeted excerpts. Verify once; repeat only checks that changed or failed. Keep the result concise and record the model and reason for routing in Rex.
 
 ## Working together
 

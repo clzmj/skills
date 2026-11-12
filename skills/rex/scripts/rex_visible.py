@@ -257,22 +257,22 @@ def run(args):
     print(json.dumps(opened), flush=True)
     if args.detach:
         return 0
-    # Stream the terminal to the agent too, while preserving the user's Rex view.
+    # Quiet mode keeps full output in Rex and returns only receipts to the agent.
     last = ""
     while True:
         result = subprocess.run(rex_cli() + ["capture", "-s", opened["session_id"], "-b", opened["block_id"], "--trim", "--unwrap"], capture_output=True, text=True)
         if result.returncode == 0:
             content = result.stdout
-            if content.startswith(last):
+            if not args.quiet and content.startswith(last):
                 print(content[len(last):], end="", flush=True)
-            elif content != last:
+            elif not args.quiet and content != last:
                 print(content, end="", flush=True)
             last = content
         if status.exists():
             completed = json.loads(status.read_text())
             # A job can finish between the capture and the status check.
             final = subprocess.run(rex_cli() + ["capture", "-s", opened["session_id"], "-b", opened["block_id"], "--trim", "--unwrap"], capture_output=True, text=True)
-            if final.returncode == 0 and final.stdout != last:
+            if not args.quiet and final.returncode == 0 and final.stdout != last:
                 print(final.stdout[len(last):] if final.stdout.startswith(last) else final.stdout, end="", flush=True)
             print("\n" + json.dumps(completed), flush=True)
             return completed["exit_code"]
@@ -326,6 +326,7 @@ def main():
     runner.add_argument("--cwd", default=os.getcwd())
     runner.add_argument("--command", required=True)
     runner.add_argument("--detach", action="store_true")
+    runner.add_argument("--quiet", action="store_true", help="Return job receipts only; full command output remains visible in Rex")
     runner.add_argument("--close-after", type=float, default=None, help="Completed pane retention: default 30s success, 120s failure/infra/deploy; -1 pins")
     runner.add_argument("--shell", default=os.environ.get("SHELL", "/bin/zsh"))
     child = sub.add_parser("job")
