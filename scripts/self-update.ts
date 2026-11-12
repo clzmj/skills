@@ -7,12 +7,14 @@ import { extractArchive } from "../distribution/archive";
 
 const origin = "https://skills.clzmj.dev";
 const root = fileURLToPath(new URL("../", import.meta.url));
-type Location = { scope: "global" | "project"; projectRoot: string; dryRun?: boolean; source?: string };
+export const InstallScope = { Global: "global", Project: "project" } as const;
+export type InstallScope = (typeof InstallScope)[keyof typeof InstallScope];
+type Location = { scope: InstallScope; projectRoot: string; dryRun?: boolean; source?: string };
 const shellQuote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
-export function launcherPath(options: Location) { return options.scope === "global" ? join(homedir(), ".local/bin/clzmj-skills") : join(options.projectRoot, ".clzmj-skills/bin/clzmj-skills"); }
+export function launcherPath(options: Location) { return options.scope === InstallScope.Global ? join(homedir(), ".local/bin/clzmj-skills") : join(options.projectRoot, ".clzmj-skills/bin/clzmj-skills"); }
 const pathPresent = (path: string) => { try { lstatSync(path); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; } };
-function launcherReceipt(options: Location) { return options.scope === "global" ? join(homedir(), ".local/share/clzmj-skills/launcher.sha256") : join(options.projectRoot, ".clzmj-skills/launcher.sha256"); }
-function releaseBase(options: Location) { return options.scope === "global" ? join(homedir(), ".local/share/clzmj-skills/releases") : join(options.projectRoot, ".clzmj-skills/releases"); }
+function launcherReceipt(options: Location) { return options.scope === InstallScope.Global ? join(homedir(), ".local/share/clzmj-skills/launcher.sha256") : join(options.projectRoot, ".clzmj-skills/launcher.sha256"); }
+function releaseBase(options: Location) { return options.scope === InstallScope.Global ? join(homedir(), ".local/share/clzmj-skills/releases") : join(options.projectRoot, ".clzmj-skills/releases"); }
 export function fingerprint(path: string): string {
   const hash = createHash("sha256");
   function visit(current: string, relative: string) {
@@ -98,12 +100,12 @@ export async function selfUpdate(options: Location, overrides: Partial<UpdateRun
 }
 export const help = `Usage: clzmj-skills install [OPTIONS]\n       clzmj-skills update [OPTIONS]\n       clzmj-skills self-update [--dry-run]\n       clzmj-skills uninstall [--dry-run]\n       clzmj-skills help\n\ninstall configures selected skills; update reuses saved selections.\nself-update updates only this installer, preserving settings and installed skills.\nGlobal launcher: ~/.local/bin/clzmj-skills (add ~/.local/bin to PATH).\nProject launcher: .clzmj-skills/bin/clzmj-skills.\nRun install --help for installation options.`;
 export function uninstall(options: Location) {
-  const config = options.scope === "global" ? join(homedir(), ".config/clzmj-skills/install.json") : join(options.projectRoot, ".clzmj-skills/install.json");
+  const config = options.scope === InstallScope.Global ? join(homedir(), ".config/clzmj-skills/install.json") : join(options.projectRoot, ".clzmj-skills/install.json");
   if (!existsSync(config)) throw new Error("No saved installation found");
   const state = JSON.parse(readFileSync(config, "utf8"));
-  const base = options.scope === "global" ? homedir() : resolve(options.projectRoot);
+  const base = options.scope === InstallScope.Global ? homedir() : resolve(options.projectRoot);
   const allowed = [".agents/skills", ".codex/skills", ".claude/skills"].map(path => resolve(base, path));
-  if (options.scope === "global" && process.env.CLAUDE_CONFIG_DIR) allowed.push(resolve(process.env.CLAUDE_CONFIG_DIR, "skills"));
+  if (options.scope === InstallScope.Global && process.env.CLAUDE_CONFIG_DIR) allowed.push(resolve(process.env.CLAUDE_CONFIG_DIR, "skills"));
   for (const path of Object.keys(state.ownedPaths ?? {})) {
     const absolute = resolve(path);
     if (absolute !== path || !allowed.some(directory => dirname(absolute) === directory)) throw new Error("Unsafe owned path in installation settings: " + path);
@@ -128,12 +130,12 @@ export function uninstall(options: Location) {
 if (import.meta.main) {
   try {
     const args = process.argv.slice(2), command = args[0] ?? "help";
-    const options: Location = { scope: process.env.CLZMJ_SKILLS_SCOPE === "project" ? "project" : "global", projectRoot: process.env.CLZMJ_SKILLS_PROJECT ?? process.cwd(), source: root, dryRun: args.includes("--dry-run") };
+    const options: Location = { scope: process.env.CLZMJ_SKILLS_SCOPE === InstallScope.Project ? InstallScope.Project : InstallScope.Global, projectRoot: process.env.CLZMJ_SKILLS_PROJECT ?? process.cwd(), source: root, dryRun: args.includes("--dry-run") };
     if (["help", "--help", "-h"].includes(command)) console.log(help);
     else if (["self-update", "uninstall"].includes(command)) { if (args.slice(1).some(arg => arg !== "--dry-run")) throw new Error("Unsupported " + command + " option"); if (command === "self-update") await selfUpdate(options); else uninstall(options); }
     else if (["install", "update"].includes(command)) {
       const forwarded = [...args.slice(1)];
-      if (options.scope === "project" && !forwarded.includes("--scope")) forwarded.push("--scope", "project", "--project-dir", options.projectRoot);
+      if (options.scope === InstallScope.Project && !forwarded.includes("--scope")) forwarded.push("--scope", InstallScope.Project, "--project-dir", options.projectRoot);
       if (command === "update") forwarded.push("--update");
       const result = Bun.spawnSync([process.execPath, join(root, "scripts/init.ts"), ...forwarded], { env: { ...process.env, CLZMJ_SKILLS_SOURCE: root }, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
       if (result.error) throw result.error; process.exitCode = result.exitCode;
