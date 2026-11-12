@@ -1,13 +1,14 @@
 # Skills
 
-Two independent personal skills, plus a bootstrap for favorite upstream packs.
+Three independently installable personal skills, plus a bootstrap for favorite upstream packs. The hosted installer currently bundles the two core skills; `anti-strings` is installed separately with Skills CLI.
 
 | Skill | Purpose |
 | --- | --- |
 | `python-tooling` | uv for all Python execution, standalone scripts, dependencies, Ruff, and ty |
 | `rex` | Rex CLI use, visible jobs, agent coordination, and automatic pane cleanup |
+| `anti-strings` | Find repeated literals and review shared domain values for type-safe reuse |
 
-Both are self-contained and installable on their own. Python scripts use uv shebangs and inline PEP 723 metadata; entry points run with `uv run --script`.
+All three are self-contained and installable on their own. Python scripts use uv shebangs and inline PEP 723 metadata; entry points run with `uv run --script`.
 
 ## Install
 
@@ -50,7 +51,7 @@ independently of the core skills selected;
 installer never approves hooks or expands tool permissions.
 
 The bootstrap verifies a SHA-256 checksum and validates archive paths before
-writing its payload. Public releases contain only the two skills, installer
+writing its payload. Hosted public release archives contain only the two core skills, installer
 modules, favorites manifest, and license. Git history, infrastructure, CI files,
 secrets, and Terraform state are excluded. Verified global releases live under
 `~/.local/share/clzmj-skills/releases/VERSION`; project releases stay under
@@ -83,9 +84,10 @@ configuration. Source checkouts can run `bun run init` with the same options.
 ```sh
 bunx --bun skills add clzmj/skills --skill python-tooling -g -a codex claude-code -y
 bunx --bun skills add clzmj/skills --skill rex -g -a codex claude-code -y
+bunx --bun skills add clzmj/skills --skill anti-strings -g -a codex claude-code -y
 ```
 
-Skills CLI installs the files; each skill registers only its own hooks:
+Skills CLI installs the files. Only Rex and Python tooling provide hook installers:
 
 ```sh
 uv run --script ~/.agents/skills/python-tooling/scripts/install_hooks.py
