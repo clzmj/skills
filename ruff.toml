@@ -1,0 +1,9 @@
+target-version = "py311"
+
+[lint]
+select = ["E4", "E7", "E9", "F"]
+
+# Preserve the existing compact layout instead of reformatting unrelated code.
+[lint.per-file-ignores]
+"skills/anti-strings/scripts/scan.py" = ["E701", "E702"]
+"tests/test_anti_strings.py" = ["E701", "E702"]

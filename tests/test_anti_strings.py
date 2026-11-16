@@ -3,9 +3,9 @@
 # requires-python = ">=3.11"
 # dependencies = []
 # ///
-"""Black-box scanner tests; dependency pins belong only to the standalone tool."""
+"""Black-box scanner tests; keep standalone and development parser pins aligned."""
+
 import json
-import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -37,6 +37,73 @@ class ScannerTests(unittest.TestCase):
     def finding(self, report, value):
         return next(item for item in report["findings"] if item["value"] == value)
 
+    def test_scanner_source_has_no_findings_and_is_fully_parsed(self):
+        self.write("scanner.py", SCANNER.read_text())
+        report = self.run_scan()
+        self.assertEqual(report["findings"], [])
+        coverage = report["coverage"]
+        for category in ("excluded", "unsupported", "parse_errors"):
+            self.assertEqual(coverage[category], [])
+        self.assertEqual(len(coverage["scanned"]), 1)
+        entry = coverage["scanned"][0]
+        self.assertEqual(entry["path"], "scanner.py")
+        self.assertEqual(entry["language"], "python")
+        self.assertFalse(entry["test"])
+        self.assertGreater(entry["literals"], 0)
+        self.assertEqual(set(entry), {"path", "language", "test", "literals"})
+
+    def test_quiet_calls_preserve_indexed_keys_but_skip_display_text(self):
+        self.write(
+            "state.py",
+            'print(row["state"])\nlog.info(row["state"])\nprint(row["state"])\n'
+            + 'print("display text")\n' * 3,
+        )
+        self.write(
+            "state.js",
+            'console.log(row["state"]); logger.info(row["state"]); '
+            'console.warn(row["state"]); console.log("display text");'
+            'console.log("display text"); console.log("display text");',
+        )
+        report = self.run_scan()
+        indexed = [item for item in report["findings"]
+                   if item["kind"] == "repeated_string_key"]
+        self.assertEqual({item["index_evidence"]["path"] for item in indexed},
+                         {"state.py", "state.js"})
+        self.assertTrue(all(item["counts"]["occurrences"] == 3 for item in indexed))
+        self.assertNotIn("display text", {item["value"] for item in report["findings"]})
+
+    def test_sql_numeric_literals_do_not_count_as_skipped_strings(self):
+        self.write("state.sql", "SELECT 1, 2.5, -3, TRUE, NULL, 'queued', 'queued', 'queued';")
+        report = self.run_scan()
+        self.assertEqual(report["coverage"]["parse_errors"], [])
+        self.assertEqual(report["coverage"]["literal_skips"], {})
+        self.assertEqual(self.finding(report, "queued")["counts"]["occurrences"], 3)
+
+    def test_kotlin_when_branches_parse_and_extract_strings(self):
+        fixtures = {
+            "enum.kt": (
+                'enum class State { QUEUED, RUNNING, DONE }\n'
+                'fun label(state: State): String = when (state) {\n'
+                '    State.QUEUED -> "queued"\n'
+                '    State.RUNNING -> "queued"\n'
+                '    State.DONE -> "queued"\n'
+                '}\n'
+            ),
+            "compact.kt": 'fun next(s: String) = when (s) { "queued" -> "running"; "running" -> "done"; else -> "queued" }',
+            "multiline.kt": 'fun next(s: String) = when (s) {\n "queued" -> "running"\n "running" -> "done"\n else -> "queued"\n}',
+            "subject.kt": 'fun next(s: String) = when (val state = s) { "queued" -> "running"; else -> "queued" }',
+            "condition.kt": 'fun next(s: String) = when { s == "queued" -> "running"; else -> "queued" }',
+        }
+        for path, source in fixtures.items():
+            self.write(path, source)
+        report = self.run_scan()
+        coverage = report["coverage"]
+        self.assertEqual(coverage["parse_errors"], [])
+        self.assertEqual(coverage["unsupported"], [])
+        self.assertEqual({item["path"] for item in coverage["scanned"]}, set(fixtures))
+        self.assertTrue(all(item["language"] == "kotlin" for item in coverage["scanned"]))
+        self.assertEqual(self.finding(report, "queued")["counts"]["occurrences"], 11)
+
     def test_named_language_grammars_normalize_escapes_raw_and_static_templates(self):
         fixtures = {
             "state.py": 'QUEUED = "queued"\nif state == r"queued": pass\nif other == "q\\u0075eued": pass\n',
@@ -59,6 +126,273 @@ class ScannerTests(unittest.TestCase):
         self.write("unicode.go", 'package state\nconst Queued="équeued"\nfunc next(s string){if s == "\\xc3\\xa9queued"{};if s == "\\u00e9queued"{}}')
         report = self.run_scan()
         self.assertEqual(self.finding(report, "équeued")["counts"]["occurrences"], 3)
+
+    def test_additional_pinned_grammars_extract_static_strings(self):
+        fixtures = {
+            "state.java": (
+                "java",
+                'class State { String a="queued"; String b="queued"; String c="queued"; }',
+            ),
+            "state.kt": ("kotlin", 'val a="queued"\nval b="queued"\nval c="queued"'),
+            "state.cs": (
+                "csharp",
+                'class State { string a="queued"; string b="queued"; string c="queued"; }',
+            ),
+            "state.swift": ("swift", 'let a="queued"\nlet b="queued"\nlet c="queued"'),
+            "state.rb": ("ruby", 'a="queued"\nb="queued"\nc="queued"'),
+            "state.php": ("php", '<?php $a="queued"; $b="queued"; $c="queued";'),
+            "state.ex": ("elixir", 'a="queued"\nb="queued"\nc="queued"'),
+            "state.sql": ("sql", "SELECT 'queued', 'queued', 'queued';"),
+        }
+        for name, (_, source) in fixtures.items():
+            self.write(name, source)
+        report = self.run_scan()
+        self.assertEqual(report["coverage"]["parse_errors"], [])
+        self.assertEqual(report["coverage"]["unsupported"], [])
+        found = self.finding(report, "queued")
+        self.assertEqual(found["counts"]["occurrences"], 24)
+        self.assertEqual(
+            {item["language"] for item in found["locations"]},
+            {value[0] for value in fixtures.values()},
+        )
+
+    def test_realistic_swift_elixir_and_sql_fixtures(self):
+        fixture_dir = Path(__file__).parent / "fixtures/anti-strings-realistic"
+        for filename, language, queued_count in (
+            ("job.swift", "swift", 3),
+            ("job.ex", "elixir", 3),
+            ("jobs.sql", "sql", 4),
+        ):
+            with self.subTest(language=language):
+                self.write(f"{language}/{filename}", (fixture_dir / filename).read_text())
+                report = self.run_scan(root=self.root / language)
+                coverage = report["coverage"]
+                self.assertEqual(coverage["parse_errors"], [])
+                self.assertEqual(coverage["unsupported"], [])
+                self.assertEqual(coverage["excluded"], [])
+                self.assertEqual(len(coverage["scanned"]), 1)
+                self.assertEqual(coverage["scanned"][0]["language"], language)
+                finding = self.finding(report, "queued")
+                self.assertEqual(finding["counts"]["occurrences"], queued_count)
+                self.assertEqual({item["path"] for item in finding["locations"]}, {filename})
+                if language == "sql":
+                    self.assertEqual(coverage["literal_skips"], {})
+
+    def test_repeated_key_index_is_an_explicit_per_file_heuristic(self):
+        fixtures = {
+            "state.py": 'a=obj["state"]\nb=other["state"]\nc=obj["state"]',
+            "state.js": 'a=obj["state"]; b=other[`state`]; c=obj["st\\x61te"];',
+            "state.ts": 'const a=obj["state"]; const b=other["state"]; const c=obj["state"];',
+            "state.go": 'package state\nfunc f(){a:=obj["state"]; b:=other["state"]; c:=obj["state"]}',
+            "state.rb": 'a=obj["state"]\nb=other[\'state\']\nc=obj["state"]',
+            "state.php": '<?php $a=$obj["state"]; $b=$other[\'state\']; $c=$obj["state"];',
+        }
+        for name, source in fixtures.items(): self.write(name, source)
+        self.write("single.py", 'a=obj["state"]\n')
+        self.write("ordinary.py", 'a="state"\nb="state"\nc="state"\n')
+        report = self.run_scan()
+        self.assertEqual(report["coverage"]["parse_errors"], [])
+        indexed = [
+            item for item in report["findings"] if item["kind"] == "repeated_string_key"
+        ]
+        self.assertEqual(len(indexed), len(fixtures))
+        self.assertEqual(
+            {item["index_evidence"]["path"] for item in indexed}, set(fixtures)
+        )
+        self.assertTrue(
+            all(
+                item["heuristic"]
+                and item["index_evidence"]["heuristic"]
+                and item["counts"]["occurrences"] == 3
+                for item in indexed
+            )
+        )
+        self.assertTrue(
+            all(
+                "receiver types" in item["index_evidence"]["notice"] for item in indexed
+            )
+        )
+
+    def test_index_heuristic_excludes_interpolation_slices_and_redacts_keys(self):
+        self.write(
+            "state.rb",
+            'a=obj["sta#{value}te"]\nb=obj["sta#{value}te"]\nc=obj["sta#{value}te"]',
+        )
+        self.write(
+            "state.php",
+            '<?php $a=$obj["sta{$value}te"]; $b=$obj["sta{$value}te"]; $c=$obj["sta{$value}te"];',
+        )
+        self.write("slice.py", 'a=obj["state":]\nb=obj["state":]\nc=obj["state":]')
+        secret = "private.person@example.invalid"
+        self.write("private.py", f"a=obj[{secret!r}]\n" * 3)
+        report = self.run_scan()
+        indexed = [
+            item for item in report["findings"] if item["kind"] == "repeated_string_key"
+        ]
+        self.assertEqual(len(indexed), 1)
+        self.assertTrue(indexed[0]["redacted"])
+        self.assertNotIn(secret, json.dumps(report))
+
+    def test_nonrecord_receivers_and_counter_targets_are_not_findings(self):
+        fixtures = {
+            "counter.py": (
+                'a=os.environ["environment_name"]\n'
+                'b=sys.modules["module_registry"]\n'
+                'counts["counter_total"] += 1\n'
+                'counts["counter_group"]["counter_nested"] -= 1\n'
+            ) * 3,
+            "counter.ts": (
+                'const a=process.env["environment_name"]; '
+                'counts["counter_total"] += 1; counts["counter_increment"]++; '
+                '--counts["counter_decrement"]; '
+                'counts["counter_group"]["counter_nested"] *= 2;\n'
+            ) * 3,
+            "counter.go": 'package state\nfunc f(){\n' + (
+                'counts["counter_total"] += 1; counts["counter_increment"]++; '
+                'counts["counter_decrement"]--; '
+                'counts["counter_group"]["counter_nested"] *= 2\n'
+            ) * 3 + '}\n',
+        }
+        for path, source in fixtures.items():
+            self.write(path, source)
+        report = self.run_scan()
+        self.assertEqual(report["coverage"]["parse_errors"], [])
+        self.assertEqual(report["findings"], [])
+
+    def test_counter_exclusions_preserve_rhs_and_computed_key_record_reads(self):
+        fixtures = {
+            "counter.py": (
+                'counts["counter_total"] += row["record_state"]\n'
+                'counts[row["record_field"]] += 1\n'
+                'a=custom.env["custom_field"]\n'
+                'counts["ordinary_field"] = row["ordinary_field"]\n'
+            ) * 3,
+            "counter.ts": (
+                'counts["counter_total"] += row["record_state"]; '
+                'counts[row["record_field"]]++; '
+                'const a=custom.env["custom_field"]; '
+                'counts["ordinary_field"] = row["ordinary_field"];\n'
+            ) * 3,
+            "counter.go": 'package state\nfunc f(){\n' + (
+                'counts["counter_total"] += row["record_state"]; '
+                'counts[row["record_field"]]++; '
+                'a:=custom.env["custom_field"]; '
+                'counts["ordinary_field"] = row["ordinary_field"]\n'
+            ) * 3 + '}\n',
+        }
+        for path, source in fixtures.items():
+            self.write(path, source)
+        report = self.run_scan()
+        self.assertEqual(report["coverage"]["parse_errors"], [])
+        indexed = [item for item in report["findings"]
+                   if item["kind"] == "repeated_string_key"]
+        self.assertEqual(len(indexed), 12)
+        self.assertEqual({item["value"] for item in indexed},
+                         {"record_state", "record_field", "custom_field", "ordinary_field"})
+        self.assertTrue(all(item["counts"]["occurrences"] ==
+                            (6 if item["value"] == "ordinary_field" else 3)
+                            for item in indexed))
+        self.assertNotIn("counter_total", {item["value"] for item in report["findings"]})
+
+    def test_typescript_type_indexes_do_not_count_as_literal_or_runtime_keys(self):
+        self.write(
+            "types.ts",
+            'type Fields = [Foo["type_only_field"], Foo["type_only_field"], Foo["type_only_field"]];\n'
+            'type Mixed = [Foo["runtime_field"], Foo["runtime_field"], Foo["runtime_field"]];\n'
+            + 'const value = row["runtime_field"];\n' * 3,
+        )
+        report = self.run_scan()
+        self.assertEqual(report["coverage"]["parse_errors"], [])
+        self.assertNotIn("type_only_field", {item["value"] for item in report["findings"]})
+        findings = [item for item in report["findings"] if item["value"] == "runtime_field"]
+        self.assertEqual({item["kind"] for item in findings},
+                         {"repeated_literal", "repeated_string_key"})
+        self.assertTrue(all(item["counts"]["occurrences"] == 3 for item in findings))
+
+    def test_short_index_fields_and_configured_threshold_are_per_file(self):
+        self.write(
+            "state.tsx", 'const a=obj["id"]; const b=other["id"]; const c=<div/>;'
+        )
+        self.write("other.py", 'a=obj["id"]\n')
+        self.assertFalse(
+            any(
+                item["kind"] == "repeated_string_key"
+                for item in self.run_scan()["findings"]
+            )
+        )
+        report = self.run_scan("--min-occurrences", "2")
+        indexed = [
+            item for item in report["findings"] if item["kind"] == "repeated_string_key"
+        ]
+        self.assertEqual(len(indexed), 1)
+        self.assertEqual(indexed[0]["index_evidence"]["path"], "state.tsx")
+        self.assertEqual(indexed[0]["value"], "id")
+        self.assertEqual(indexed[0]["counts"]["occurrences"], 2)
+
+    def test_additional_grammars_skip_interpolation_and_unsupported_escape_forms(self):
+        fixtures = {
+            "state.java": 'class S { String a="\\u0071ueued"; String b="\\u0071ueued"; String c="\\u0071ueued"; }',
+            "state.kt": 'val a="sta${value}te"\nval b="sta${value}te"\nval c="sta${value}te"',
+            "state.cs": 'class S { string a=$"sta{value}te"; string b=$"sta{value}te"; string c=$"sta{value}te"; }',
+            "state.swift": 'let a="sta\\(value)te"\nlet b="sta\\(value)te"\nlet c="sta\\(value)te"',
+            "state.ex": 'a="sta#{value}te"\nb="sta#{value}te"\nc="sta#{value}te"',
+            "state.sql": "SELECT 'sta\\nte', 'sta\\nte', 'sta\\nte';",
+        }
+        for name, source in fixtures.items(): self.write(name, source)
+        report = self.run_scan()
+        self.assertEqual(report["coverage"]["parse_errors"], [])
+        self.assertEqual(report["findings"], [])
+        self.assertGreaterEqual(
+            report["coverage"]["literal_skips"]["interpolated_or_unsupported"], 15
+        )
+
+    def test_sql_quotes_and_ruby_php_single_quote_escapes_are_not_js_escapes(self):
+        self.write("state.sql", "SELECT 'it''s ready', 'it''s ready', 'it''s ready';")
+        for extension, prefix in (("rb", ""), ("php", "<?php ")):
+            self.write(
+                f"state.{extension}",
+                prefix
+                + "a='literal\\nkey'; b='literal\\nkey'; c='literal\\nkey';".replace(
+                    "a=", "$a=" if extension == "php" else "a="
+                )
+                .replace("b=", "$b=" if extension == "php" else "b=")
+                .replace("c=", "$c=" if extension == "php" else "c="),
+            )
+        report = self.run_scan()
+        self.assertEqual(report["coverage"]["parse_errors"], [])
+        self.assertEqual(self.finding(report, "it's ready")["counts"]["occurrences"], 3)
+        self.assertEqual(
+            self.finding(report, "literal\\nkey")["counts"]["occurrences"], 6
+        )
+
+    def test_unknown_explicit_grammar_is_reported_as_unavailable(self):
+        self.write("state.custom", 'a="queued"\n' * 3)
+        report = self.run_scan("--extension", ".custom=not_a_real_grammar")
+        self.assertEqual(
+            report["coverage"]["unsupported"],
+            [{"path": "state.custom", "reason": "parser_unavailable"}],
+        )
+
+    def test_added_languages_preserve_sensitive_assignment_redaction(self):
+        secret = "context-private-value"
+        fixtures = {
+            "state.java": f'class S {{ String api_key="{secret}"; }}',
+            "state.kt": f'val api_key="{secret}"',
+            "state.cs": f'class S {{ string api_key="{secret}"; }}',
+            "state.swift": f'let api_key="{secret}"',
+            "state.rb": f'api_key="{secret}"',
+            "state.php": f'<?php $api_key="{secret}";',
+            "state.ex": f'api_key="{secret}"',
+        }
+        for name, source in fixtures.items():
+            value = secret + Path(name).suffix
+            for index in range(3):
+                self.write(f"part{index}/{name}", source.replace(secret, value))
+        report = self.run_scan()
+        self.assertEqual(report["coverage"]["parse_errors"], [])
+        self.assertEqual(len(report["findings"]), len(fixtures))
+        self.assertTrue(all(item["redacted"] for item in report["findings"]))
+        self.assertNotIn(secret, json.dumps(report))
 
     def test_exported_implementation_is_counted_but_module_specifiers_are_not(self):
         self.write("options.ts", 'export const GLOBAL="global"; export function mode(x:string){ return x === "global"; } export default {scope:"global"}; export {x} from "module-path"; export * from "module-path"; import x from "module-path";')
