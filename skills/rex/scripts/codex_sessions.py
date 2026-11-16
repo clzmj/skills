@@ -22,6 +22,7 @@ import time
 import uuid
 
 import rex_visible as rex
+import grokbot_callback
 
 ROOT = Path(__file__).resolve().parent
 DB = rex.STATE / "coordination.sqlite3"
@@ -287,6 +288,7 @@ def open_view(team, thread="", interactive=False):
         target = member(team, thread) if thread else None
         token = uuid.uuid4().hex
         if interactive:
+            assert target is not None
             command = [shutil.which("codex") or "codex", "resume", target["thread"], "-C", target["cwd"], "--no-alt-screen"]
         else:
             command = [rex.uv_executable(), "run", "--script", str(Path(__file__).resolve()), "watch", "--team", team, "--view-token", token]
@@ -309,9 +311,14 @@ def open_view(team, thread="", interactive=False):
             if not interactive and len(window_blocks) == 1 and window_blocks[0] in owned and window.get("label") == "Agents":
                 anchor = window_blocks[0]
         if thread and anchor:
+            assert target is not None
             arguments = ["split", "-s", session, "-b", anchor, "--split=right", "--ratio", "50", "--label", target["name"]]
         else:
-            arguments = ["window", "new", "-s", session, "Codex " + target["name"] if interactive else ("Agents" if thread else "Team")]
+            label = "Agents" if thread else "Team"
+            if interactive:
+                assert target is not None
+                label = "Codex " + target["name"]
+            arguments = ["window", "new", "-s", session, label]
         created = rex.rex_json(arguments + ["--focus=false", "--shell=none", "--json", "--"] + command)
         block = created["block_ids"][0]
         with database() as db:
@@ -449,6 +456,7 @@ def watch(team, thread, view_token=""):
 
 
 def handle_hook(data):
+    grokbot_callback.notify("codex", data)
     name = data.get("hook_event_name", "")
     parent = data.get("session_id", "")
     try:
@@ -478,7 +486,7 @@ def handle_hook(data):
                 context = f"Follow {POLICY}. Your team is {team}; your agent id is {child}; coordinator is {actual_parent}. Use native messaging for progress, questions, blockers and final results."
                 reopen_activity(team, child)
         elif name in ("Stop", "SessionEnd"):
-            state(team, parent, "idle" if name == "Stop" else "ended")
+            state(team, parent, ("waiting" if grokbot_callback.waiting(data) else "idle") if name == "Stop" else "ended")
             event(team, parent, name, native_content(data.get("last_assistant_message") or "Session ended", parent))
         elif name == "PostToolUse":
             tool = data.get("tool_name", "")

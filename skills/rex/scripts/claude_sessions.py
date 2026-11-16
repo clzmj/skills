@@ -16,7 +16,6 @@ import time
 import uuid
 
 import codex_sessions as store
-import rex_visible as rex
 
 POLICY = Path(__file__).with_name("COORDINATION.md")
 
@@ -114,6 +113,7 @@ def bind_environment(session, actor, team):
 def handle_hook(data):
     if not isinstance(data, dict):
         raise ValueError("Claude hook input must be a JSON object")
+    store.grokbot_callback.notify("claude", data)
     name = data.get("hook_event_name", "")
     session = native_id(data.get("session_id"))
     root = identity(session)
@@ -234,7 +234,7 @@ def main():
     elif args.action == "open":
         print(json.dumps(store.open_view(args.team, actor if args.agent else "")))
     else:
-        item = store.member(args.team, actor)
+        store.member(args.team, actor)
         if args.state:
             store.state(args.team, actor, args.state)
         print(store.event(args.team, actor, args.state or "progress", args.text))
