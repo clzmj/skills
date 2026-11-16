@@ -1,0 +1,51 @@
+{
+  "type": "result",
+  "subtype": "error_max_turns",
+  "usage": {
+    "input_tokens": 4,
+    "cache_creation_input_tokens": 37084,
+    "cache_read_input_tokens": 36215,
+    "output_tokens": 541,
+    "output_tokens_details": {
+      "thinking_tokens": 316
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 37084,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "modelUsage": {
+    "claude-haiku-5-5": {
+      "inputTokens": 4,
+      "outputTokens": 541,
+      "cacheReadInputTokens": 36215,
+      "cacheCreationInputTokens": 37084,
+      "webSearchRequests": 0,
+      "costUSD": 0.008049849999999999,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 128000,
+      "thinkingTokens": 316,
+      "cacheCreationEphemeral5mInputTokens": 0,
+      "cacheCreationEphemeral1hInputTokens": 37084,
+      "canonicalModel": "claude-haiku-5-5",
+      "provider": "firstParty",
+      "costBasis": "list"
+    }
+  },
+  "num_turns": 3,
+  "terminal_reason": "max_turns",
+  "errors": [
+    "Reached maximum number of turns (2)"
+  ],
+  "permission_denials": [],
+  "total_cost_usd": 0.008049849999999999
+}

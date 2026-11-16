@@ -1,0 +1,52 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "result": "{\"answer\":\"I don't have a question or data to answer yet. Your first message said to return the answer with \\\"the value tabs,\\\" but it didn't say what the values are. Send me the content, and I'll return it as tab-separated values.\"}",
+  "structured_output": {
+    "answer": "I don't have a question or data to answer yet. Your first message said to return the answer with \"the value tabs,\" but it didn't say what the values are. Send me the content, and I'll return it as tab-separated values."
+  },
+  "usage": {
+    "input_tokens": 6,
+    "cache_creation_input_tokens": 23186,
+    "cache_read_input_tokens": 49454,
+    "output_tokens": 790,
+    "output_tokens_details": {
+      "thinking_tokens": 626
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 23186,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "modelUsage": {
+    "claude-haiku-5-5": {
+      "inputTokens": 6,
+      "outputTokens": 790,
+      "cacheReadInputTokens": 49454,
+      "cacheCreationInputTokens": 23186,
+      "webSearchRequests": 0,
+      "costUSD": 0.00552734,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 128000,
+      "thinkingTokens": 626,
+      "cacheCreationEphemeral5mInputTokens": 0,
+      "cacheCreationEphemeral1hInputTokens": 23186,
+      "canonicalModel": "claude-haiku-5-5",
+      "provider": "firstParty",
+      "costBasis": "list"
+    }
+  },
+  "num_turns": 3,
+  "terminal_reason": "completed",
+  "permission_denials": [],
+  "total_cost_usd": 0.00552734
+}

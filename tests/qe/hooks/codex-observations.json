@@ -1,0 +1,162 @@
+{
+  "versions": {
+    "codex": "codex-cli 0.167.2",
+    "claude": "2.1.325 (Claude Code)",
+    "rex": "rex 0.1.0-preview.19\ncommit: ad5a836cb95bf1685a2b2976762949c44f1d0828\nbuilt: 2026-11-13T19:49:36Z\napi: revision 14 (supports 0 to 14)"
+  },
+  "queue_busy": {
+    "argv": [
+      "codex",
+      "queue",
+      "--thread",
+      "[REDACTED_AGENT_ID]",
+      "--message",
+      "QE_QUEUE_BUSY_4381 reply marker only"
+    ],
+    "exit": 0,
+    "stdout": "Queued message [REDACTED_AGENT_ID] for thread [REDACTED_AGENT_ID].\n",
+    "stderr": ""
+  },
+  "queue_idle": {
+    "argv": [
+      "codex",
+      "queue",
+      "--thread",
+      "[REDACTED_AGENT_ID]",
+      "--message",
+      "QE_QUEUE_IDLE_9043 reply marker only",
+      "--resume"
+    ],
+    "exit": 0,
+    "stdout": "Queued message [REDACTED_AGENT_ID] for thread [REDACTED_AGENT_ID].\n",
+    "stderr": ""
+  },
+  "rex_busy": [
+    {
+      "argv": [
+        "rex",
+        "send",
+        "-s",
+        "session:[REDACTED_AGENT_ID]",
+        "-b",
+        "block:[REDACTED_AGENT_ID]"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "rex",
+        "send",
+        "-s",
+        "session:[REDACTED_AGENT_ID]",
+        "-b",
+        "block:[REDACTED_AGENT_ID]"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "rex_idle": [
+    {
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "answerer_schema": [
+    {
+      "type": "thread.started",
+      "thread_id": "[REDACTED_AGENT_ID]"
+    },
+    {
+      "type": "turn.started"
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "item_0",
+        "type": "agent_message",
+        "text": "{\"answer\":\"Understood. I\u2019ll answer tab-related questions without using tools.\"}"
+      }
+    },
+    {
+      "type": "turn.completed",
+      "usage": {
+        "input_tokens": 31427,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 61,
+        "reasoning_output_tokens": 32
+      }
+    }
+  ],
+  "answerer_read_scope": [
+    {
+      "type": "thread.started",
+      "thread_id": "[REDACTED_AGENT_ID]"
+    },
+    {
+      "type": "turn.started"
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "item_0",
+        "type": "agent_message",
+        "text": "I\u2019ll read the requested file only and return the exact marked answer."
+      }
+    },
+    {
+      "type": "item.started",
+      "item": {
+        "id": "item_1",
+        "type": "command_execution",
+        "command": "/bin/zsh -lc 'cat /tmp/qe-answerer-readable.txt'",
+        "aggregated_output": "",
+        "exit_code": null,
+        "status": "in_progress"
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "item_1",
+        "type": "command_execution",
+        "command": "/bin/zsh -lc 'cat /tmp/qe-answerer-readable.txt'",
+        "aggregated_output": "QE_READ_SCOPE_ORCHID\n",
+        "exit_code": 0,
+        "status": "completed"
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "item_2",
+        "type": "agent_message",
+        "text": "{\"answer\":\"QE_READ_SCOPE_ORCHID\"}"
+      }
+    },
+    {
+      "type": "turn.completed",
+      "usage": {
+        "input_tokens": 62982,
+        "cached_input_tokens": 31232,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 82,
+        "reasoning_output_tokens": 0
+      }
+    }
+  ],
+  "turn_bound_rejected": "error: unexpected argument '--max-turns' found\n\n  tip: to pass '--max-turns' as a value, use '-- --max-turns'\n\nUsage: codex exec [OPTIONS] [PROMPT]\n       codex exec [OPTIONS] <COMMAND> [ARGS]\n\nFor more information, try '--help'.\n",
+  "output_bound_rejected": "error: unexpected argument '--max-output-tokens' found\n\n  tip: to pass '--max-output-tokens' as a value, use '-- --max-output-tokens'\n\nUsage: codex exec [OPTIONS] [PROMPT]\n       codex exec [OPTIONS] <COMMAND> [ARGS]\n\nFor more information, try '--help'.\n",
+  "visible_session_identifier": null,
+  "stored_rex_block_prefix": true
+}
