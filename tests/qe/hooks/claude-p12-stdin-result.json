@@ -1,0 +1,55 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "result": "{\"answer\":\"tabs\"}",
+  "structured_output": {
+    "answer": "tabs"
+  },
+  "usage": {
+    "input_tokens": 6,
+    "cache_creation_input_tokens": 21969,
+    "cache_read_input_tokens": 50687,
+    "output_tokens": 377,
+    "output_tokens_details": {
+      "thinking_tokens": 304
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 21969,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "modelUsage": {
+    "claude-haiku-5-5": {
+      "inputTokens": 6,
+      "outputTokens": 377,
+      "cacheReadInputTokens": 50687,
+      "cacheCreationInputTokens": 21969,
+      "webSearchRequests": 0,
+      "costUSD": 0.005089770000000001,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 128000,
+      "thinkingTokens": 304,
+      "cacheCreationEphemeral5mInputTokens": 0,
+      "cacheCreationEphemeral1hInputTokens": 21969,
+      "canonicalModel": "claude-haiku-5-5",
+      "provider": "firstParty",
+      "costBasis": "list"
+    }
+  },
+  "num_turns": 3,
+  "terminal_reason": "completed",
+  "permission_denials": [],
+  "total_cost_usd": 0.005089770000000001,
+  "returncode": 0,
+  "stderr": "Warning: claude.ai MCP servers blocked by enterprise policy: claude.ai Mercury, claude.ai Slack\n",
+  "elapsed": 6.814
+}

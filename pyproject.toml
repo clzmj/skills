@@ -7,10 +7,11 @@ requires-python = ">=3.11,<3.15"
 package = false
 
 [tool.ty.src]
-include = ["skills/anti-strings/scripts/scan.py", "tests/test_anti_strings.py"]
+include = ["skills/anti-strings/scripts/scan.py", "tests/test_anti_strings.py", "tests/qe"]
 
 [tool.ty.environment]
 python-version = "3.11"
+extra-paths = [".", "tests/qe/probes"]
 
 [dependency-groups]
 dev = [

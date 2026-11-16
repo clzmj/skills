@@ -1,0 +1,5 @@
+{
+  "returncode": 1,
+  "stderr": "Error: --json-schema is not valid JSON: JSON Parse error: Unrecognized token '/'\n",
+  "elapsed": 0.087
+}

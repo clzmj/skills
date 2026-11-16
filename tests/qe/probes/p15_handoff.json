@@ -1,0 +1,25 @@
+{
+  "schema": "qe.l4handoff/1",
+  "handoff_id": "00000000-0000-4000-8000-000000000015",
+  "task_id": "00000000-0000-4000-8000-000000000016",
+  "callback_bot": "jim",
+  "batches": [
+    {
+      "batch_id": "00000000-0000-4000-8000-000000000017",
+      "batch_rev": 1,
+      "floor": 4,
+      "hits": [],
+      "questions": [
+        {
+          "id": "p15-test",
+          "text": "TEST ONLY: Please post this test question card in Jim's chat and reply with its card reference.",
+          "header": "P15 test card",
+          "options": [],
+          "multi_select": false,
+          "allows_free_text": true
+        }
+      ],
+      "recommendations": []
+    }
+  ]
+}
