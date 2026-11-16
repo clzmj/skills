@@ -72,6 +72,14 @@ class CoordinationTests(unittest.TestCase):
         self.assertEqual(child[:3], ["/usr/bin/env", "REX_VISIBLE_STATE_DIR=" + self.folder.name, "REX_SERVER=unix:///test/rex.sock"])
         self.assertEqual(child[3:7], ["/opt/tools/uv", "run", "--script", str(Path(cs.__file__).resolve())])
 
+    def test_interactive_resume_uses_configured_codex_binary(self):
+        for executable in ("/tools/custom-codex", None):
+            with self.subTest(executable=executable), patch.object(cs, "CODEX_BINARY", "custom-codex", create=True), patch.object(cs.shutil, "which", side_effect=lambda name, found=executable: found if name == "custom-codex" else None), patch.object(cs.rex, "main_session", return_value="main-rex"), patch.object(cs.rex, "state_dir"), patch.object(cs.rex, "rex_json", side_effect=[{"windows": []}, {"block_ids": ["owned"]}]) as rex_json:
+                cs.open_view("task", B, interactive=True)
+            launch = rex_json.call_args.args[0]
+            child = launch[launch.index("--") + 1:]
+            self.assertEqual(child, [executable or "custom-codex", "resume", B, "-C", cs.member("task", B)["cwd"], "--no-alt-screen"])
+
     def test_open_reuses_tracked_pane_and_prunes_missing_rows(self):
         self.track_view()
         self.track_view(thread="", block="gone")
@@ -198,6 +206,12 @@ class CoordinationTests(unittest.TestCase):
         self.assertEqual(sum(e["kind"] == "ack" for e in cs.snapshot("task")["events"]), 1)
         with self.assertRaises(ValueError):
             cs.acknowledge("task", A, result["message_id"])
+
+    def test_queue_uses_configured_codex_binary(self):
+        with patch.object(cs, "CODEX_BINARY", "custom-codex", create=True), patch.object(cs.shutil, "which", side_effect=lambda name: "/tools/custom-codex" if name == "custom-codex" else None), patch.object(cs.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "queued", "")) as run:
+            result = cs.send("task", A, B, "Review")
+        self.assertEqual(result["status"], "queued")
+        self.assertEqual(run.call_args.args[0][:4], ["/tools/custom-codex", "queue", "--thread", B])
 
     def test_queue_resume_warning_is_preserved(self):
         with patch.object(cs.shutil, "which", return_value="codex"), patch.object(cs.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "warning: failed to resume")):

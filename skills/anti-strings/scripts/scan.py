@@ -29,6 +29,7 @@ from tree_sitter_language_pack import SupportedLanguage, get_parser
 
 class NodeType(StrEnum):
     ERROR = 'ERROR'
+    COMMENT = 'comment'
     ANNOTATED_ASSIGNMENT = 'annotated_assignment'
     ARGUMENT_LIST = 'argument_list'
     ARGUMENTS = 'arguments'
@@ -159,6 +160,11 @@ class ReportKey(StrEnum):
     WARNINGS = 'warnings'
 
 
+class OutputFormat(StrEnum):
+    JSON = "json"
+    MARKDOWN = "markdown"
+
+
 class ConfigKey(StrEnum):
     EXCLUDE = 'exclude'
     EXTENSIONS = 'extensions'
@@ -203,6 +209,8 @@ class ExclusionReason(StrEnum):
     BINARY_UNREADABLE_OR_NONUTF8 = "binary_unreadable_or_nonutf8"
     GENERATED_HEADER = "generated_header"
     PARSER_UNAVAILABLE = "parser_unavailable"
+    UNSUPPORTED_LANGUAGE = "unsupported_language"
+    PARSE_ERROR = "parse_error"
 
 
 class Role(StrEnum):
@@ -311,7 +319,7 @@ class Location:
     path: str
     line: int
     column: int
-    language: str
+    language: Language
     role: Role
     context: str
 
@@ -332,7 +340,7 @@ class LocatedCandidate(Location):
 class CoverageEntry:
     path: str
     reason: ExclusionReason | None = None
-    language: str | None = None
+    language: Language | None = None
     line: int | None = None
     column: int | None = None
     test: bool | None = None
@@ -395,7 +403,7 @@ class Finding:
         )
 
 
-SKIP_DIRS = {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "vendor", "dist", "build", "target", ReportKey.COVERAGE, ".next", ".nuxt", ".output", "__pycache__", ".cache", ".terraform", ".aws", ".ssh", ".gnupg", ".secrets", ".doppler", "generated", "gen"}
+SKIP_DIRS = {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "vendor", "dist", "build", "target", "coverage", ".next", ".nuxt", ".output", "__pycache__", ".cache", ".terraform", ".aws", ".ssh", ".gnupg", ".secrets", ".doppler", "generated", "gen"}
 SECRET_NAMES = re.compile(r"(^\.env($|\.)|credentials|secrets?($|[._-])|(^|[._-])(id_rsa|id_ed25519)|\.(pem|key|p12|pfx|keystore)$)", re.I)
 SECRET_CONTEXT = re.compile(r"password|passwd|secret|token|credential|private_?key|api_?key|access_?key|authorization|connection_?string|(^|_)dsn($|_)", re.I)
 SECRET_QUERY = re.compile(r"token|api_?key|signature|credential|password|secret|authorization|access_?key|(^|_)(auth|sig|key)($|_)", re.I)
@@ -560,7 +568,7 @@ def field(node, name, source):
     return text(node.child_by_field_name(name), source)
 
 
-def decode_escapes(body, language):
+def decode_escapes(body, language: Language):
     # Go byte escapes belong to a UTF-8 byte string, unlike Unicode escapes.
     byte_output = bytearray()
     characters: list[str] = []
@@ -601,7 +609,7 @@ def decode_escapes(body, language):
     return value
 
 
-def normalize(node, source, language):
+def normalize(node, source, language: Language):
     literal = text(node, source)
     if any(
         child.type
@@ -654,7 +662,7 @@ def normalize(node, source, language):
     return None
 
 
-def string_key_index(node, language: str) -> bool:
+def string_key_index(node, language: Language) -> bool:
     """Syntax only: even Go index expressions need not have a map receiver."""
     parent = node.parent
     if parent is None:
@@ -689,7 +697,7 @@ def string_key_index(node, language: str) -> bool:
     return False
 
 
-def excluded_index_literal(node, source, language: str) -> bool:
+def excluded_index_literal(node, source, language: Language) -> bool:
     """Exclude known non-record lookups and counter targets from both findings."""
     if language in {Language.TYPESCRIPT, Language.TSX} and any(
         owner.type == NodeType.LOOKUP_TYPE for owner in ancestors(node)
@@ -733,9 +741,9 @@ def excluded_index_literal(node, source, language: str) -> bool:
     return False
 
 
-def supported_parser(language: str) -> TypeGuard[SupportedLanguage]:
+def supported_parser(parser_name: str) -> TypeGuard[SupportedLanguage]:
     """Validate extension overrides against this pinned pack's grammar registry."""
-    return language in get_args(SupportedLanguage)
+    return parser_name in get_args(SupportedLanguage)
 
 
 def descendants(node):
@@ -840,8 +848,8 @@ def scan(root: Path, options: ScanOptions):
         if is_test and not options.include_tests:
             coverage.excluded.append(CoverageEntry(path=location, reason=ExclusionReason.TEST_FILE))
             continue
-        language = options.extensions.get(relative.suffix.lower())
-        if not language:
+        parser_name = options.extensions.get(relative.suffix.lower())
+        if not parser_name:
             coverage.unsupported.append(
                 CoverageEntry(path=location, reason=ExclusionReason.UNMAPPED_EXTENSION)
             )
@@ -868,12 +876,19 @@ def scan(root: Path, options: ScanOptions):
             )
             continue
         try:
-            if not supported_parser(language):
+            if not supported_parser(parser_name):
                 coverage.unsupported.append(
                     CoverageEntry(path=location, reason=ExclusionReason.PARSER_UNAVAILABLE)
                 )
                 continue
-            if language not in parsers: parsers[language] = get_parser(language)
+            try:
+                language = Language(parser_name)
+            except ValueError:
+                coverage.unsupported.append(
+                    CoverageEntry(path=location, reason=ExclusionReason.UNSUPPORTED_LANGUAGE)
+                )
+                continue
+            if language not in parsers: parsers[language] = get_parser(parser_name)
             tree = parsers[language].parse(source)
         except (
             LookupError,
@@ -897,7 +912,7 @@ def scan(root: Path, options: ScanOptions):
         stack = [tree.root_node]
         while stack:
             node = stack.pop()
-            if "comment" in node.type: continue
+            if NodeType.COMMENT in node.type: continue
             if node.type not in LITERALS:
                 stack.extend(reversed(node.named_children)); continue
             if excluded_index_literal(node, source, language):
@@ -1047,15 +1062,15 @@ def markdown(report):
     if not report[ReportKey.FINDINGS]: lines += ["No repeated candidates met the configured threshold.", ""]
     lines += ["## Coverage details", ""]
     for kind in (ReportKey.EXCLUDED, ReportKey.UNSUPPORTED, ReportKey.PARSE_ERRORS):
-        for entry in coverage[kind]: lines.append(f"- {kind}: {safe(entry[ReportKey.PATH])} — {entry.get(ReportKey.REASON, 'parse_error')}")
+        for entry in coverage[kind]: lines.append(f"- {kind}: {safe(entry[ReportKey.PATH])} — {entry.get(ReportKey.REASON, ExclusionReason.PARSE_ERROR)}")
     lines += [f"- {safe(warning)}" for warning in coverage[ReportKey.WARNINGS]]
     return "\n".join(lines) + "\n"
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(ReportKey.ROOT, nargs="?", default=".")
-    parser.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    parser.add_argument("root", nargs="?", default=".")
+    parser.add_argument("--format", type=OutputFormat, choices=tuple(OutputFormat), default=OutputFormat.MARKDOWN)
     parser.add_argument("--output", type=Path, help="Write a report outside the scanned root; stdout is the default")
     parser.add_argument("--include-tests", action="store_true", default=None)
     parser.add_argument("--config", type=Path, help="JSON: exclude, include_tests, min_occurrences, max_file_bytes, extensions")
@@ -1116,7 +1131,7 @@ def main():
     output = args.output.expanduser().resolve() if args.output else None
     if output and output.is_relative_to(root): parser.error("Reports must be written outside ROOT to keep the target read-only")
     report = scan(root, options)
-    rendered = json.dumps(report, indent=2, ensure_ascii=True) + "\n" if args.format == "json" else markdown(report)
+    rendered = json.dumps(report, indent=2, ensure_ascii=True) + "\n" if args.format == OutputFormat.JSON else markdown(report)
     if output:
         with output.open("w", encoding=UTF8) as stream: stream.write(rendered)
     else: sys.stdout.write(rendered)

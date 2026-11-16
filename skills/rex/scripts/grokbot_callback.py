@@ -790,6 +790,10 @@ def deliver(path):
                 pass  # Another worker already recorded the accepted delivery.
             except Exception:
                 path.unlink(missing_ok=True)
+                try:
+                    receipt(Outcome.DELIVERED, **fields, http_status=status)
+                except Exception:  # noqa: BLE001, S110 - preserve the marker error after accepted delivery.
+                    pass
                 raise
             path.unlink(missing_ok=True)
             try:

@@ -5,6 +5,7 @@
 # ///
 """Black-box scanner tests; keep standalone and development parser pins aligned."""
 
+import ast
 import json
 from pathlib import Path
 import subprocess
@@ -51,6 +52,73 @@ class ScannerTests(unittest.TestCase):
         self.assertFalse(entry["test"])
         self.assertGreater(entry["literals"], 0)
         self.assertEqual(set(entry), {"path", "language", "test", "literals"})
+
+    def test_scanner_uses_typed_language_and_output_domains(self):
+        source = SCANNER.read_text()
+        tree = ast.parse(source)
+        classes = {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)}
+        self.assertIn("OutputFormat", classes)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.arg) and node.arg == "language" and node.annotation:
+                self.assertEqual(ast.unparse(node.annotation), "Language")
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == "language":
+                self.assertIn(ast.unparse(node.annotation), {"Language", "Language | None"})
+        self.assertNotIn('"comment" in node.type', source)
+        self.assertNotIn('args.format == "json"', source)
+        self.assertNotIn("'parse_error'", source)
+        self.assertNotIn('parser.add_argument(ReportKey.', source)
+        skip_dirs = next(node for node in tree.body if isinstance(node, ast.Assign)
+                         and any(isinstance(target, ast.Name) and target.id == "SKIP_DIRS" for target in node.targets))
+        self.assertNotIn("ReportKey", ast.unparse(skip_dirs.value))
+
+    def test_unmodeled_grammar_is_reported_as_unsupported(self):
+        self.write("state.custom", 'echo "queued"\n' * 3)
+        report = self.run_scan("--extension", ".custom=bash")
+        self.assertEqual(report["coverage"]["unsupported"],
+                         [{"path": "state.custom", "reason": "unsupported_language"}])
+        self.assertEqual(report["coverage"]["scanned"], [])
+
+    def test_self_scan_claim_names_default_threshold(self):
+        self.write("scanner.py", SCANNER.read_text())
+        report = self.run_scan("--min-occurrences", "2")
+        self.assertEqual(report["coverage"]["parse_errors"], [])
+        self.assertTrue(report["findings"])
+        docs = (SCANNER.parents[1] / "SKILL.md").read_text()
+        self.assertIn("zero findings at the default `--min-occurrences 3`", docs)
+        self.assertIn("`--min-occurrences 2`", docs)
+
+    def test_imported_environment_lookup_limitation_is_documented(self):
+        self.write("environment.py", 'from os import environ\n' + 'value=environ["SERVICE_MODE"]\n' * 3)
+        report = self.run_scan()
+        indexed = [item for item in report["findings"] if item["kind"] == "repeated_string_key"]
+        self.assertEqual([item["value"] for item in indexed], ["SERVICE_MODE"])
+        self.assertEqual(report["coverage"]["parse_errors"], [])
+        docs = (SCANNER.parents[1] / "SKILL.md").read_text()
+        self.assertIn("`from os import environ`", docs)
+        self.assertIn("does not resolve imported bindings or aliases", docs)
+
+    def test_sql_dollar_quote_parse_gap_is_reported_and_documented(self):
+        self.write("body.sql", "DO $$ BEGIN RAISE NOTICE 'queued'; END $$;")
+        report = self.run_scan()
+        self.assertEqual(report["coverage"]["scanned"], [])
+        self.assertEqual([item["path"] for item in report["coverage"]["parse_errors"]], ["body.sql"])
+        rendered = self.run_scan(json_output=False).stdout
+        self.assertIn("parse_error", rendered)
+        docs = (SCANNER.parents[1] / "SKILL.md").read_text()
+        self.assertIn("PostgreSQL dollar-quoted bodies", docs)
+        self.assertIn("some forms parse without yielding literals", docs)
+        self.assertIn("`coverage.parse_errors`", docs)
+
+    def test_java_kotlin_and_csharp_file_fixtures_parse(self):
+        fixture_dir = Path(__file__).parent / "fixtures/anti-strings-realistic"
+        fixtures = {"Job.java": "java", "Job.kt": "kotlin", "Job.cs": "csharp"}
+        for name in fixtures:
+            self.write(name, (fixture_dir / name).read_text())
+        report = self.run_scan()
+        self.assertEqual(report["coverage"]["parse_errors"], [])
+        self.assertEqual(report["coverage"]["unsupported"], [])
+        self.assertEqual({item["path"]: item["language"] for item in report["coverage"]["scanned"]}, fixtures)
+        self.assertEqual(self.finding(report, "queued")["counts"]["occurrences"], 9)
 
     def test_quiet_calls_preserve_indexed_keys_but_skip_display_text(self):
         self.write(

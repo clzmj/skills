@@ -27,6 +27,7 @@ import rex_visible as rex
 ROOT = Path(__file__).resolve().parent
 DB = rex.STATE / "coordination.sqlite3"
 POLICY = ROOT / "COORDINATION.md"
+CODEX_BINARY = "codex"
 MemberState = grokbot_callback.MemberState
 HookEvent = grokbot_callback.HookEvent
 AgentKind = grokbot_callback.AgentKind
@@ -192,7 +193,7 @@ def send(team, sender, recipient, text, wake=False, reply_to=""):
         raise ValueError("Claude members use native Agent/SendMessage; Codex queue is unavailable for this provider")
     if target["mode"] == "native":
         raise ValueError("Use native send_message/send_input for a delegated subagent; queue is for independent sessions")
-    executable = shutil.which("codex")
+    executable = shutil.which(CODEX_BINARY)
     if not executable:
         raise ValueError("Codex CLI is unavailable")
     identifier = event(team, source["thread"], "queue_requested", text, target["thread"], reply_to)
@@ -293,7 +294,7 @@ def open_view(team, thread="", interactive=False):
         token = uuid.uuid4().hex
         if interactive:
             assert target is not None
-            command = [shutil.which("codex") or "codex", "resume", target["thread"], "-C", target["cwd"], "--no-alt-screen"]
+            command = [shutil.which(CODEX_BINARY) or CODEX_BINARY, "resume", target["thread"], "-C", target["cwd"], "--no-alt-screen"]
         else:
             command = [rex.uv_executable(), "run", "--script", str(Path(__file__).resolve()), "watch", "--team", team, "--view-token", token]
             if thread:
