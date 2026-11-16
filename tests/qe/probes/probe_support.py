@@ -9,6 +9,7 @@ from typing import Mapping
 
 
 class HookEvent(StrEnum):
+    UNKNOWN = "unknown"
     USER_PROMPT_SUBMIT = "UserPromptSubmit"
     PRE_TOOL_USE = "PreToolUse"
     POST_TOOL_USE = "PostToolUse"
@@ -91,7 +92,7 @@ _CREDENTIAL_FIELD = re.compile(
     r"(?i)((?:\bbearer\s+)|(?:[\"']?\b(?:token|api[_-]?key|secret|password)\b[\"']?\s*[:=]\s*[\"']?))[A-Za-z0-9_./+=:-]{8,}"
 )
 _URL_USERINFO = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*://)[^/@\s]+@")
-_HOME_PATH = re.compile(r"/Users/[^/\s\"']+/")
+_HOME_PATH = re.compile(r"/Users/[^/\s\"']+")
 _AGENT_ID = re.compile(
     r"(?<![0-9A-Fa-f])(?:[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}|[0-9A-Fa-f]{32})(?![0-9A-Fa-f])"
 )
@@ -105,7 +106,7 @@ def redact(
     redacted = _SECRET.sub("[REDACTED_TOKEN]", text)
     redacted = _CREDENTIAL_FIELD.sub(r"\1[REDACTED_TOKEN]", redacted)
     redacted = _URL_USERINFO.sub(r"\1[REDACTED]@", redacted)
-    redacted = _HOME_PATH.sub("~/", redacted)
+    redacted = _HOME_PATH.sub("~", redacted)
     return _AGENT_ID.sub(
         lambda match: (
             match.group(0)

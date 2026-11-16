@@ -34,6 +34,7 @@ except ImportError:
 
 
 class HookMode(StrEnum):
+    UNKNOWN = "unknown"
     OBSERVE = "observe"
     PERMISSION_ANSWER = "permission-answer"
     PERMISSION_PENDING = "permission-pending"
@@ -59,7 +60,7 @@ def settings(mode: HookMode, output: Path) -> dict[str, object]:
             str(output.resolve()),
         ]
     )
-    events = tuple(HookEvent)
+    events = tuple(event for event in HookEvent if event != HookEvent.UNKNOWN)
     return {
         "hooks": {
             event: [
@@ -112,10 +113,17 @@ def redact(value: object) -> object:
 
 def hook(mode: HookMode, output: Path) -> None:
     mode_file = output.with_suffix(".mode")
-    if mode_file.exists():
-        mode = HookMode(mode_file.read_text().strip())
+    raw_mode = mode_file.read_text().strip() if mode_file.exists() else None
+    if raw_mode is not None:
+        try:
+            mode = HookMode(raw_mode)
+        except ValueError:
+            mode = HookMode.UNKNOWN
     payload = json.load(sys.stdin)
-    event = HookEvent(payload["hook_event_name"])
+    try:
+        event = HookEvent(payload["hook_event_name"])
+    except (ValueError, KeyError):
+        event = HookEvent.UNKNOWN
     tool = payload.get("tool_name", "")
     started = time.monotonic()
     response: dict[str, object] = {}
@@ -180,6 +188,9 @@ def hook(mode: HookMode, output: Path) -> None:
         }
     record = {
         "mode": mode,
+        "raw_mode": raw_mode,
+        "event": event,
+        "raw_event": payload.get("hook_event_name"),
         "payload": payload,
         "response": response,
         "elapsed_seconds": round(time.monotonic() - started, 3),

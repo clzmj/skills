@@ -33,6 +33,9 @@ test("release --list returns the filtered tracked inventory", () => {
     cwd: root,
   });
   expect(result.exitCode).toBe(0);
+  // Intentional release allowlist: packaging changes must review this snapshot.
+  // Deriving it from releasePaths() or Git would let an accidental inclusion
+  // change both expected and actual, defeating this independent inventory guard.
   expect(JSON.parse(result.stdout.toString())).toEqual([
     "LICENSE",
     "distribution/archive-source.ts",

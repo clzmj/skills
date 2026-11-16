@@ -49,6 +49,7 @@ CONTEXT = "QE_CONTEXT_7fc1: the fixture uses tabs and oxlint."
 
 
 class CodexMode(StrEnum):
+    UNKNOWN = "unknown"
     CONTEXT = "context"
     TIMEOUT = "timeout"
     DENY = "deny"
@@ -66,6 +67,9 @@ class HookRecord:
     recorded_at: str
     event: HookEvent
     payload: dict[str, object]
+    raw_event: str | None
+    mode: CodexMode
+    raw_mode: str | None
 
 
 def record_result(result: ProbeResult, destination: Path) -> None:
@@ -134,12 +138,30 @@ def hook(
     state: Path, now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
 ) -> None:
     data = json.load(sys.stdin)
-    event = HookEvent(data["hook_event_name"])
-    record = asdict(
-        HookRecord(
-            now().isoformat(),
-            event,
-            json.loads(redact(json.dumps(data))),
+    try:
+        event = HookEvent(data["hook_event_name"])
+    except (ValueError, KeyError):
+        event = HookEvent.UNKNOWN
+    mode_file = state / "mode"
+    raw_mode = mode_file.read_text().strip() if mode_file.exists() else None
+    try:
+        mode = CodexMode(raw_mode) if raw_mode is not None else CodexMode.OBSERVE
+    except ValueError:
+        mode = CodexMode.UNKNOWN
+    record = json.loads(
+        redact(
+            json.dumps(
+                asdict(
+                    HookRecord(
+                        now().isoformat(),
+                        event,
+                        data,
+                        data.get("hook_event_name"),
+                        mode,
+                        raw_mode,
+                    )
+                )
+            )
         )
     )
     state.mkdir(parents=True, exist_ok=True)
@@ -157,12 +179,6 @@ def hook(
                 pass
         except OSError:
             pass
-    mode_file = state / "mode"
-    mode = (
-        CodexMode(mode_file.read_text().strip())
-        if mode_file.exists()
-        else CodexMode.OBSERVE
-    )
     output = {}
     if event == HookEvent.USER_PROMPT_SUBMIT and mode == CodexMode.CONTEXT:
         output = {

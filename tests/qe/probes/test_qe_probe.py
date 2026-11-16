@@ -40,6 +40,14 @@ def encoded_plan(payload: str) -> str:
 
 
 class ProbeSupportTests(unittest.TestCase):
+    def test_committed_evidence_contains_no_local_home_paths(self) -> None:
+        fixtures = list(STUB.parent.parent.joinpath("hooks").glob("*.json*"))
+        self.assertTrue(fixtures, "hook fixture glob must not be empty")
+        evidence = STUB.parents[3] / "docs/qe/question-delivery-evidence.md"
+        for path in (*fixtures, evidence):
+            with self.subTest(path=path.name):
+                self.assertNotRegex(path.read_text(), r"/Users/[^/\s\"']+")
+
     def test_redaction_masks_word_adjacent_and_dashless_uuids(self) -> None:
         for raw in (
             "agent_11111111-2222-3333-4444-555555555555",
@@ -56,6 +64,18 @@ class ProbeSupportTests(unittest.TestCase):
 
         for recorder in (redact, redact_claude):
             self.assertEqual(recorder("/Users/alice/project/file"), "~/project/file")
+
+    def test_redaction_masks_bare_home_in_both_recorders(self) -> None:
+        from tests.qe.probes.claude_probe import redact as redact_claude
+
+        for recorder in (redact, redact_claude):
+            for source, expected in (
+                ("/Users/alice", "~"),
+                ('{"cwd":"/Users/alice"}', '{"cwd":"~"}'),
+                ("/Users/alice/", "~/"),
+            ):
+                with self.subTest(source=source, recorder=recorder):
+                    self.assertEqual(recorder(source), expected)
 
     def test_redaction_preserves_json_and_masks_quoted_credentials(self) -> None:
         source = (
@@ -103,6 +123,49 @@ class ProbeSupportTests(unittest.TestCase):
 
 
 class HarnessCommandTests(unittest.TestCase):
+    def test_unknown_and_missing_hook_events_are_recorded_without_response(
+        self,
+    ) -> None:
+        for payload in ({"hook_event_name": "FutureEvent"}, {}):
+            with (
+                self.subTest(payload=payload),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                state = Path(temporary)
+                (state / "mode").write_text("context")
+                stdout = StringIO()
+                with (
+                    mock.patch("sys.stdin", StringIO(json.dumps(payload))),
+                    redirect_stdout(stdout),
+                ):
+                    qe_probe.hook(state)
+                recorded = json.loads((state / "hooks.jsonl").read_text())
+                self.assertEqual(recorded["event"], "unknown")
+                self.assertEqual(recorded["raw_event"], payload.get("hook_event_name"))
+                self.assertEqual(json.loads(stdout.getvalue()), {})
+
+    def test_unknown_and_missing_modes_are_recorded_without_response(self) -> None:
+        for raw_mode in ("future-mode", None):
+            with (
+                self.subTest(mode=raw_mode),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                state = Path(temporary)
+                if raw_mode is not None:
+                    (state / "mode").write_text(raw_mode)
+                stdout = StringIO()
+                with (
+                    mock.patch(
+                        "sys.stdin", StringIO('{"hook_event_name":"UserPromptSubmit"}')
+                    ),
+                    redirect_stdout(stdout),
+                ):
+                    qe_probe.hook(state)
+                recorded = json.loads((state / "hooks.jsonl").read_text())
+                self.assertEqual(recorded["mode"], "unknown" if raw_mode else "observe")
+                self.assertEqual(recorded["raw_mode"], raw_mode)
+                self.assertEqual(json.loads(stdout.getvalue()), {})
+
     def test_hook_records_redacted_stdin_and_returns_context(self) -> None:
         payload = {
             "hook_event_name": "UserPromptSubmit",

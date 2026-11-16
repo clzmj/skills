@@ -14,6 +14,36 @@ from tests.qe.probes.claude_probe import HookMode, hook, redact
 
 
 class ClaudeRecorderTests(unittest.TestCase):
+    def test_unknown_and_missing_events_are_recorded_without_response(self) -> None:
+        for payload in ({"hook_event_name": "FutureEvent"}, {}):
+            with self.subTest(payload=payload), TemporaryDirectory() as directory:
+                output = Path(directory) / "hook.jsonl"
+                stdout = StringIO()
+                with (
+                    patch("sys.stdin", StringIO(json.dumps(payload))),
+                    redirect_stdout(stdout),
+                ):
+                    hook(HookMode.CONTEXT, output)
+                record = json.loads(output.read_text())
+                self.assertEqual(record["event"], "unknown")
+                self.assertEqual(record["raw_event"], payload.get("hook_event_name"))
+                self.assertEqual(json.loads(stdout.getvalue()), {})
+
+    def test_unknown_mode_override_is_recorded_without_response(self) -> None:
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "hook.jsonl"
+            output.with_suffix(".mode").write_text("future-mode")
+            stdout = StringIO()
+            with (
+                patch("sys.stdin", StringIO('{"hook_event_name":"UserPromptSubmit"}')),
+                redirect_stdout(stdout),
+            ):
+                hook(HookMode.CONTEXT, output)
+            record = json.loads(output.read_text())
+            self.assertEqual(record["mode"], "unknown")
+            self.assertEqual(record["raw_mode"], "future-mode")
+            self.assertEqual(json.loads(stdout.getvalue()), {})
+
     def test_uuid_embedded_in_payload_text_is_redacted(self) -> None:
         self.assertEqual(
             redact("child 11111111-2222-3333-4444-555555555555 reported done"),
