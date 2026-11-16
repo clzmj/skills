@@ -6,11 +6,11 @@
 """Install independent Rex hooks without changing Python hooks or host trust."""
 import argparse
 import json
-from pathlib import Path
 import re
 import shlex
 import shutil
 import time
+from pathlib import Path
 
 
 def write(path, content):
@@ -30,7 +30,7 @@ def marked_block(path, name, text):
     begin, end = f"<!-- {name}:start -->", f"<!-- {name}:end -->"
     addition = f"{begin}\n{text.strip()}\n{end}"
     if begin in before and end in before:
-        after = re.sub(re.escape(begin) + r".*?" + re.escape(end), lambda _: addition, before, flags=re.S)
+        after = re.sub(re.escape(begin) + r".*?" + re.escape(end), lambda _: addition, before, flags=re.DOTALL)
     else:
         after = before.rstrip() + ("\n\n" if before.strip() else "") + addition + "\n"
     write(path, after)
@@ -54,13 +54,24 @@ def owned_handler(command, script, home, root):
 def rex_hooks(data, root, home, uv, codex):
     definitions = [("rex_visible.py", ("SessionStart", "UserPromptSubmit", "PreToolUse"))]
     if codex:
-        definitions.append(("codex_sessions.py", ("SessionStart", "UserPromptSubmit", "SubagentStart", "SubagentStop", "Stop", "SessionEnd", "PostToolUse")))
+        definitions.append(("codex_sessions.py", ("SessionStart", "UserPromptSubmit", "SubagentStart", "SubagentStop", "Stop", "SessionEnd", "PostToolUse", "PermissionRequest")))
     else:
-        definitions.append(("claude_sessions.py", ("SessionStart", "UserPromptSubmit", "SubagentStart", "SubagentStop", "PreToolUse", "PostToolUse", "Stop", "StopFailure", "SessionEnd", "TeammateIdle", "TaskCreated", "TaskCompleted", "Notification", "PostModelSwitch")))
+        definitions.append(("claude_sessions.py", ("SessionStart", "UserPromptSubmit", "SubagentStart", "SubagentStop", "PreToolUse", "PostToolUse", "Stop", "StopFailure", "SessionEnd", "TeammateIdle", "TaskCreated", "TaskCompleted", "Notification", "PermissionRequest", "PostModelSwitch")))
     for script, events in definitions:
         for event in events:
             command = shlex.join([uv, "run", "--script", str(root / script), "hook"])
             groups = data.setdefault("hooks", {}).setdefault(event, [])
+            if event == "PostToolUse":
+                for group in list(groups):
+                    owned = [handler for handler in group.get("hooks", [])
+                             if owned_handler(handler.get("command", ""), script, home, root)]
+                    if owned and group.get("matcher"):
+                        if len(owned) == len(group["hooks"]):
+                            group.pop("matcher")
+                        else:
+                            # Broaden our lifecycle observer without widening unrelated handlers.
+                            group["hooks"] = [handler for handler in group["hooks"] if handler not in owned]
+                            groups.append({"hooks": owned})
             existing = [handler for group in groups for handler in group.get("hooks", [])
                         if owned_handler(handler.get("command", ""), script, home, root)]
             if existing:
@@ -70,8 +81,6 @@ def rex_hooks(data, root, home, uv, codex):
                         handler["timeout"] = 3
                 continue
             matcher = "Bash|exec_command|shell|shell_command" if event == "PreToolUse" and script == "rex_visible.py" else None
-            if event == "PostToolUse":
-                matcher = ".*(send_message|send_input|followup_task)$" if codex else "Agent|Task|SendMessage|TaskCreate|TaskUpdate"
             group = {"hooks": [{"type": "command", "command": command,
                                  "timeout": 3 if event == "SessionEnd" else (20 if event == "SubagentStart" else 5)}]}
             if matcher:

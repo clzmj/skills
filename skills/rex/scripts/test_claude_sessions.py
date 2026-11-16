@@ -5,9 +5,9 @@
 # ///
 import json
 import os
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import claude_sessions as claude
@@ -28,6 +28,19 @@ class ClaudeAdapterTests(unittest.TestCase):
 
     def hook(self, event, **data):
         return claude.handle_hook({"session_id": self.session, "hook_event_name": event, "cwd": str(self.path), **data})
+
+    def test_callback_failures_do_not_replace_hook_result_or_exception(self):
+        result = {"hookSpecificOutput": {"hookEventName": "SessionStart"}}
+        for failure in ("callback_context", "callback_members"):
+            with self.subTest(failure=failure), patch.object(claude, "lifecycle_hook", return_value=result), patch.object(store, failure, side_effect=RuntimeError("private callback detail")):
+                self.assertIs(claude.handle_hook({"session_id": self.session}), result)
+            original = ValueError("original lifecycle failure")
+            with self.subTest(failure=failure, lifecycle="raises"), patch.object(claude, "lifecycle_hook", side_effect=original), patch.object(store, failure, side_effect=RuntimeError("private callback detail")):
+                with self.assertRaises(ValueError) as raised:
+                    claude.handle_hook({"session_id": self.session})
+                self.assertIs(raised.exception, original)
+        with patch.object(claude, "lifecycle_hook", return_value=result), patch.object(store.grokbot_callback, "notify", side_effect=RuntimeError("private callback detail")):
+            self.assertIs(claude.handle_hook({"session_id": self.session}), result)
 
     def test_identity_is_provider_namespaced_stable_and_preserves_opaque_ids(self):
         self.assertEqual(claude.identity(self.session, "agent-a7"), claude.identity(self.session, "agent-a7"))
@@ -74,6 +87,32 @@ class ClaudeAdapterTests(unittest.TestCase):
         self.hook("SessionEnd")
         self.assertEqual(store.member(self.team, self.root)["state"], "ended")
 
+    def test_permission_and_idle_notifications_are_informational(self):
+        self.hook("UserPromptSubmit")
+        self.hook("Stop")
+        for notification in ("permission_prompt", "idle_prompt"):
+            self.hook("Notification", notification_type=notification, message="May I continue?")
+            self.assertEqual(store.member(self.team, self.root)["state"], "idle")
+        self.hook("StopFailure", error="failed")
+        self.hook("Notification", notification_type="idle_prompt")
+        self.assertEqual(store.member(self.team, self.root)["state"], "blocked")
+
+    def test_late_approval_input_is_filtered_before_registration(self):
+        callback = store.grokbot_callback
+        for state in ("completed", "failed", "ended"):
+            with self.subTest(state=state):
+                self.hook("SessionStart")
+                session = "terminal-" + state
+                event = {"session_id": session, "hook_event_name": "PermissionRequest", "tool_name": "Bash"}
+                actor = claude.identity(session)
+                team = "claude-" + session
+                with patch.object(callback, "input_request", return_value=("approval", "Bash")), \
+                     patch.object(callback, "input_blocked", return_value=True) as blocked:
+                    claude.handle_hook(event)
+                    blocked.assert_called_once_with("claude", event)
+                with self.assertRaises(ValueError):
+                    store.member(team, actor)
+
     def test_session_end_finishes_only_children_of_that_native_session(self):
         self.hook("SubagentStart", agent_id="child")
         claude.handle_hook({"session_id": "independent-background", "hook_event_name": "UserPromptSubmit"})
@@ -117,10 +156,11 @@ class ClaudeAdapterTests(unittest.TestCase):
 
     def test_session_environment_uses_supported_file_and_not_codex_identity(self):
         path = self.path / "environment"
-        with patch.dict(os.environ, {"CLAUDE_ENV_FILE": str(path)}): self.hook("SessionStart")
+        with patch.dict(os.environ, {"CLAUDE_ENV_FILE": str(path), "GROKBOT_CALLBACK": "bot"}), patch.object(store.grokbot_callback, "notify"): self.hook("SessionStart")
         content = path.read_text()
         self.assertIn("export REX_COORD_PROVIDER=claude", content)
         self.assertIn("REX_COORD_THREAD", content)
+        self.assertIn("export GROKBOT_PARENT_SESSION=" + self.session, content)
         self.assertNotIn("CODEX_THREAD_ID", content)
         self.hook("PostToolUse", agent_id="worker", tool_name="SendMessage", tool_input={"recipient": "lead", "content": "do not duplicate private message"})
         self.assertEqual(store.snapshot(self.team)["events"][-1]["text"], "Native SendMessage to lead")

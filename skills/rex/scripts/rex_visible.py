@@ -9,7 +9,6 @@ import fcntl
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import shlex
 import shutil
@@ -17,6 +16,7 @@ import subprocess
 import sys
 import time
 import uuid
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 STATE = Path(os.environ.get("REX_VISIBLE_STATE_DIR", str(Path.home() / ".local/state/rex-visible"))).expanduser()
@@ -125,6 +125,7 @@ def atomic_json(path, data):
 
 def state_dir():
     STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    STATE.chmod(0o700)
     return STATE
 
 
@@ -139,7 +140,7 @@ def rex_cli():
         environment.pop("REX_SERVER", None)
         result = subprocess.run(
             [executable, "--timeout", "5s", "--autostart=false", "whoami", "--json"],
-            capture_output=True, text=True, env=environment,
+            capture_output=True, text=True, env=environment, check=False,
         )
         if result.returncode:
             raise RuntimeError("Cannot discover the local Rex server with rex whoami")
@@ -153,7 +154,7 @@ def rex_cli():
 
 
 def rex_json(arguments):
-    result = subprocess.run(rex_cli() + arguments, capture_output=True, text=True)
+    result = subprocess.run(rex_cli() + arguments, capture_output=True, text=True, check=False)
     if result.returncode:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip())
     return json.loads(result.stdout)
@@ -197,7 +198,7 @@ def close_pane(session, block):
     """Close a known owned pane, including Rex's retained failed terminals."""
     sessions = {s["session_id"] for s in rex_json(["ls", "--json"])["sessions"]}
     if session in sessions and block in {b["block_id"] for b in blocks(rex_json(["session", "inspect", session, "--json"]))}:
-        result = subprocess.run(rex_cli() + ["block", "close", "-s", session, block], capture_output=True, text=True)
+        result = subprocess.run(rex_cli() + ["block", "close", "-s", session, block], capture_output=True, text=True, check=False)
         if result.returncode:
             raise RuntimeError(result.stderr.strip() or result.stdout.strip())
 
@@ -208,7 +209,7 @@ def retire_empty_session(session, main):
         return
     live = {s["session_id"] for s in rex_json(["ls", "--json"])["sessions"]}
     if session in live and not rex_json(["block", "ls", "-s", session, "--json"])["blocks"]:
-        result = subprocess.run(rex_cli() + ["kill", session], capture_output=True, text=True)
+        result = subprocess.run(rex_cli() + ["kill", session], capture_output=True, text=True, check=False)
         if result.returncode:
             raise RuntimeError(result.stderr.strip() or result.stdout.strip())
 
@@ -260,7 +261,7 @@ def run(args):
     # Quiet mode keeps full output in Rex and returns only receipts to the agent.
     last = ""
     while True:
-        result = subprocess.run(rex_cli() + ["capture", "-s", opened["session_id"], "-b", opened["block_id"], "--trim", "--unwrap"], capture_output=True, text=True)
+        result = subprocess.run(rex_cli() + ["capture", "-s", opened["session_id"], "-b", opened["block_id"], "--trim", "--unwrap"], capture_output=True, text=True, check=False)
         if result.returncode == 0:
             content = result.stdout
             if not args.quiet and content.startswith(last):
@@ -271,9 +272,9 @@ def run(args):
         if status.exists():
             completed = json.loads(status.read_text())
             # A job can finish between the capture and the status check.
-            final = subprocess.run(rex_cli() + ["capture", "-s", opened["session_id"], "-b", opened["block_id"], "--trim", "--unwrap"], capture_output=True, text=True)
+            final = subprocess.run(rex_cli() + ["capture", "-s", opened["session_id"], "-b", opened["block_id"], "--trim", "--unwrap"], capture_output=True, text=True, check=False)
             if not args.quiet and final.returncode == 0 and final.stdout != last:
-                print(final.stdout[len(last):] if final.stdout.startswith(last) else final.stdout, end="", flush=True)
+                print(final.stdout.removeprefix(last), end="", flush=True)
             print("\n" + json.dumps(completed), flush=True)
             return completed["exit_code"]
         if result.returncode:
@@ -286,7 +287,7 @@ def job(args):
     started = time.time()
     try:
         # Login environment matches ordinary Rex command startup. Terminal I/O is inherited.
-        result = subprocess.run([args.shell, "-lc", args.command])
+        result = subprocess.run([args.shell, "-lc", args.command], check=False)
         code = result.returncode if result.returncode >= 0 else 128 - result.returncode
     except KeyboardInterrupt:
         code = 130

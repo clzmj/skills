@@ -6,10 +6,10 @@
 import copy
 import importlib.util
 import json
-from pathlib import Path
 import shlex
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("rex_installer", Path(__file__).with_name("install_hooks.py"))
@@ -46,6 +46,7 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(data["hooks"]["PreToolUse"][0], unrelated)
             self.assertEqual(data["trust"], original["trust"])
             self.assertEqual(data["permissions"], original["permissions"])
+            self.assertIn("PermissionRequest", data["hooks"])
             for event, groups in data["hooks"].items():
                 for group in groups:
                     for handler in group["hooks"]:
@@ -74,6 +75,23 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(data["hooks"]["SessionEnd"][0]["hooks"][1], unrelated)
             self.assertEqual(data["hooks"]["SessionEnd"][0]["matcher"], "keep")
 
+    def test_post_tool_resume_observer_preserves_unrelated_matchers(self):
+        home = Path("/test-home")
+        root = home / ".local/share/agent-tooling/rex"
+        for codex, script in ((True, "codex_sessions.py"), (False, "claude_sessions.py")):
+            owned = {"type": "command", "command": shlex.join(["uv", "run", "--script", str(root / script), "hook"])}
+            unrelated = {"type": "command", "command": "/custom/observer", "timeout": 7}
+            mixed = {"matcher": "Bash", "hooks": [copy.deepcopy(owned), unrelated], "custom": "preserved"}
+            data = {"hooks": {"PostToolUse": [mixed, {"matcher": "SendMessage", "hooks": [copy.deepcopy(owned)]}]}}
+            installer.rex_hooks(data, root, home, "/opt/tools/uv", codex)
+            self.assertEqual(mixed, {"matcher": "Bash", "hooks": [unrelated], "custom": "preserved"})
+            observers = [group for group in data["hooks"]["PostToolUse"] if group is not mixed]
+            self.assertEqual(len(observers), 2)
+            self.assertTrue(all("matcher" not in group for group in observers))
+            before = copy.deepcopy(data)
+            installer.rex_hooks(data, root, home, "/opt/tools/uv", codex)
+            self.assertEqual(data, before)
+
     def test_claude_has_native_lifecycle_and_preserves_settings(self):
         with tempfile.TemporaryDirectory() as folder:
             home = Path(folder)
@@ -86,7 +104,7 @@ class InstallerTests(unittest.TestCase):
             data = json.loads(path.read_text())
             self.assertEqual(data["permissions"], original["permissions"])
             self.assertEqual(data["enabledPlugins"], original["enabledPlugins"])
-            self.assertTrue({"SessionStart", "UserPromptSubmit", "PreToolUse", "SubagentStart", "SubagentStop", "Stop", "StopFailure", "SessionEnd", "TeammateIdle", "TaskCreated", "TaskCompleted"}.issubset(data["hooks"]))
+            self.assertTrue({"SessionStart", "UserPromptSubmit", "PreToolUse", "SubagentStart", "SubagentStop", "Stop", "StopFailure", "SessionEnd", "TeammateIdle", "TaskCreated", "TaskCompleted", "Notification", "PermissionRequest"}.issubset(data["hooks"]))
             commands = [handler["command"] for groups in data["hooks"].values() for group in groups for handler in group["hooks"]]
             self.assertTrue(any("claude_sessions.py" in command for command in commands))
             self.assertFalse(any("codex_sessions.py" in command for command in commands))
