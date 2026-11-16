@@ -7,7 +7,7 @@ description: Audit code for repeated or closed string values and untyped records
 
 Review domain values as typed values, not scattered strings or ad hoc dictionaries. Flag repeated domain literals, finite choices represented by strings, string-key field access such as `d["status"]` or `obj["kind"]`, and untyped dict/map/object records. A dictionary with genuinely dynamic runtime keys is appropriate.
 
-The scanner has fixture-tested mappings for Python, JavaScript, TypeScript/TSX, Go, Rust, Java, Kotlin, C#, Swift, Ruby, PHP, Elixir, and SQL. It finds repeated literals and repeated string-key indexing per file (Python, JS/TS/TSX, Go, Ruby, PHP); it cannot infer receiver types or prove a record is untyped. Review boundary parsing and record shapes manually, even when the scan is clean. Unfamiliar literal forms are skipped; SQL coverage is grammar/dialect dependent. Custom mappings use `--extension .ext=grammar` or JSON config `extensions` and require fixtures before relying on them.
+The scanner has fixture-tested mappings for Python, JavaScript, TypeScript/TSX, Go, Rust, Java, Kotlin, C#, Swift, Ruby, PHP, Elixir, and SQL. Repeated-key detection supports only Python, JavaScript, TypeScript/TSX, Go, Ruby, and PHP, and groups accesses per file. It cannot infer receiver types or prove a record is untyped. Review boundary parsing and record shapes manually, even when the scan is clean. Unfamiliar literal forms are skipped; SQL coverage is grammar/dialect dependent. Custom mappings use `--extension .ext=grammar` or JSON config `extensions` and require fixtures before relying on them.
 
 ## Audit mode
 
