@@ -154,6 +154,8 @@ uv run --locked python -m unittest discover -s tests -p test_anti_strings.py
 
 The standalone scanner keeps its inline dependencies. The development environment supplies the same parser dependencies to ty; no global tools or extra search paths are required. Ruff permits the two files' existing compact statements so unrelated formatting stays intact.
 
+Anti-strings JSON reports include a per-entry `reason` in `coverage.excluded`, `coverage.unsupported`, and `coverage.parse_errors` (for example, `test_file`, `parser_unavailable`, and `parse_error`). Parse-error entries also identify the file, language, line, and column. See the [skill's audit mode](skills/anti-strings/SKILL.md#audit-mode) for report interpretation.
+
 ## Hosting and cost controls
 
 A Cloudflare Worker serves an allowlist from a private R2 bucket. Terraform owns the bucket and custom domain; Wrangler owns the code and bindings. Doppler feeds scoped GitHub environments. See [deployment](docs/deployment.md) and [infrastructure](infra/README.md).
