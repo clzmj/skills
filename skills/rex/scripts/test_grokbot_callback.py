@@ -333,6 +333,59 @@ class CallbackTests(unittest.TestCase):
             self.assertIsNone(self.queued("codex", self.data("Stop", turn_id=turn)))
             self.assertEqual(callback.health()["failed"], [])
 
+    def test_failed_delivery_receipt_error_does_not_escape_or_lose_retry(self):
+        for error in (OSError("receipt unavailable"), RuntimeError("receipt unavailable")):
+            turn = type(error).__name__
+            self.queued("codex", self.data("UserPromptSubmit", turn_id=turn))
+            path = self.queued("codex", self.data("Stop", turn_id=turn))
+            self.statuses[:] = [503, 503, 503]
+            with patch.object(callback, "receipt", side_effect=error):
+                self.assertFalse(callback.deliver(path))
+            self.assertTrue(path.exists())
+            self.assertEqual(len(callback.health()["failed"]), 1)
+            self.assertEqual(callback.health()["failed"][0]["outcome"], "delivery_failed")
+            self.assertEqual(callback.retry(), {"delivered": 1, "failed": 0})
+            self.assertFalse(path.exists())
+
+    def test_existing_sent_marker_after_acceptance_does_not_repeat_post(self):
+        path = self.queued("codex", self.data("Stop"))
+        envelope = json.loads(path.read_text())
+        original_open = os.open
+
+        def concurrently_marked(file, flags, mode=0o777, **kwargs):
+            descriptor = original_open(file, flags, mode, **kwargs)
+            if Path(file).name.startswith("grokbot-sent-"):
+                os.close(descriptor)
+                raise FileExistsError("another worker marked this delivery")
+            return descriptor
+
+        with patch.object(os, "open", side_effect=concurrently_marked):
+            self.assertTrue(callback.deliver(path))
+        self.assertFalse(path.exists())
+        self.assertEqual(callback.retry(), {"delivered": 0, "failed": 0})
+        self.assertTrue(callback.deliver(self.spool(envelope)))
+        self.assertEqual(len(self.requests), 1)
+
+    def test_sent_marker_error_removes_accepted_spool_before_reraising(self):
+        original_open = os.open
+        for error in (PermissionError("marker unavailable"), RuntimeError("marker unavailable")):
+            turn = type(error).__name__
+            self.queued("codex", self.data("UserPromptSubmit", turn_id=turn))
+            path = self.queued("codex", self.data("Stop", turn_id=turn))
+            start = len(self.requests)
+
+            def marker_unavailable(file, flags, mode=0o777, *, failure=error, **kwargs):
+                if Path(file).name.startswith("grokbot-sent-"):
+                    raise failure
+                return original_open(file, flags, mode, **kwargs)
+
+            with patch.object(os, "open", side_effect=marker_unavailable), self.assertRaises(type(error)) as raised:
+                callback.deliver(path)
+            self.assertIs(raised.exception, error)
+            self.assertFalse(path.exists())
+            self.assertEqual(callback.retry(), {"delivered": 0, "failed": 0})
+            self.assertEqual(len(self.requests) - start, 1)
+
     def test_private_fd_rejects_symlinks_without_touching_target(self):
         target = self.root / "outside-state"
         target.write_text("preserve this file")
