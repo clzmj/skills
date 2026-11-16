@@ -5,12 +5,23 @@
 # ///
 """Install independent Rex hooks without changing Python hooks or host trust."""
 import argparse
+import importlib.util
 import json
 import re
 import shlex
 import shutil
 import time
 from pathlib import Path
+
+from grokbot_callback import HookEvent, ToolName
+
+
+CODEX_QUESTION_TOOL_MATCHER = "^({}|{})$".format(
+    ToolName.REQUEST_USER_INPUT, ToolName.REQUEST_USER_INPUT_ASYNC
+)
+REX_VISIBLE_PRE_TOOL_MATCHER = "Bash|exec_command|shell|shell_command"
+CODEX_SESSIONS_SCRIPT = "codex_sessions.py"
+CLAUDE_SESSIONS_SCRIPT = "claude_sessions.py"
 
 
 def write(path, content):
@@ -52,37 +63,42 @@ def owned_handler(command, script, home, root):
 
 
 def rex_hooks(data, root, home, uv, codex):
-    definitions = [("rex_visible.py", ("SessionStart", "UserPromptSubmit", "PreToolUse"))]
+    definitions = [("rex_visible.py", (HookEvent.SESSION_START, HookEvent.USER_PROMPT_SUBMIT, HookEvent.PRE_TOOL_USE))]
     if codex:
-        definitions.append(("codex_sessions.py", ("SessionStart", "UserPromptSubmit", "SubagentStart", "SubagentStop", "Stop", "SessionEnd", "PreToolUse", "PostToolUse", "PermissionRequest")))
+        definitions.append((CODEX_SESSIONS_SCRIPT, (HookEvent.SESSION_START, HookEvent.USER_PROMPT_SUBMIT, HookEvent.SUBAGENT_START, HookEvent.SUBAGENT_STOP, HookEvent.STOP, HookEvent.SESSION_END, HookEvent.PRE_TOOL_USE, HookEvent.POST_TOOL_USE, HookEvent.PERMISSION_REQUEST)))
     else:
-        definitions.append(("claude_sessions.py", ("SessionStart", "UserPromptSubmit", "SubagentStart", "SubagentStop", "PreToolUse", "PostToolUse", "Stop", "StopFailure", "SessionEnd", "TeammateIdle", "TaskCreated", "TaskCompleted", "Notification", "PermissionRequest", "PostModelSwitch")))
+        definitions.append((CLAUDE_SESSIONS_SCRIPT, (HookEvent.SESSION_START, HookEvent.USER_PROMPT_SUBMIT, HookEvent.SUBAGENT_START, HookEvent.SUBAGENT_STOP, HookEvent.PRE_TOOL_USE, HookEvent.POST_TOOL_USE, HookEvent.STOP, HookEvent.STOP_FAILURE, HookEvent.SESSION_END, "TeammateIdle", "TaskCreated", "TaskCompleted", HookEvent.NOTIFICATION, HookEvent.PERMISSION_REQUEST, "PostModelSwitch")))
     for script, events in definitions:
         for event in events:
             command = shlex.join([uv, "run", "--script", str(root / script), "hook"])
             groups = data.setdefault("hooks", {}).setdefault(event, [])
-            if event == "PostToolUse" or (event == "PreToolUse" and script == "codex_sessions.py"):
+            if event == HookEvent.POST_TOOL_USE or (event == HookEvent.PRE_TOOL_USE and script == CODEX_SESSIONS_SCRIPT):
                 for group in list(groups):
                     owned = [handler for handler in group.get("hooks", [])
                              if owned_handler(handler.get("command", ""), script, home, root)]
-                    if owned and group.get("matcher"):
-                        if len(owned) == len(group["hooks"]):
-                            group.pop("matcher")
-                        else:
-                            # Broaden our lifecycle observer without widening unrelated handlers.
-                            group["hooks"] = [handler for handler in group["hooks"] if handler not in owned]
-                            groups.append({"hooks": owned})
+                    if owned:
+                        # Move owned observers to a dedicated group so their new matcher
+                        # cannot narrow unrelated handlers sharing the old group.
+                        group["hooks"] = [handler for handler in group.get("hooks", []) if handler not in owned]
+                        if not group["hooks"]:
+                            groups.remove(group)
+                        groups.append({"hooks": owned})
             existing = [handler for group in groups for handler in group.get("hooks", [])
                         if owned_handler(handler.get("command", ""), script, home, root)]
             if existing:
                 for handler in existing:
                     handler["command"] = command
-                    if event == "SessionEnd":
+                    if event == HookEvent.SESSION_END:
                         handler["timeout"] = 3
+                if event == HookEvent.PRE_TOOL_USE and script == CODEX_SESSIONS_SCRIPT and codex:
+                    for group in groups:
+                        if any(owned_handler(handler.get("command", ""), script, home, root)
+                               for handler in group.get("hooks", [])):
+                            group["matcher"] = CODEX_QUESTION_TOOL_MATCHER
                 continue
-            matcher = "Bash|exec_command|shell|shell_command" if event == "PreToolUse" and script == "rex_visible.py" else None
+            matcher = REX_VISIBLE_PRE_TOOL_MATCHER if event == HookEvent.PRE_TOOL_USE and script == "rex_visible.py" else (CODEX_QUESTION_TOOL_MATCHER if event == HookEvent.PRE_TOOL_USE and script == CODEX_SESSIONS_SCRIPT and codex else None)
             group = {"hooks": [{"type": "command", "command": command,
-                                 "timeout": 3 if event == "SessionEnd" else (20 if event == "SubagentStart" else 5)}]}
+                                 "timeout": 3 if event == HookEvent.SESSION_END else (20 if event == HookEvent.SUBAGENT_START else 5)}]}
             if matcher:
                 group["matcher"] = matcher
             groups.append(group)

@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import uuid
 from collections import OrderedDict, deque
 from contextlib import closing, contextmanager
@@ -64,9 +65,8 @@ class ToolName(StrEnum):
     REQUEST_USER_INPUT_ASYNC = "request_user_input_async"
 
 
-class Question(TypedDict, total=False):
+class Question(TypedDict):
     question: str
-    title: str
 
 
 class QuestionInput(TypedDict):
@@ -396,18 +396,32 @@ def git_metadata(cwd):
                        head_sha=git("rev-parse", "HEAD"))
 
 
+def validate_question_input(value: Any) -> QuestionInput | None:
+    """Validate untrusted host input and build a typed, tool-independent record."""
+    if not isinstance(value, dict) or not isinstance(value.get("questions"), list):
+        return None
+    questions: list[Question] = []
+    for item in value["questions"]:
+        if not isinstance(item, dict):
+            return None
+        text = next((item[key] for key in ("question", "title") if isinstance(item.get(key), str)), None)
+        if text is None:
+            return None
+        questions.append(Question(question=text))
+    return QuestionInput(questions=questions)
+
+
+def question_text(data) -> list[str]:
+    inputs = validate_question_input(data.get("tool_input"))
+    return [item["question"] for item in inputs["questions"]] if inputs else []
+
+
 def input_request(data, agent=AgentKind.CODEX) -> tuple[InputKind, str] | None:
     name = data.get("hook_event_name")
     notification = data.get("notification_type", "")
     if (agent == AgentKind.CODEX and name == HookEvent.PRE_TOOL_USE
             and data.get("tool_name") in tuple(ToolName)):
-        inputs = data.get("tool_input")
-        if not isinstance(inputs, dict) or not isinstance(inputs.get("questions"), list):
-            return None
-        question_input: QuestionInput = inputs
-        questions = [item.get("question") or item.get("title") for item in question_input["questions"]
-                     if isinstance(item, dict)]
-        prompt = "\n".join(text for text in questions if isinstance(text, str) and text.strip())
+        prompt = "\n".join(text for text in question_text(data) if text.strip())
         return (InputKind.QUESTION, prompt[:1000]) if prompt else None
     if name == HookEvent.PERMISSION_REQUEST or (agent != AgentKind.CLAUDE and name == HookEvent.NOTIFICATION and notification == NotificationType.PERMISSION_PROMPT):
         kind = InputKind.APPROVAL
@@ -448,6 +462,12 @@ def input_blocked(agent, data):
 
 
 def request_identity(data):
+    if data.get("hook_event_name") == HookEvent.PRE_TOOL_USE and data.get("tool_name") in tuple(ToolName):
+        # A blocking→async fallback is one question, independent of tool/call IDs.
+        # Hash full text before display truncation; delivery_key supplies the turn.
+        identity = [InputKind.QUESTION, [" ".join(unicodedata.normalize("NFKC", text).split()).casefold()
+                                          for text in question_text(data) if text.strip()]]
+        return hashlib.sha256(json.dumps(identity, ensure_ascii=False).encode()).hexdigest()
     identifier = data.get("request_id") or data.get("permission_request_id") or data.get("tool_use_id") or data.get("tool_call_id")
     identity = ["id", identifier] if identifier else ["content", data.get("tool_name") or "", data.get("tool_input") or {},
                                                     data.get("message") or data.get("prompt") or ""]

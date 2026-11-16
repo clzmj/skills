@@ -22,6 +22,8 @@ import claude_sessions
 import codex_sessions
 import grokbot_callback as callback
 
+TEST_ACTIVITY_TOOL = "Bash"
+
 
 class CallbackTests(unittest.TestCase):
     def setUp(self):
@@ -276,31 +278,31 @@ class CallbackTests(unittest.TestCase):
         self.assertEqual(len(self.requests), 1)
 
     def test_codex_request_user_input_questions_emit_untrusted_question(self):
-        self.queued("codex", self.data("UserPromptSubmit", turn_id="turn-question"))
+        self.queued(callback.AgentKind.CODEX, self.data(callback.HookEvent.USER_PROMPT_SUBMIT, turn_id="turn-question"))
         questions = [{"question": "Which region?", "header": "Region", "id": "region",
                       "options": [{"label": "East", "description": "Eastern region"}, {"label": "West"}]},
                      {"title": "How many?", "options": ["one", "two"]}]
-        event = self.data("PreToolUse", turn_id="turn-question", tool_name="request_user_input",
+        event = self.data(callback.HookEvent.PRE_TOOL_USE, turn_id="turn-question", tool_name=callback.ToolName.REQUEST_USER_INPUT,
                           tool_use_id="stable-question-id", tool_input={"questions": questions})
-        path = self.queued("codex", event)
+        path = self.queued(callback.AgentKind.CODEX, event)
         self.assertIsNotNone(path)
-        duplicate = self.queued("codex", event)
+        duplicate = self.queued(callback.AgentKind.CODEX, event)
         self.assertIsNone(duplicate)
         self.drain()
-        body = next(body for body, _ in self.requests if body["event"] == "needs_input")
-        self.assertEqual(body["kind"], "question")
+        body = next(body for body, _ in self.requests if body["event"] == callback.Event.NEEDS_INPUT)
+        self.assertEqual(body["kind"], callback.InputKind.QUESTION)
         self.assertIn("Which region?", body["prompt_text"])
         self.assertIn("How many?", body["prompt_text"])
-        self.assertEqual(body["untrusted"], ["last_message", "prompt_text", "cwd", "repo", "branch", "head_sha", "task_id"])
+        self.assertEqual(body["untrusted"], list(callback.UNTRUSTED_FIELDS))
         self.assertEqual(body["lineage"]["agent_session_id"], event["session_id"])
         self.assertEqual(len(self.requests), 1)
-        self.assertEqual(self.session_status("codex", event["session_id"]), "waiting")
-        self.queued("codex", {**event, "hook_event_name": "PostToolUse", "tool_response": {"answers": {"region": "East"}}})
-        self.assertEqual(self.session_status("codex", event["session_id"]), "running")
+        self.assertEqual(self.session_status(callback.AgentKind.CODEX, event["session_id"]), callback.Status.WAITING)
+        self.queued(callback.AgentKind.CODEX, {**event, "hook_event_name": callback.HookEvent.POST_TOOL_USE, "tool_response": {"answers": {"region": "East"}}})
+        self.assertEqual(self.session_status(callback.AgentKind.CODEX, event["session_id"]), callback.Status.RUNNING)
 
     def test_codex_question_malformed_fails_open_and_async_waits_for_later_activity(self):
         root = self.data()["session_id"]
-        bad = self.data("PreToolUse", tool_name="request_user_input", tool_use_id="bad",
+        bad = self.data(callback.HookEvent.PRE_TOOL_USE, tool_name=callback.ToolName.REQUEST_USER_INPUT, tool_use_id="bad",
                         tool_input={"questions": [{"question": 3}]})
         self.assertIsNone(callback.input_request(bad))
         for inputs in (None, [], "invalid", {"questions": None}, {"questions": "bad"}, {"questions": [None, 3, {}]}):
@@ -310,18 +312,87 @@ class CallbackTests(unittest.TestCase):
                 self.assertEqual(codex_sessions.handle_hook(event), {})
             launch.assert_not_called()
         with patch.object(callback.subprocess, "Popen"):
-            codex_sessions.handle_hook(self.data("UserPromptSubmit"))
-            codex_sessions.handle_hook(self.data("PreToolUse", tool_name="request_user_input_async",
+            codex_sessions.handle_hook(self.data(callback.HookEvent.USER_PROMPT_SUBMIT))
+            codex_sessions.handle_hook(self.data(callback.HookEvent.PRE_TOOL_USE, tool_name=callback.ToolName.REQUEST_USER_INPUT_ASYNC,
                                                   tool_use_id="async", tool_input={"questions": [{"title": "Choose"}]}))
-            self.assertEqual(codex_sessions.member(root, root)["state"], "waiting")
-            self.assertEqual(self.session_status("codex", root), "waiting")
-            codex_sessions.handle_hook(self.data("PostToolUse", tool_name="request_user_input_async",
+            self.assertEqual(codex_sessions.member(root, root)["state"], callback.MemberState.WAITING)
+            self.assertEqual(self.session_status(callback.AgentKind.CODEX, root), callback.Status.WAITING)
+            codex_sessions.handle_hook(self.data(callback.HookEvent.POST_TOOL_USE, tool_name=callback.ToolName.REQUEST_USER_INPUT_ASYNC,
                                                   tool_use_id="async", tool_input={"questions": [{"title": "Choose"}]}))
-            self.assertEqual(codex_sessions.member(root, root)["state"], "waiting")
-            self.assertEqual(self.session_status("codex", root), "waiting")
-            codex_sessions.handle_hook(self.data("PostToolUse", tool_name="Bash"))
-            self.assertEqual(codex_sessions.member(root, root)["state"], "working")
-            self.assertEqual(self.session_status("codex", root), "running")
+            self.assertEqual(codex_sessions.member(root, root)["state"], callback.MemberState.WAITING)
+            self.assertEqual(self.session_status(callback.AgentKind.CODEX, root), callback.Status.WAITING)
+            codex_sessions.handle_hook(self.data(callback.HookEvent.POST_TOOL_USE, tool_name=TEST_ACTIVITY_TOOL))
+            self.assertEqual(codex_sessions.member(root, root)["state"], callback.MemberState.WORKING)
+            self.assertEqual(self.session_status(callback.AgentKind.CODEX, root), callback.Status.RUNNING)
+
+    def question_event(self, tool=callback.ToolName.REQUEST_USER_INPUT, text="Which region?", call="question-call"):
+        return self.data(callback.HookEvent.PRE_TOOL_USE, tool_name=tool, tool_use_id=call,
+                         tool_input={"questions": [{"question": text}]})
+
+    def test_question_fallback_and_repeated_question_dedupe_per_turn(self):
+        self.queued(callback.AgentKind.CODEX, self.data(callback.HookEvent.USER_PROMPT_SUBMIT))
+        self.queued(callback.AgentKind.CODEX, self.question_event())
+        self.drain()
+        # Same content, fresh call IDs, and schema/tool changes all retain one key.
+        fallback = self.question_event(callback.ToolName.REQUEST_USER_INPUT_ASYNC, "  WHICH\n region? ", "fallback-call")
+        fallback["tool_input"] = {"questions": [{"title": "  WHICH\n region? "}]}
+        self.assertIsNone(self.queued(callback.AgentKind.CODEX, fallback))
+        self.assertIsNone(self.queued(callback.AgentKind.CODEX, self.question_event(call="asked-again")))
+        self.drain()
+        self.assertEqual(len(self.requests), 1)
+        # Distinct questions in the same turn, and the same question next turn, deliver.
+        self.queued(callback.AgentKind.CODEX, self.question_event(text="Which city?", call="different"))
+        self.drain()
+        self.assertEqual(len(self.requests), 2)
+        self.queued(callback.AgentKind.CODEX, self.data(callback.HookEvent.USER_PROMPT_SUBMIT))
+        self.queued(callback.AgentKind.CODEX, self.question_event(call="next-turn"))
+        self.drain()
+        self.assertEqual(len(self.requests), 3)
+
+    def test_question_validation_uses_first_string_and_identity_precedes_truncation(self):
+        event = self.question_event()
+        event["tool_input"] = {"questions": [{"question": 7, "title": "Use title"}]}
+        self.assertEqual(callback.input_request(event), (callback.InputKind.QUESTION, "Use title"))
+        event["tool_input"] = {"questions": [{"question": "", "title": "Do not fall through"}]}
+        self.assertIsNone(callback.input_request(event))
+        first = self.question_event(text="x" * 1000 + "a")
+        second = self.question_event(text="x" * 1000 + "b")
+        self.assertEqual(callback.input_request(first), callback.input_request(second))
+        self.assertNotEqual(callback.request_identity(first), callback.request_identity(second))
+
+    def test_question_and_permission_deliver_independently_and_claude_tool_is_ignored(self):
+        self.assertIsNone(self.queued(callback.AgentKind.CLAUDE, self.question_event()))
+        self.queued(callback.AgentKind.CODEX, self.data(callback.HookEvent.USER_PROMPT_SUBMIT))
+        self.queued(callback.AgentKind.CODEX, self.question_event())
+        self.queued(callback.AgentKind.CODEX, self.data(callback.HookEvent.PERMISSION_REQUEST,
+                                                      tool_use_id="approval-call", prompt="Allow this?"))
+        self.drain()
+        self.assertEqual(len(self.requests), 2)
+        self.assertEqual({body["kind"] for body, _ in self.requests},
+                         {callback.InputKind.QUESTION, callback.InputKind.APPROVAL})
+
+    def test_async_acceptance_real_delivery_and_private_files(self):
+        event = self.question_event(callback.ToolName.REQUEST_USER_INPUT_ASYNC)
+        self.queued(callback.AgentKind.CODEX, self.data(callback.HookEvent.USER_PROMPT_SUBMIT))
+        previous_umask = os.umask(0)
+        try:
+            spool = self.queued(callback.AgentKind.CODEX, event)
+            self.assertEqual(spool.stat().st_mode & 0o777, 0o600)
+            self.drain()  # Real POST to the loopback receiver, not a mocked transport.
+            self.queued(callback.AgentKind.CODEX, {**event, "hook_event_name": callback.HookEvent.POST_TOOL_USE,
+                                                  "tool_response": json.dumps({"accepted": True})})
+        finally:
+            os.umask(previous_umask)
+        self.assertEqual(len(self.requests), 1)
+        self.assertEqual(self.requests[0][0]["kind"], callback.InputKind.QUESTION)
+        self.assertEqual(self.session_status(callback.AgentKind.CODEX, event["session_id"]), callback.Status.WAITING)
+        records = [json.loads(line) for line in callback.receipt_lines()]
+        delivered = [row for row in records if row["outcome"] == callback.Outcome.DELIVERED]
+        self.assertEqual(len(delivered), 1)
+        self.assertEqual(delivered[0]["http_status"], 204)
+        for path in (self.root / "state").glob("grokbot-*"):
+            if path.is_file():
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600, path.name)
 
     def test_claude_approval_notifications_do_not_duplicate_permission_requests(self):
         for notification_first in (False, True):

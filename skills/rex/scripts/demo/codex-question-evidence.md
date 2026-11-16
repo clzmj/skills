@@ -73,3 +73,41 @@ Final checks: `uv run --script scripts/check.py` passed both Python suites
 (25 + 111 tests); `bun test` passed 105 tests across seven files (715 assertions).
 The intentional baseline failure log and full suite logs remain under the same
 local probe directory.
+
+## PR review follow-up: matcher verification
+
+A new isolated real Codex 0.167.2 TUI run registered three PreToolUse groups:
+no matcher (control), `^(request_user_input|request_user_input_async)$`, and
+`^never_matches_a_real_tool$` (negative control). Default mode exercised the
+async question and `pwd`; Plan mode exercised a blocking question and then
+`pwd` after selecting Blue. The control captured both question tools and Bash;
+the question matcher captured only the two question tools; the negative control
+captured zero events. Matching call IDs:
+
+| Tool | Unfiltered control | Question matcher |
+| --- | --- | --- |
+| request_user_input_async | call_e05ea4656d7c40bf91eee2be78547b5a | same |
+| Bash (pwd) | exec-208c7d4e-1b5b-4a87-b82a-b776e2511cf5 | absent |
+| request_user_input | call_2edb3a5312d4442fbb175c8aa61cf8e7 | same |
+
+Private raw payloads are `/tmp/codex-question-review/all.jsonl` and
+`matched.jsonl`, mode 0600. Codex therefore honors the narrow matcher; no
+all-tools import/filter fallback is needed. The existing broad PostToolUse
+observer still records answers and later activity.
+
+The read-only Claude `bun run test` denial is separate and predates this PR:
+`rex_visible.classify` marks Bun commands containing the `test` argument as test
+work, and its PreToolUse guard denies direct shell execution with instructions
+to use the visible Rex runner. There is no read-only/review exception. The Claude
+lifecycle adapter itself returns no permission decision on PreToolUse. Changing
+that visibility policy is outside this question callback fix; it is unchanged.
+
+Review-fix regression coverage now sends real loopback HTTP requests for
+blocking-to-async content dedupe, a question repeated with fresh call IDs, a new
+turn asking the same question, distinct question/approval deliveries, and async
+acceptance remaining waiting after delivery. It also checks first-string field
+selection, full-text identity before truncation, ignored Claude question-tool
+PreToolUse and callback file modes under umask 000.
+
+Final review-fix suites: **141 Python tests** (25 + 116), **105 Bun tests**
+(715 assertions), all passed. Logs are under `/tmp/codex-question-review`.

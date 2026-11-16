@@ -122,17 +122,27 @@ contains `requester_bot`, `root_session_id`,
 | `finished_at` | ISO 8601 timestamp with offset (webhook event time) |
 
 Completion text, Git metadata, task and requester are frozen before spooling.
-Session/turn/event/kind/request claims deduplicate input delivery. A native request
-ID (`request_id`, `permission_request_id`, `tool_use_id`, or `tool_call_id`) identifies
-the request when supplied; otherwise a canonical hash of the full tool name,
+Session/turn/event/kind/request claims deduplicate input delivery. Codex question
+requests deduplicate per turn on full question text normalized with Unicode NFKC,
+collapsed whitespace and case folding, independent of tool name, call ID, question
+ID or display truncation. Thus blocking-to-async fallback and asking the same
+question twice in one turn produce one input POST; the same question in a later
+turn can post again. Approval dedupe still uses a native request
+ID (`request_id`, `permission_request_id`, `tool_use_id`, or `tool_call_id`)
+when supplied; otherwise a canonical hash of the full tool name,
 tool input, and prompt/message content identifies it, before display truncation.
-Distinct approvals in one turn are delivered separately; duplicate requests and
+Distinct questions or approvals in one turn are delivered separately; duplicate requests and
 retries retain the same delivery key. Without an ID, identical content in the same
 turn represents a duplicate. Root completion remains deduplicated per turn.
 Native turn IDs take precedence and prompt generations cover hosts without IDs.
 Observed pre/post tool activity returns a waiting session to running locally,
-without an additional webhook, except async question acceptance. Both hosts' lifecycle observers receive ordinary
-post-tool activity; Codex also receives pre-tool activity for questions. Installation broadens only their owned handlers and preserves
+without an additional webhook, except async question acceptance. Both hosts'
+lifecycle observers receive ordinary
+post-tool activity. Codex pre-tool observation is limited to the two question
+tools by `^(request_user_input|request_user_input_async)$`; a real Codex 0.167.2
+run confirmed both names matched and shell tools did not. No extra `uv run`
+observer starts for other pre-tool calls. Installation migrates only owned
+handlers and preserves
 unrelated hook matchers. Old native turns are rejected
 after a newer prompt. ID-less late hooks cannot reliably identify an earlier turn.
 HTTP uses a five-second timeout. A crash after server acceptance can cause replay;
