@@ -43,7 +43,12 @@ class ClaudeAdapterTests(unittest.TestCase):
             self.assertIs(claude.handle_hook({"session_id": self.session}), result)
 
     def test_identity_is_provider_namespaced_stable_and_preserves_opaque_ids(self):
-        self.assertEqual(claude.identity(self.session, "agent-a7"), claude.identity(self.session, "agent-a7"))
+        actor_key = store.grokbot_callback.actor_key
+        with patch.object(store.grokbot_callback, "actor_key", wraps=actor_key) as shared_actor_key:
+            child_id = claude.identity(self.session, "agent-a7")
+        shared_actor_key.assert_called_once_with(claude.AgentKind.CLAUDE, self.session, "agent-a7")
+        self.assertEqual(child_id, actor_key(claude.AgentKind.CLAUDE, self.session, "agent-a7"))
+        self.assertEqual(child_id, claude.identity(self.session, "agent-a7"))
         self.assertNotEqual(claude.identity(self.session), claude.identity(self.session, "agent-a7"))
         self.assertNotEqual(claude.identity(self.session, "agent-a7"), claude.identity("other", "agent-a7"))
         self.hook("SessionStart", model="haiku", transcript_path="root.jsonl")

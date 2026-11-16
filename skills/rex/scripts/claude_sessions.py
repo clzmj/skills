@@ -12,13 +12,14 @@ import shlex
 import sqlite3
 import sys
 import time
-import uuid
 from pathlib import Path
 
 import codex_sessions as store
 
 POLICY = Path(__file__).with_name("COORDINATION.md")
 MemberState = store.MemberState
+HookEvent = store.grokbot_callback.HookEvent
+AgentKind = store.grokbot_callback.AgentKind
 
 
 def native_id(value):
@@ -31,8 +32,8 @@ def identity(session, agent=""):
     session = native_id(session)
     if agent:
         native_id(agent)
-    # UUID is an internal database key, never a Claude CLI/resume identifier.
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(["claude", session, agent], separators=(",", ":"))))
+    # The shared provider-namespaced key is internal, never a Claude resume identifier.
+    return store.grokbot_callback.actor_key(AgentKind.CLAUDE, session, agent)
 
 
 def register(team, session, agent="", parent_agent=None, cwd=None, transcript="", model="", effort="", name="", provisional=True, parent_session=None, role=None):
@@ -48,7 +49,7 @@ def register(team, session, agent="", parent_agent=None, cwd=None, transcript=""
         store.member(team, root_parent)
     elif parent_agent:
         store.member(team, identity(session, parent_agent))
-    store.register(team, root, "claude-" + session, cwd=cwd, provider="claude", native_session=session, model=model if not agent else "",
+    store.register(team, root, "claude-" + session, cwd=cwd, provider=AgentKind.CLAUDE, native_session=session, model=model if not agent else "",
                    parent=root_parent, provisional_parent=provisional, role=(role or "coordinator") if not agent else None)
     if root_parent:
         with store.database() as db:
@@ -60,12 +61,12 @@ def register(team, session, agent="", parent_agent=None, cwd=None, transcript=""
             raise ValueError("Register the immediate Claude parent in this team first")
         store.register(team, actor, (name or "agent") + "-" + agent, mode="native", cwd=cwd, parent=parent,
                        transcript=transcript, model=model, effort=effort, provisional_parent=provisional, role=role or "worker",
-                       provider="claude", native_session=session, native_id=agent)
+                       provider=AgentKind.CLAUDE, native_session=session, native_id=agent)
         with store.database() as db:
             db.execute("INSERT OR IGNORE INTO delegations VALUES (?,?,?)", (actor, store.member(team, actor)["parent"], team))
     elif transcript:
         store.register(team, root, "claude-" + session, cwd=cwd, transcript=transcript, model=model, effort=effort,
-                       provider="claude", native_session=session)
+                       provider=AgentKind.CLAUDE, native_session=session)
     return actor
 
 
@@ -106,7 +107,7 @@ def bind_environment(session, actor, team):
     path = os.environ.get("CLAUDE_ENV_FILE")
     if path:
         with Path(path).open("a") as stream:
-            stream.writelines(f"export {key}={shlex.quote(value)}\n" for key, value in (("REX_COORD_PROVIDER", "claude"), ("REX_COORD_SESSION", session),
+            stream.writelines(f"export {key}={shlex.quote(value)}\n" for key, value in (("REX_COORD_PROVIDER", AgentKind.CLAUDE), ("REX_COORD_SESSION", session),
                                ("REX_COORD_THREAD", actor), ("REX_COORD_TEAM", team)))
             if os.environ.get("GROKBOT_CALLBACK"):
                 stream.write(f"export GROKBOT_PARENT_SESSION={shlex.quote(session)}\n")
@@ -118,7 +119,7 @@ def handle_hook(data):
     finally:
         if isinstance(data, dict):
             try:
-                store.callback_context(data, "claude")
+                store.callback_context(data, AgentKind.CLAUDE)
             except Exception:  # noqa: BLE001, S110 - fail open without logging callback exception text.
                 pass
 
@@ -128,7 +129,7 @@ def lifecycle_hook(data):
         raise TypeError("Claude hook input must be a JSON object")
     name = data.get("hook_event_name", "")
     callback = store.grokbot_callback
-    if callback.input_request(data, agent="claude") and callback.input_blocked("claude", data):
+    if callback.input_request(data, agent=AgentKind.CLAUDE) and callback.input_blocked(AgentKind.CLAUDE, data):
         return {}
     session = native_id(data.get("session_id"))
     root = identity(session)
@@ -141,13 +142,13 @@ def lifecycle_hook(data):
     effort = effort.get("level", "") if isinstance(effort, dict) else ""
     transcript = data.get("agent_transcript_path", "") if agent else data.get("transcript_path", "")
     register(team, session, agent, cwd=data.get("cwd"), transcript=transcript,
-             model=data.get("model", "") if name == "SessionStart" else data.get("to_model", "") if name == "PostModelSwitch" else "",
+             model=data.get("model", "") if name == HookEvent.SESSION_START else data.get("to_model", "") if name == HookEvent.POST_MODEL_SWITCH else "",
              effort=effort, name=data.get("agent_type", ""))
     context = ""
-    if name == "SessionStart":
+    if name == HookEvent.SESSION_START:
         if callback_parent and not agent and callback_parent["thread"] != root:
             store.register(team, root, "claude-" + session, cwd=data.get("cwd"), parent=callback_parent["thread"],
-                           provider="claude", native_session=session)
+                           provider=AgentKind.CLAUDE, native_session=session)
         inherited = os.environ.get("REX_COORD_THREAD", "")
         inherited_session = os.environ.get("REX_COORD_SESSION", "")
         if not agent and inherited and inherited != root and inherited_session != session:
@@ -155,46 +156,46 @@ def lifecycle_hook(data):
                 parent = store.member(team, inherited)
             except ValueError:
                 parent = None
-            if parent and parent["provider"] == "claude" and parent["native_session"] == inherited_session:
+            if parent and parent["provider"] == AgentKind.CLAUDE and parent["native_session"] == inherited_session:
                 register(team, session, cwd=data.get("cwd"), transcript=transcript, parent_session=parent["native_session"],
                          parent_agent=parent["native_id"] or None, model=data.get("model", ""), provisional=True)
         bind_environment(session, actor, team)
-    if name in ("SessionStart", "UserPromptSubmit", "SubagentStart"):
+    if name in (HookEvent.SESSION_START, HookEvent.USER_PROMPT_SUBMIT, HookEvent.SUBAGENT_START):
         context = (f"Follow {POLICY}. Provider: Claude; native session: {session}; native agent: {agent or 'main'}; "
                    f"Rex team: {team}; internal view key: {actor}. Use Claude's native Agent and SendMessage tools when available. "
                    "Rex records read-only activity; it does not deliver Claude messages or grant permissions. "
                    "Session-level hook parentage is provisional when the immediate caller is unavailable.")
-    if name in ("UserPromptSubmit", "SubagentStart", "PreToolUse"):
+    if name in (HookEvent.USER_PROMPT_SUBMIT, HookEvent.SUBAGENT_START, HookEvent.PRE_TOOL_USE):
         store.state(team, actor, MemberState.WORKING)
-        if name != "PreToolUse":
+        if name != HookEvent.PRE_TOOL_USE:
             store.reopen_activity(team, actor if agent else "")
-    elif name == "SubagentStop":
+    elif name == HookEvent.SUBAGENT_STOP:
         store.state(team, actor, MemberState.REPORTED)
-    elif name == "Stop":
+    elif name == HookEvent.STOP:
         pending = data.get("background_tasks") or data.get("session_crons")
         store.state(team, actor, MemberState.WAITING if pending else MemberState.IDLE)
-    elif name == "TeammateIdle":
+    elif name == HookEvent.TEAMMATE_IDLE:
         # Older clients may omit agent_id: preserve the root state instead of attributing a teammate's idleness to it.
         if agent:
             store.state(team, actor, MemberState.IDLE)
-    elif name == "SessionEnd":
+    elif name == HookEvent.SESSION_END:
         store.state(team, actor, MemberState.ENDED)
         if not agent:
             with store.database() as db:
                 active_states = (MemberState.WORKING, MemberState.WAITING, MemberState.BLOCKED)
-                db.execute("UPDATE members SET state=?,updated=? WHERE provider='claude' AND native_session=? AND state IN (?,?,?)", (MemberState.ENDED, time.time(), session, *active_states))
-    elif name == "StopFailure":
+                db.execute("UPDATE members SET state=?,updated=? WHERE provider=? AND native_session=? AND state IN (?,?,?)", (MemberState.ENDED, time.time(), AgentKind.CLAUDE, session, *active_states))
+    elif name == HookEvent.STOP_FAILURE:
         store.state(team, actor, MemberState.BLOCKED)
-    elif callback.input_request(data, agent="claude"):
+    elif callback.input_request(data, agent=AgentKind.CLAUDE):
         store.state(team, actor, MemberState.WAITING)
     text = data.get("last_assistant_message") or ""
-    if name == "TeammateIdle":
+    if name == HookEvent.TEAMMATE_IDLE:
         text = f"Teammate {data.get('teammate_name', agent or 'unknown')} idle"
-    elif name == "SessionEnd":
+    elif name == HookEvent.SESSION_END:
         text = str(data.get("reason") or "Session ended")
-    if name in ("TaskCreated", "TaskCompleted"):
+    if name in (HookEvent.TASK_CREATED, HookEvent.TASK_COMPLETED):
         text = f"{data.get('task_id', '')}: {data.get('task_subject', '')}"
-    elif name == "PostToolUse":
+    elif name == HookEvent.POST_TOOL_USE:
         if store.member(team, actor)["state"] == MemberState.WAITING:
             store.state(team, actor, MemberState.WORKING)
         tool = data.get("tool_name", "")
@@ -206,16 +207,16 @@ def lifecycle_hook(data):
             text = tool
         else:
             return {}
-    elif name == "PreToolUse":
+    elif name == HookEvent.PRE_TOOL_USE:
         return {}
-    if name == "Stop":
+    if name == HookEvent.STOP:
         background = [{key: item[key] for key in ("id", "type", "status", "agent_type", "name") if key in item}
                       for item in data.get("background_tasks", []) if isinstance(item, dict)]
         if background or data.get("session_crons"):
             text += "\nBackground work: " + json.dumps(background) + f"; scheduled wakeups: {len(data.get('session_crons') or [])}"
-    if name == "StopFailure":
+    if name == HookEvent.STOP_FAILURE:
         text = str(data.get("error", "Claude API failure"))
-    unattributed = not agent and (name == "TeammateIdle" or (name in ("TaskCreated", "TaskCompleted") and data.get("teammate_name")))
+    unattributed = not agent and (name == HookEvent.TEAMMATE_IDLE or (name in (HookEvent.TASK_CREATED, HookEvent.TASK_COMPLETED) and data.get("teammate_name")))
     store.event(team, "Claude hook (teammate identity unavailable)" if unattributed else actor, name,
                 store.public_text(text or data.get("agent_type") or name), store.member(team, actor)["parent"] if agent else "")
     if context and os.environ.get("GROKBOT_CALLBACK"):

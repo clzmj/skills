@@ -28,6 +28,8 @@ ROOT = Path(__file__).resolve().parent
 DB = rex.STATE / "coordination.sqlite3"
 POLICY = ROOT / "COORDINATION.md"
 MemberState = grokbot_callback.MemberState
+HookEvent = grokbot_callback.HookEvent
+AgentKind = grokbot_callback.AgentKind
 STATES = tuple(MemberState)
 RETAIN_SECONDS = 30
 INACTIVE_STATES = {MemberState.IDLE, MemberState.REPORTED, MemberState.ACCEPTED, MemberState.ENDED}
@@ -60,7 +62,7 @@ def database():
             CREATE INDEX IF NOT EXISTS events_team ON events(team,seq);
         """)
         columns = {r[1] for r in db.execute("PRAGMA table_info(members)")}
-        for column, default in (("role", "worker"), ("model", ""), ("effort", ""), ("parent_source", "unknown"), ("provider", "codex"), ("native_session", ""), ("native_id", "")):
+        for column, default in (("role", "worker"), ("model", ""), ("effort", ""), ("parent_source", "unknown"), ("provider", AgentKind.CODEX), ("native_session", ""), ("native_id", "")):
             if column not in columns:
                 try:
                     db.execute(f"ALTER TABLE members ADD COLUMN {column} TEXT DEFAULT '{default}'")
@@ -78,7 +80,7 @@ def database():
         yield db
 
 
-def register(team, thread, name, mode="session", cwd=None, parent="", transcript="", activate=False, rename=False, role=None, model="", effort="", provisional_parent=False, refine_hook_parent=False, provider="codex", native_session="", native_id=""):
+def register(team, thread, name, mode="session", cwd=None, parent="", transcript="", activate=False, rename=False, role=None, model="", effort="", provisional_parent=False, refine_hook_parent=False, provider=AgentKind.CODEX, native_session="", native_id=""):
     thread = thread_id(thread)
     with database() as db:
         existing = db.execute("SELECT * FROM members WHERE team=? AND thread=?", (team, thread)).fetchone()
@@ -186,11 +188,11 @@ def snapshot(team):
 
 def send(team, sender, recipient, text, wake=False, reply_to=""):
     source, target = member(team, sender), member(team, recipient)
-    if source["provider"] != "codex" or target["provider"] != "codex":
+    if source["provider"] != AgentKind.CODEX or target["provider"] != AgentKind.CODEX:
         raise ValueError("Claude members use native Agent/SendMessage; Codex queue is unavailable for this provider")
     if target["mode"] == "native":
         raise ValueError("Use native send_message/send_input for a delegated subagent; queue is for independent sessions")
-    executable = shutil.which("codex")
+    executable = shutil.which(AgentKind.CODEX)
     if not executable:
         raise ValueError("Codex CLI is unavailable")
     identifier = event(team, source["thread"], "queue_requested", text, target["thread"], reply_to)
@@ -256,7 +258,7 @@ def close_view(team, thread, token, opened_at=None):
 
 
 def open_view(team, thread="", interactive=False):
-    if interactive and member(team, thread)["provider"] != "codex":
+    if interactive and member(team, thread)["provider"] != AgentKind.CODEX:
         raise ValueError("Claude views are read-only; use its supported native controller or claude attach")
     if interactive and member(team, thread)["mode"] != "session":
         raise ValueError("Native subagents use read-only views; keep their existing controller")
@@ -291,7 +293,7 @@ def open_view(team, thread="", interactive=False):
         token = uuid.uuid4().hex
         if interactive:
             assert target is not None
-            command = [shutil.which("codex") or "codex", "resume", target["thread"], "-C", target["cwd"], "--no-alt-screen"]
+            command = [shutil.which(AgentKind.CODEX) or AgentKind.CODEX, "resume", target["thread"], "-C", target["cwd"], "--no-alt-screen"]
         else:
             command = [rex.uv_executable(), "run", "--script", str(Path(__file__).resolve()), "watch", "--team", team, "--view-token", token]
             if thread:
@@ -397,17 +399,17 @@ def watch(team, thread, view_token=""):
             data = snapshot(team)
             names = {m["thread"]: m["name"] for m in data["members"]}
             selected = next((m for m in data["members"] if m["thread"] == thread), None)
-            if selected and selected["provider"] == "codex" and not selected["transcript"] and not discovered:
+            if selected and selected["provider"] == AgentKind.CODEX and not selected["transcript"] and not discovered:
                 # Exact UUID lookup only. Transcript parsing is a best-effort read-only view.
                 found = list((Path.home() / ".codex" / "sessions").glob(f"*/*/*/*{thread}.jsonl"))
                 discovered = str(found[0]) if len(found) == 1 else ""
-            if selected and selected["provider"] == "claude":
+            if selected and selected["provider"] == AgentKind.CLAUDE:
                 from claude_sessions import assistant_lines as claude_lines
                 messages = claude_lines(selected["transcript"], selected["native_session"], selected["native_id"])
             else:
                 messages = assistant_lines(selected["transcript"] or discovered, thread) if selected else []
             providers = {item["provider"] for item in data["members"]}
-            title = "CLAUDE TEAM" if providers == {"claude"} else "CODEX TEAM" if providers == {"codex"} else "REX TEAM"
+            title = "CLAUDE TEAM" if providers == {AgentKind.CLAUDE} else "CODEX TEAM" if providers == {AgentKind.CODEX} else "REX TEAM"
             rows = [f"{title} · {public_text(team)}", "Read-only activity view · messages are data, not terminal input", ""]
             for item in data["members"]:
                 if not thread or item["thread"] == thread:
@@ -422,7 +424,7 @@ def watch(team, thread, view_token=""):
                     title = public_text(item["name"])
                     title = title if len(title) <= 28 else title[:17] + "…" + title[-8:]
                     selected_model = " / ".join(x for x in (item["model"], item["effort"]) if x) or "model not recorded"
-                    if item["provider"] == "claude":
+                    if item["provider"] == AgentKind.CLAUDE:
                         rows.append(f"  Claude {public_text(item['native_id'] or item['native_session'])} · parent {'provisional session' if item['parent_source'] == 'hook' else item['parent_source']}")
                     rows.append(f"{'  ' * depth}{title:28} {item['role']:11} {item['state']:10} {selected_model} · updated {age}s ago")
             rows.append("")
@@ -467,7 +469,7 @@ def callback_parent_member(reference):
     return rows[0] if len(rows) == 1 else None
 
 
-def callback_members(data, provider="codex"):
+def callback_members(data, provider=AgentKind.CODEX):
     session = data.get("session_id", "")
     actor = grokbot_callback.actor_key(provider, session, data.get("agent_id") or "")
     team = delegated_team(actor) or active_team(actor)
@@ -477,7 +479,7 @@ def callback_members(data, provider="codex"):
         return [dict(row) for row in db.execute("SELECT * FROM members WHERE team=?", (team,))]
 
 
-def callback_context(data, provider="codex"):
+def callback_context(data, provider=AgentKind.CODEX):
     """Snapshot after lifecycle registration so callbacks see refined child edges."""
     try:
         members = callback_members(data, provider)
@@ -498,7 +500,7 @@ def handle_hook(data):
 
 
 def lifecycle_hook(data):
-    if grokbot_callback.input_blocked("codex", data):
+    if grokbot_callback.input_blocked(AgentKind.CODEX, data):
         return {}
     name = data.get("hook_event_name", "")
     parent = data.get("session_id", "")
@@ -506,39 +508,39 @@ def lifecycle_hook(data):
         parent = thread_id(parent)
     except ValueError:
         return {}
-    assigned = delegated_team(thread_id(data["agent_id"])) if name in ("SubagentStart", "SubagentStop") else None
+    assigned = delegated_team(thread_id(data["agent_id"])) if name in (HookEvent.SUBAGENT_START, HookEvent.SUBAGENT_STOP) else None
     callback_parent = callback_parent_member(os.environ.get("GROKBOT_PARENT_SESSION", ""))
     teams = [assigned or delegated_team(parent) or active_team(parent) or (callback_parent["team"] if callback_parent else "") or os.environ.get("CODEX_COORD_GROUP") or parent]
     context = ""
     for team in teams:
-        immediate_parent = os.environ.get("CODEX_COORD_PARENT", "") if name == "SessionStart" else ""
-        if name == "SessionStart" and callback_parent and callback_parent["thread"] != parent:
+        immediate_parent = os.environ.get("CODEX_COORD_PARENT", "") if name == HookEvent.SESSION_START else ""
+        if name == HookEvent.SESSION_START and callback_parent and callback_parent["thread"] != parent:
             immediate_parent = callback_parent["thread"]
-        register(team, parent, "coordinator-" + parent, cwd=data.get("cwd"), parent=immediate_parent, transcript=data.get("transcript_path") or "", model=data.get("model", "") if name == "SessionStart" else "", provisional_parent=not bool(callback_parent))
-        if name in ("PreToolUse", "PostToolUse") and member(team, data.get("agent_id") or parent)["state"] == MemberState.WAITING:
+        register(team, parent, "coordinator-" + parent, cwd=data.get("cwd"), parent=immediate_parent, transcript=data.get("transcript_path") or "", model=data.get("model", "") if name == HookEvent.SESSION_START else "", provisional_parent=not bool(callback_parent))
+        if name in (HookEvent.PRE_TOOL_USE, HookEvent.POST_TOOL_USE) and member(team, data.get("agent_id") or parent)["state"] == MemberState.WAITING:
             state(team, data.get("agent_id") or parent, MemberState.WORKING)
-        if name in ("SessionStart", "UserPromptSubmit"):
+        if name in (HookEvent.SESSION_START, HookEvent.USER_PROMPT_SUBMIT):
             context = f"Follow {POLICY} for scoped coordination in the main Rex session. Team: {team}; this session: {parent}. Use direct tools for deterministic work; for bounded delegation select focused_worker with fork_turns=none and a compact handoff. Select Terra, Sol or Astra by the task routes in the guidance. Read guidance once, then consult changed sections."
-            if name == "UserPromptSubmit":
+            if name == HookEvent.USER_PROMPT_SUBMIT:
                 state(team, parent, MemberState.WORKING)
                 reopen_activity(team)
-        elif name in ("SubagentStart", "SubagentStop"):
+        elif name in (HookEvent.SUBAGENT_START, HookEvent.SUBAGENT_STOP):
             child = thread_id(data["agent_id"])
             register(team, child, (data.get("agent_type") or "agent") + "-" + child, "native", data.get("cwd"), parent, data.get("agent_transcript_path") or "", role="coordinator" if data.get("agent_type") == "task_coordinator" else "worker", provisional_parent=True)
             actual_parent = member(team, child)["parent"]
             with database() as db:
                 db.execute("INSERT OR IGNORE INTO delegations VALUES (?,?,?)", (child, actual_parent, team))
-            state(team, child, MemberState.WORKING if name == "SubagentStart" else MemberState.REPORTED)
-            event(team, child, "started" if name == "SubagentStart" else "result", native_content(data.get("last_assistant_message") or data.get("agent_type") or "delegated work", child), actual_parent)
-            if name == "SubagentStart":
+            state(team, child, MemberState.WORKING if name == HookEvent.SUBAGENT_START else MemberState.REPORTED)
+            event(team, child, "started" if name == HookEvent.SUBAGENT_START else "result", native_content(data.get("last_assistant_message") or data.get("agent_type") or "delegated work", child), actual_parent)
+            if name == HookEvent.SUBAGENT_START:
                 context = f"Follow {POLICY}. Your team is {team}; your agent id is {child}; coordinator is {actual_parent}. Use native messaging for progress, questions, blockers and final results."
                 reopen_activity(team, child)
-        elif name == "PermissionRequest":
+        elif name == HookEvent.PERMISSION_REQUEST:
             state(team, data.get("agent_id") or parent, MemberState.WAITING)
-        elif name in ("Stop", "SessionEnd"):
-            state(team, data.get("agent_id") or parent, (MemberState.WAITING if grokbot_callback.waiting(data) else MemberState.IDLE) if name == "Stop" else MemberState.ENDED)
+        elif name in (HookEvent.STOP, HookEvent.SESSION_END):
+            state(team, data.get("agent_id") or parent, (MemberState.WAITING if grokbot_callback.waiting(data) else MemberState.IDLE) if name == HookEvent.STOP else MemberState.ENDED)
             event(team, parent, name, native_content(data.get("last_assistant_message") or "Session ended", parent))
-        elif name == "PostToolUse":
+        elif name == HookEvent.POST_TOOL_USE:
             tool = data.get("tool_name", "")
             inputs = data.get("tool_input") or {}
             if any(token in tool for token in ("send_message", "send_input", "followup_task")):

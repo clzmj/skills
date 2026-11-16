@@ -50,6 +50,10 @@ class HookEvent(StrEnum):
     POST_TOOL_USE = "PostToolUse"
     PERMISSION_REQUEST = "PermissionRequest"
     NOTIFICATION = "Notification"
+    POST_MODEL_SWITCH = "PostModelSwitch"
+    TEAMMATE_IDLE = "TeammateIdle"
+    TASK_CREATED = "TaskCreated"
+    TASK_COMPLETED = "TaskCompleted"
 
 
 class InputKind(StrEnum):
@@ -258,7 +262,7 @@ UNTRUSTED_FIELDS = ("last_message", "prompt_text", "cwd", "repo", "branch", "hea
 
 def private_fd(path: Path, flags: int) -> int:
     """Create privately regardless of umask; also tighten existing runtime files."""
-    descriptor = os.open(path, flags, 0o600)
+    descriptor = os.open(path, flags | os.O_NOFOLLOW, 0o600)
     try:
         os.fchmod(descriptor, 0o600)
         return descriptor
@@ -385,7 +389,7 @@ def git_metadata(cwd):
 def input_request(data, agent=AgentKind.CODEX):
     name = data.get("hook_event_name")
     notification = data.get("notification_type", "")
-    if name == HookEvent.PERMISSION_REQUEST or (agent != AgentKind.CLAUDE and name == HookEvent.NOTIFICATION and notification == NotificationType.PERMISSION_PROMPT):
+    if name == HookEvent.PERMISSION_REQUEST:
         kind = InputKind.APPROVAL
     elif name == HookEvent.NOTIFICATION and notification == NotificationType.ELICITATION_DIALOG:
         kind = InputKind.QUESTION
@@ -774,20 +778,23 @@ def deliver(path):
                 envelope["body"]["delivery_key"] = key
                 write_spool(path, envelope)
             status = post(envelope["body"])
-            success = 200 <= status < 300
-            if not success:
-                envelope["delivery_outcome"] = Outcome.DELIVERY_FAILED
-                write_spool(path, envelope)
-            receipt(Outcome.DELIVERED if success else Outcome.DELIVERY_FAILED, **fields, http_status=status)
         except (OSError, ValueError):
             envelope["delivery_outcome"] = Outcome.CONFIG_INVALID
             write_spool(path, envelope)
             receipt(Outcome.CONFIG_INVALID, **fields)
             return False
-        if success:
+        if 200 <= status < 300:
             os.close(private_fd(sent, os.O_WRONLY | os.O_CREAT | os.O_EXCL))
             path.unlink(missing_ok=True)
-        return success
+            try:
+                receipt(Outcome.DELIVERED, **fields, http_status=status)
+            except Exception:  # noqa: BLE001, S110 - delivery is final; receipt errors must not cause another POST.
+                pass
+            return True
+        envelope["delivery_outcome"] = Outcome.DELIVERY_FAILED
+        write_spool(path, envelope)
+        receipt(Outcome.DELIVERY_FAILED, **fields, http_status=status)
+        return False
 
 
 def session_view(row: SessionState) -> SessionView:
@@ -833,7 +840,9 @@ def health() -> Health:
                 receipts[key] = row
             else:
                 history.pop(key, None)
-                if row.get("outcome") in (Outcome.DELIVERY_FAILED, Outcome.CONFIG_INVALID) and row.get("event", Event.RUN_FINISHED) in WEBHOOK_EVENTS:
+                if (row.get("outcome") in (Outcome.DELIVERY_FAILED, Outcome.CONFIG_INVALID)
+                        and row.get("event", Event.RUN_FINISHED) in WEBHOOK_EVENTS
+                        and not (rex.STATE / ("grokbot-sent-" + key)).exists()):
                     history[key] = row
                     if len(history) > STATUS_HISTORY_LIMIT:
                         history.popitem(last=False)
