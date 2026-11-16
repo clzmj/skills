@@ -29,6 +29,19 @@ class ClaudeAdapterTests(unittest.TestCase):
     def hook(self, event, **data):
         return claude.handle_hook({"session_id": self.session, "hook_event_name": event, "cwd": str(self.path), **data})
 
+    def test_callback_failures_do_not_replace_hook_result_or_exception(self):
+        result = {"hookSpecificOutput": {"hookEventName": "SessionStart"}}
+        for failure in ("callback_context", "callback_members"):
+            with self.subTest(failure=failure), patch.object(claude, "lifecycle_hook", return_value=result), patch.object(store, failure, side_effect=RuntimeError("private callback detail")):
+                self.assertIs(claude.handle_hook({"session_id": self.session}), result)
+            original = ValueError("original lifecycle failure")
+            with self.subTest(failure=failure, lifecycle="raises"), patch.object(claude, "lifecycle_hook", side_effect=original), patch.object(store, failure, side_effect=RuntimeError("private callback detail")):
+                with self.assertRaises(ValueError) as raised:
+                    claude.handle_hook({"session_id": self.session})
+                self.assertIs(raised.exception, original)
+        with patch.object(claude, "lifecycle_hook", return_value=result), patch.object(store.grokbot_callback, "notify", side_effect=RuntimeError("private callback detail")):
+            self.assertIs(claude.handle_hook({"session_id": self.session}), result)
+
     def test_identity_is_provider_namespaced_stable_and_preserves_opaque_ids(self):
         self.assertEqual(claude.identity(self.session, "agent-a7"), claude.identity(self.session, "agent-a7"))
         self.assertNotEqual(claude.identity(self.session), claude.identity(self.session, "agent-a7"))

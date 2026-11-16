@@ -33,6 +33,22 @@ class CoordinationTests(unittest.TestCase):
         with cs.database() as db:
             db.execute("INSERT INTO views(team,thread,session,block,token) VALUES (?,?,?,?,?)", ("task", thread, session, block, token))
 
+    def test_callback_failures_do_not_replace_hook_result_or_exception(self):
+        result = {"hookSpecificOutput": {"hookEventName": "SessionStart"}}
+        for failure, target in (("callback_context", cs), ("callback_members", cs)):
+            with self.subTest(failure=failure), patch.object(cs, "lifecycle_hook", return_value=result), patch.object(target, failure, side_effect=RuntimeError("private callback detail")):
+                self.assertIs(cs.handle_hook({"session_id": A}), result)
+            original = ValueError("original lifecycle failure")
+            with self.subTest(failure=failure, lifecycle="raises"), patch.object(cs, "lifecycle_hook", side_effect=original), patch.object(target, failure, side_effect=RuntimeError("private callback detail")):
+                with self.assertRaises(ValueError) as raised:
+                    cs.handle_hook({"session_id": A})
+                self.assertIs(raised.exception, original)
+        with patch.object(cs, "lifecycle_hook", return_value=result), patch.object(cs.grokbot_callback, "notify", side_effect=RuntimeError("private callback detail")):
+            self.assertIs(cs.handle_hook({"session_id": A}), result)
+
+    def test_coordination_database_is_private(self):
+        self.assertEqual(cs.DB.stat().st_mode & 0o777, 0o600)
+
     def test_open_uses_root_main_session_and_never_creates_session(self):
         cs.register("task", B, "worker", parent=A)
         layout = {"windows": [{"label": "Main", "layers": [{"blocks": [{"block_id": "codex"}]}]}]}

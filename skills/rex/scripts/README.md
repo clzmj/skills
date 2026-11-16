@@ -168,11 +168,19 @@ creating a root. Hosts cannot identify arbitrary unregistered CLI parentage;
 callers that omit this environment variable and coordination registration cannot
 be distinguished reliably from new bot roots.
 
-Callback state directories use mode 0700 and spool files are created with mode
-0600. Status history retains at most 100 started receipts, recent inactive
+Callback state directories use mode 0700. Spools, receipt logs and their archive,
+SQLite databases, lock files, and sent markers are created with mode 0600,
+independent of the process umask; pre-creating the databases also keeps SQLite
+journals private. Receipt writes rotate at 1 MiB and retain one bounded archive;
+status reads both generations. Failed delivery outcomes also stay in their spools,
+so rotation cannot hide a retryable failure. `status` and `retry` remove callback
+`grokbot-pending-*.tmp` files older than 24 hours only when no writer holds their
+lock; fresh temporary files and unrelated runtime files are preserved.
+Status history retains at most 100 started receipts, recent inactive
 sessions, and orphan failed receipts; active sessions and spool-backed
 deliveries remain uncapped. `Event`, `HookEvent`, `InputKind`, `Status`, `Role`, and
-`AgentKind` are `StrEnum` vocabularies. `Payload`, `Envelope`, `SessionState`, and
+`AgentKind`, `NotificationType`, and `MemberState` are `StrEnum` vocabularies.
+`Payload`, `Envelope`, `SessionState`, and
 `Health` are `TypedDict` schemas; serialized values remain unchanged.
 The waiting/running marker is per session, not per pending request: activity from
 one parallel tool call can mark the session running while another approval is

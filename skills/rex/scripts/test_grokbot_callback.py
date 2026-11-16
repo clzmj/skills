@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -121,6 +122,14 @@ class CallbackTests(unittest.TestCase):
                 self.assertTrue(notify.call_args.args[2])
             session = self.data()["session_id"]
             self.assertEqual(codex_sessions.member(session, session)["state"], "waiting")
+
+    def test_callback_bookkeeping_failure_is_silent_and_fail_open(self):
+        for adapter in (codex_sessions, claude_sessions):
+            output = io.StringIO()
+            with redirect_stdout(output), redirect_stderr(output), patch.object(adapter, "lifecycle_hook", return_value={"ok": True}), \
+                    patch.object(codex_sessions, "callback_members", side_effect=RuntimeError("test-secret")):
+                self.assertEqual(adapter.handle_hook(self.data()), {"ok": True})
+            self.assertEqual(output.getvalue(), "")
 
     def test_dedupe_across_workers_and_multiple_turns(self):
         # Exercise the actual detached worker with a temporary HOME/config/state.
@@ -325,25 +334,105 @@ class CallbackTests(unittest.TestCase):
     def test_state_and_spool_permissions_are_private_from_creation(self):
         callback.rex.state_dir()
         callback.rex.STATE.chmod(0o755)
-        opened_modes = []
+        created = []
         original = os.open
+        original_connect = callback.sqlite3.connect
 
         def opened(path, flags, mode=0o777, **kwargs):
-            if "grokbot-pending-" in str(path) and flags & os.O_CREAT:
-                opened_modes.append(mode)
+            descriptor = original(path, flags, mode, **kwargs)
+            if str(path).startswith(str(self.root)) and flags & os.O_CREAT:
+                created.append(Path(path).name)
                 self.assertEqual(mode, 0o600)
-            return original(path, flags, mode, **kwargs)
+                self.assertEqual(os.fstat(descriptor).st_mode & 0o777, 0o600)
+            return descriptor
+
+        def connected(path, *args, **kwargs):
+            self.assertTrue(Path(path).exists())  # SQLite never gets to create a permissive database.
+            self.assertEqual(Path(path).stat().st_mode & 0o777, 0o600)
+            return original_connect(path, *args, **kwargs)
 
         previous_umask = os.umask(0)
         try:
-            with patch.object(os, "open", side_effect=opened):
+            with patch.object(os, "open", side_effect=opened), patch.object(callback.sqlite3, "connect", side_effect=connected):
                 path = self.queued("codex", self.data("Stop"))
                 self.assertEqual(callback.rex.STATE.stat().st_mode & 0o777, 0o700)
                 self.assertEqual(path.stat().st_mode & 0o777, 0o600)
                 self.assertTrue(callback.deliver(path))  # Cached body rewrite uses the same secure creator.
+                with callback.database() as db:
+                    db.execute("CREATE TABLE permissions_mode(value INT)")
+                    db.execute("INSERT INTO permissions_mode VALUES (1)")
+                    journal = callback.rex.STATE / "grokbot-callback.sqlite3-journal"
+                    self.assertTrue(journal.exists())
+                    self.assertEqual(journal.stat().st_mode & 0o777, 0o600)
+                with codex_sessions.database() as db:
+                    db.execute("INSERT INTO active_teams VALUES (?,?)", ("permission-session", "permission-team"))
+                    journal = codex_sessions.DB.with_name(codex_sessions.DB.name + "-journal")
+                    self.assertTrue(journal.exists())
+                    self.assertEqual(journal.stat().st_mode & 0o777, 0o600)
+                with patch.object(callback, "RECEIPT_MAX_BYTES", 512):
+                    for _ in range(10):
+                        callback.receipt("started", task_id="permissions")
         finally:
             os.umask(previous_umask)
-        self.assertEqual(opened_modes, [0o600, 0o600])
+        self.assertEqual(sum(name.endswith(".tmp") for name in created), 2)
+        self.assertTrue({"grokbot-callback.sqlite3", "coordination.sqlite3", "grokbot-receipts.lock",
+                         "grokbot-callback-receipts.jsonl", "grokbot-callback-receipts.jsonl.1"}.issubset(created))
+        self.assertTrue(any(name.startswith("grokbot-lock-") for name in created))
+        self.assertTrue(any(name.startswith("grokbot-sent-") for name in created))
+        for directory in (self.root, callback.rex.STATE):
+            for file in directory.iterdir():
+                if file.is_file():
+                    self.assertEqual(file.stat().st_mode & 0o777, 0o600, file.name)
+
+    def test_receipt_rotation_is_bounded_and_failed_spools_remain_visible(self):
+        for invalid_config in (False, True):
+            turn = "invalid-config" if invalid_config else "http-failure"
+            self.queued("codex", self.data("UserPromptSubmit", turn_id=turn))
+            path = self.queued("codex", self.data("Stop", turn_id=turn))
+            if invalid_config:
+                self.config.chmod(0o644)
+            else:
+                self.statuses[:] = [503, 503, 503]
+            self.assertFalse(callback.deliver(path))
+            self.config.chmod(0o600)
+            envelope = json.loads(path.read_text())
+            key = callback.delivery_key(envelope)
+            with patch.object(callback, "RECEIPT_MAX_BYTES", 1024), ThreadPoolExecutor(max_workers=4) as workers:
+                list(workers.map(self.noise_receipt, range(50)))
+            logs = sorted(callback.rex.STATE.glob("grokbot-callback-receipts.jsonl*"))
+            self.assertEqual(len(logs), 2)
+            self.assertTrue(all(log.stat().st_size <= 1024 for log in logs))
+            rows = [json.loads(line) for line in callback.receipt_lines()]
+            self.assertFalse(any(row.get("key") == key for row in rows))
+            outcome = "config_invalid" if invalid_config else "delivery_failed"
+            self.assertTrue(any(row["key"] == key and row["outcome"] == outcome for row in callback.health()["failed"]))
+            self.assertEqual(callback.retry(), {"delivered": 1, "failed": 0})
+            self.assertEqual(self.requests[-1][0], envelope["body"])
+            self.assertEqual(callback.health()["failed"], [])
+
+    def noise_receipt(self, index):
+        callback.receipt("started", task_id=f"rotation-{index}")
+
+    def test_cleanup_removes_only_stale_unlocked_callback_temporaries(self):
+        callback.rex.state_dir()
+        old = callback.time.time() - callback.ORPHAN_TMP_AGE_SECONDS - 60
+        stale = callback.rex.STATE / "grokbot-pending-orphan.tmp"
+        locked = callback.rex.STATE / "grokbot-pending-writer.tmp"
+        fresh = callback.rex.STATE / "grokbot-pending-fresh.tmp"
+        unrelated = callback.rex.STATE / "other-runtime.tmp"
+        for path in (stale, locked, fresh, unrelated):
+            path.write_text("partial")
+            if path != fresh:
+                os.utime(path, (old, old))
+        with locked.open("r+") as stream:
+            callback.fcntl.flock(stream, callback.fcntl.LOCK_EX)
+            self.assertEqual(callback.health()["pending"], [])
+            self.assertFalse(stale.exists())
+            self.assertTrue(all(path.exists() for path in (locked, fresh, unrelated)))
+        self.assertEqual(callback.retry(), {"delivered": 0, "failed": 0})
+        self.assertFalse(locked.exists())
+        self.assertTrue(fresh.exists())
+        self.assertTrue(unrelated.exists())
 
     def test_status_caps_history_but_retains_live_sessions_and_actionable_spools(self):
         with patch.object(callback, "STATUS_HISTORY_LIMIT", 3):
@@ -375,8 +464,11 @@ class CallbackTests(unittest.TestCase):
 
     def test_enum_and_typed_payloads_preserve_wire_values(self):
         self.assertEqual(json.loads(json.dumps({"event": callback.Event.NEEDS_INPUT, "kind": callback.InputKind.APPROVAL,
-                                               "status": callback.Status.WAITING, "role": callback.Role.SUBAGENT})),
-                         {"event": "needs_input", "kind": "approval", "status": "waiting", "role": "subagent"})
+                                               "status": callback.Status.WAITING, "role": callback.Role.SUBAGENT,
+                                               "notification_type": callback.NotificationType.PERMISSION_PROMPT,
+                                               "member_state": callback.MemberState.WORKING})),
+                         {"event": "needs_input", "kind": "approval", "status": "waiting", "role": "subagent",
+                          "notification_type": "permission_prompt", "member_state": "working"})
         body = callback.payload(self.envelope())
         self.assertIsInstance(body, dict)
         self.assertIs(body["event"], callback.Event.RUN_FINISHED)

@@ -18,6 +18,7 @@ from pathlib import Path
 import codex_sessions as store
 
 POLICY = Path(__file__).with_name("COORDINATION.md")
+MemberState = store.MemberState
 
 
 def native_id(value):
@@ -116,7 +117,10 @@ def handle_hook(data):
         return lifecycle_hook(data)
     finally:
         if isinstance(data, dict):
-            store.callback_context(data, "claude")
+            try:
+                store.callback_context(data, "claude")
+            except Exception:  # noqa: BLE001, S110 - fail open without logging callback exception text.
+                pass
 
 
 def lifecycle_hook(data):
@@ -161,27 +165,28 @@ def lifecycle_hook(data):
                    "Rex records read-only activity; it does not deliver Claude messages or grant permissions. "
                    "Session-level hook parentage is provisional when the immediate caller is unavailable.")
     if name in ("UserPromptSubmit", "SubagentStart", "PreToolUse"):
-        store.state(team, actor, "working")
+        store.state(team, actor, MemberState.WORKING)
         if name != "PreToolUse":
             store.reopen_activity(team, actor if agent else "")
     elif name == "SubagentStop":
-        store.state(team, actor, "reported")
+        store.state(team, actor, MemberState.REPORTED)
     elif name == "Stop":
         pending = data.get("background_tasks") or data.get("session_crons")
-        store.state(team, actor, "waiting" if pending else "idle")
+        store.state(team, actor, MemberState.WAITING if pending else MemberState.IDLE)
     elif name == "TeammateIdle":
         # Older clients may omit agent_id: preserve the root state instead of attributing a teammate's idleness to it.
         if agent:
-            store.state(team, actor, "idle")
+            store.state(team, actor, MemberState.IDLE)
     elif name == "SessionEnd":
-        store.state(team, actor, "ended")
+        store.state(team, actor, MemberState.ENDED)
         if not agent:
             with store.database() as db:
-                db.execute("UPDATE members SET state='ended',updated=? WHERE provider='claude' AND native_session=? AND state IN ('working','waiting','blocked')", (time.time(), session))
+                active_states = (MemberState.WORKING, MemberState.WAITING, MemberState.BLOCKED)
+                db.execute("UPDATE members SET state=?,updated=? WHERE provider='claude' AND native_session=? AND state IN (?,?,?)", (MemberState.ENDED, time.time(), session, *active_states))
     elif name == "StopFailure":
-        store.state(team, actor, "blocked")
+        store.state(team, actor, MemberState.BLOCKED)
     elif callback.input_request(data, agent="claude"):
-        store.state(team, actor, "waiting")
+        store.state(team, actor, MemberState.WAITING)
     text = data.get("last_assistant_message") or ""
     if name == "TeammateIdle":
         text = f"Teammate {data.get('teammate_name', agent or 'unknown')} idle"
@@ -190,8 +195,8 @@ def lifecycle_hook(data):
     if name in ("TaskCreated", "TaskCompleted"):
         text = f"{data.get('task_id', '')}: {data.get('task_subject', '')}"
     elif name == "PostToolUse":
-        if store.member(team, actor)["state"] == "waiting":
-            store.state(team, actor, "working")
+        if store.member(team, actor)["state"] == MemberState.WAITING:
+            store.state(team, actor, MemberState.WORKING)
         tool = data.get("tool_name", "")
         # Observe supported native tools, without writing mailbox files or invoking a Codex queue.
         if tool == "SendMessage":

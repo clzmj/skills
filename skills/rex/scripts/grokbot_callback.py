@@ -15,6 +15,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from collections import OrderedDict, deque
 from contextlib import closing, contextmanager
@@ -56,6 +57,24 @@ class InputKind(StrEnum):
     QUESTION = "question"
     TRUST = "trust"
     OTHER = "other"
+
+
+class NotificationType(StrEnum):
+    PERMISSION_PROMPT = "permission_prompt"
+    IDLE_PROMPT = "idle_prompt"
+    ELICITATION_DIALOG = "elicitation_dialog"
+    TRUST_PROMPT = "trust_prompt"
+    INPUT_PROMPT = "input_prompt"
+
+
+class MemberState(StrEnum):
+    WORKING = "working"
+    WAITING = "waiting"
+    BLOCKED = "blocked"
+    IDLE = "idle"
+    REPORTED = "reported"
+    ACCEPTED = "accepted"
+    ENDED = "ended"
 
 
 class Status(StrEnum):
@@ -158,6 +177,7 @@ class Envelope(TypedDict):
     prompt_text: NotRequired[str]
     request_key: NotRequired[str]
     body: NotRequired[Payload]
+    delivery_outcome: NotRequired[Outcome]
 
 
 class SessionState(TypedDict):
@@ -231,15 +251,79 @@ class RetryResult(TypedDict):
 WEBHOOK_EVENTS = (Event.RUN_FINISHED, Event.NEEDS_INPUT)
 TERMINAL_STATUSES = (Status.COMPLETED, Status.FAILED, Status.ENDED)
 STATUS_HISTORY_LIMIT = 100
+RECEIPT_MAX_BYTES = 1024 * 1024
+ORPHAN_TMP_AGE_SECONDS = 24 * 60 * 60
 UNTRUSTED_FIELDS = ("last_message", "prompt_text", "cwd", "repo", "branch", "head_sha", "task_id")
+
+
+def private_fd(path: Path, flags: int) -> int:
+    """Create privately regardless of umask; also tighten existing runtime files."""
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+@contextmanager
+def receipt_lock(exclusive):
+    with os.fdopen(private_fd(rex.STATE / "grokbot-receipts.lock", os.O_RDWR | os.O_CREAT), "r+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        yield
 
 
 def receipt(outcome, **fields):
     """Only fixed diagnostics and delivery metadata, never exception/config text."""
     rex.state_dir()
     row = DeliveryRecord(finished_at=datetime.now().astimezone().isoformat(), outcome=outcome, **fields)
-    with (rex.STATE / "grokbot-callback-receipts.jsonl").open("a") as stream:
-        stream.write(json.dumps(row) + "\n")
+    encoded = json.dumps(row) + "\n"
+    path = rex.STATE / "grokbot-callback-receipts.jsonl"
+    with receipt_lock(exclusive=True):
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+        if path.exists() and path.stat().st_size + len(encoded.encode()) > RECEIPT_MAX_BYTES:
+            # Keep one bounded archive, including when upgrading an oversized old log.
+            with path.open("rb") as previous:
+                size = path.stat().st_size
+                if size > RECEIPT_MAX_BYTES:
+                    previous.seek(size - RECEIPT_MAX_BYTES)
+                    previous.readline()  # Discard a partial oldest record.
+                tail = previous.read()
+            archive = path.with_suffix(".jsonl.1")
+            with os.fdopen(private_fd(archive, os.O_WRONLY | os.O_CREAT | os.O_TRUNC), "wb") as backup:
+                backup.write(tail)
+                backup.flush()
+                os.fsync(backup.fileno())
+            flags |= os.O_TRUNC
+        with os.fdopen(private_fd(path, flags), "a") as stream:
+            stream.write(encoded)
+
+
+def receipt_lines():
+    """Read both log generations under the writer's lock for a consistent snapshot."""
+    with receipt_lock(exclusive=False):
+        for name in ("grokbot-callback-receipts.jsonl.1", "grokbot-callback-receipts.jsonl"):
+            try:
+                with (rex.STATE / name).open() as stream:
+                    yield from stream
+            except FileNotFoundError:
+                continue
+
+
+def cleanup_orphan_temps():
+    """Only stale callback spools; never delete a temporary file held by a writer."""
+    cutoff = time.time() - ORPHAN_TMP_AGE_SECONDS
+    for path in rex.STATE.glob("grokbot-pending-*.tmp"):
+        try:
+            if path.stat().st_mtime >= cutoff:
+                continue
+            with os.fdopen(os.open(path, os.O_RDWR), "r+") as stream:
+                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                if os.fstat(stream.fileno()).st_mtime < cutoff:
+                    path.unlink(missing_ok=True)
+        except OSError:
+            continue  # Includes a busy writer or another cleaner winning the race.
 
 
 def config():
@@ -274,7 +358,9 @@ def now():
 @contextmanager
 def database():
     rex.state_dir()
-    with closing(sqlite3.connect(rex.STATE / "grokbot-callback.sqlite3", timeout=5)) as db, db:
+    path = rex.STATE / "grokbot-callback.sqlite3"
+    os.close(private_fd(path, os.O_RDWR | os.O_CREAT))
+    with closing(sqlite3.connect(path, timeout=5)) as db, db:
         db.execute("CREATE TABLE IF NOT EXISTS sessions (key TEXT PRIMARY KEY, record TEXT)")
         yield db
 
@@ -299,13 +385,13 @@ def git_metadata(cwd):
 def input_request(data, agent=AgentKind.CODEX):
     name = data.get("hook_event_name")
     notification = data.get("notification_type", "")
-    if name == HookEvent.PERMISSION_REQUEST or (agent != AgentKind.CLAUDE and name == HookEvent.NOTIFICATION and notification == "permission_prompt"):
+    if name == HookEvent.PERMISSION_REQUEST or (agent != AgentKind.CLAUDE and name == HookEvent.NOTIFICATION and notification == NotificationType.PERMISSION_PROMPT):
         kind = InputKind.APPROVAL
-    elif name == HookEvent.NOTIFICATION and notification == "elicitation_dialog":
+    elif name == HookEvent.NOTIFICATION and notification == NotificationType.ELICITATION_DIALOG:
         kind = InputKind.QUESTION
-    elif name == HookEvent.NOTIFICATION and notification == "trust_prompt":
+    elif name == HookEvent.NOTIFICATION and notification == NotificationType.TRUST_PROMPT:
         kind = InputKind.TRUST
-    elif name == HookEvent.NOTIFICATION and notification == "input_prompt":
+    elif name == HookEvent.NOTIFICATION and notification == NotificationType.INPUT_PROMPT:
         kind = InputKind.OTHER
     else:
         return None
@@ -364,11 +450,12 @@ def sync_sessions(sessions: dict[str, SessionState], members, current_key=""):
         # A delegated session keeps its original task when its controller switches.
         if existing and existing["task_id"] != parent["task_id"]:
             return
-        status = {"working": Status.RUNNING, "waiting": Status.WAITING, "blocked": Status.WAITING,
-                  "reported": Status.COMPLETED, "accepted": Status.COMPLETED, "idle": Status.COMPLETED, "ended": Status.ENDED}.get(member.get("state"), Status.RUNNING)
+        status = {MemberState.WORKING: Status.RUNNING, MemberState.WAITING: Status.WAITING, MemberState.BLOCKED: Status.WAITING,
+                  MemberState.REPORTED: Status.COMPLETED, MemberState.ACCEPTED: Status.COMPLETED,
+                  MemberState.IDLE: Status.COMPLETED, MemberState.ENDED: Status.ENDED}.get(member.get("state"), Status.RUNNING)
         if key == current_key and existing:
             status = existing["status"]
-        if existing and existing.get("status") == Status.FAILED and member.get("state") in ("blocked", "reported", "accepted", Status.IDLE):
+        if existing and existing.get("status") == Status.FAILED and member.get("state") in (MemberState.BLOCKED, MemberState.REPORTED, MemberState.ACCEPTED, MemberState.IDLE):
             status = Status.FAILED
         child = parent.copy()
         if existing:
@@ -532,11 +619,12 @@ def write_spool(path: Path, envelope: Envelope):
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(mode="w", dir=rex.STATE, prefix="grokbot-pending-", suffix=".tmp", delete=False) as stream:
+            fcntl.flock(stream, fcntl.LOCK_EX)
             temporary = Path(stream.name)
             json.dump(envelope, stream)
             stream.flush()
             os.fsync(stream.fileno())
-        temporary.replace(path)
+            temporary.replace(path)
     finally:
         if temporary:
             temporary.unlink(missing_ok=True)
@@ -670,7 +758,7 @@ def deliver(path):
         path.unlink(missing_ok=True)
         return None
     # A lock survives crashes without becoming a permanent failed-delivery claim.
-    with (rex.STATE / ("grokbot-lock-" + key)).open("a") as lock:
+    with os.fdopen(private_fd(rex.STATE / ("grokbot-lock-" + key), os.O_RDWR | os.O_CREAT), "r+") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         sent = rex.STATE / ("grokbot-sent-" + key)
         if sent.exists():
@@ -687,12 +775,17 @@ def deliver(path):
                 write_spool(path, envelope)
             status = post(envelope["body"])
             success = 200 <= status < 300
+            if not success:
+                envelope["delivery_outcome"] = Outcome.DELIVERY_FAILED
+                write_spool(path, envelope)
             receipt(Outcome.DELIVERED if success else Outcome.DELIVERY_FAILED, **fields, http_status=status)
         except (OSError, ValueError):
+            envelope["delivery_outcome"] = Outcome.CONFIG_INVALID
+            write_spool(path, envelope)
             receipt(Outcome.CONFIG_INVALID, **fields)
             return False
         if success:
-            sent.touch(mode=0o600)
+            os.close(private_fd(sent, os.O_WRONLY | os.O_CREAT | os.O_EXCL))
             path.unlink(missing_ok=True)
         return success
 
@@ -708,6 +801,7 @@ def session_view(row: SessionState) -> SessionView:
 def health() -> Health:
     """Bound historical output; retain every active session and actionable spool."""
     rex.state_dir()
+    cleanup_orphan_temps()
     pending: list[DeliveryRecord] = []
     failed: list[DeliveryRecord] = []
     spools: dict[str, tuple[Path, Envelope]] = {}
@@ -727,34 +821,30 @@ def health() -> Health:
     receipts: dict[str, DeliveryRecord] = {}
     history: OrderedDict[str, DeliveryRecord] = OrderedDict()
     started: deque[DeliveryRecord] = deque(maxlen=STATUS_HISTORY_LIMIT)
-    try:
-        with (rex.STATE / "grokbot-callback-receipts.jsonl").open() as stream:
-            for line in stream:
-                try:
-                    row: DeliveryRecord = json.loads(line)
-                    if row.get("outcome") == Outcome.STARTED:
-                        started.append(row)
-                    key = row.get("key")
-                    if not key:
-                        continue
-                    if key in spools:
-                        receipts[key] = row
-                    else:
-                        history.pop(key, None)
-                        if row.get("outcome") in (Outcome.DELIVERY_FAILED, Outcome.CONFIG_INVALID) and row.get("event", Event.RUN_FINISHED) in WEBHOOK_EVENTS:
-                            history[key] = row
-                            if len(history) > STATUS_HISTORY_LIMIT:
-                                history.popitem(last=False)
-                except (ValueError, AttributeError):
-                    continue
-    except FileNotFoundError:
-        pass
+    for line in receipt_lines():
+        try:
+            row: DeliveryRecord = json.loads(line)
+            if row.get("outcome") == Outcome.STARTED:
+                started.append(row)
+            key = row.get("key")
+            if not key:
+                continue
+            if key in spools:
+                receipts[key] = row
+            else:
+                history.pop(key, None)
+                if row.get("outcome") in (Outcome.DELIVERY_FAILED, Outcome.CONFIG_INVALID) and row.get("event", Event.RUN_FINISHED) in WEBHOOK_EVENTS:
+                    history[key] = row
+                    if len(history) > STATUS_HISTORY_LIMIT:
+                        history.popitem(last=False)
+        except (ValueError, AttributeError):
+            continue
     for key, (path, envelope) in spools.items():
         row = receipts.get(key, {})
         item = DeliveryRecord(key=key, spool=str(path), event=envelope.get("event", Event.RUN_FINISHED),
                               agent_session_id=envelope.get("lineage", {}).get("agent_session_id") or envelope["data"]["session_id"],
                               task_id=envelope.get("task_id", ""), rex_session=envelope["rex_session"], rex_block=envelope["rex_block"],
-                              outcome=row.get("outcome", Outcome.PENDING))
+                              outcome=row.get("outcome", envelope.get("delivery_outcome", Outcome.PENDING)))
         (failed if item["outcome"] in (Outcome.DELIVERY_FAILED, Outcome.CONFIG_INVALID) else pending).append(item)
     failed.extend(history.values())
     with database() as db:
@@ -773,6 +863,8 @@ def health() -> Health:
 
 
 def retry():
+    rex.state_dir()
+    cleanup_orphan_temps()
     results = []
     for path in rex.STATE.glob("grokbot-pending-*"):
         if path.suffix == ".tmp":
