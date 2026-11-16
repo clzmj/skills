@@ -1,9 +1,11 @@
 """Self-checks for pure probe utilities and the P14 stub contract."""
 
 import base64
+from contextlib import redirect_stdout
 from datetime import date
 import hashlib
 import json
+from io import StringIO
 import os
 from pathlib import Path
 import subprocess
@@ -38,6 +40,23 @@ def encoded_plan(payload: str) -> str:
 
 
 class ProbeSupportTests(unittest.TestCase):
+    def test_redaction_masks_word_adjacent_and_dashless_uuids(self) -> None:
+        for raw in (
+            "agent_11111111-2222-3333-4444-555555555555",
+            "agent-11111111-2222-3333-4444-555555555555.jsonl",
+            "11111111-2222-3333-4444-555555555555x",
+            "agent_11111111222233334444555555555555",
+            '"11111111-2222-3333-4444-555555555555"',
+        ):
+            with self.subTest(raw=raw):
+                self.assertIn("[REDACTED_AGENT_ID]", redact(raw))
+
+    def test_redaction_masks_home_paths_in_both_recorders(self) -> None:
+        from tests.qe.probes.claude_probe import redact as redact_claude
+
+        for recorder in (redact, redact_claude):
+            self.assertEqual(recorder("/Users/alice/project/file"), "~/project/file")
+
     def test_redaction_preserves_json_and_masks_quoted_credentials(self) -> None:
         source = (
             '{"token": "abcdefgh12345678", "url": "ssh://user:password@example.test/x"}'
@@ -84,6 +103,83 @@ class ProbeSupportTests(unittest.TestCase):
 
 
 class HarnessCommandTests(unittest.TestCase):
+    def test_hook_records_redacted_stdin_and_returns_context(self) -> None:
+        payload = {
+            "hook_event_name": "UserPromptSubmit",
+            "text": "agent_11111111-2222-3333-4444-555555555555 ghp_abcdefghijklmnopqrstuvwxyz123456",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary)
+            (state / "mode").write_text("context")
+            stdout = StringIO()
+            with (
+                mock.patch("sys.stdin", StringIO(json.dumps(payload))),
+                redirect_stdout(stdout),
+            ):
+                qe_probe.hook(state)
+            recorded = (state / "hooks.jsonl").read_text()
+            self.assertNotIn("11111111-2222-3333-4444-555555555555", recorded)
+            self.assertNotIn("ghp_", recorded)
+            self.assertEqual(json.loads(recorded)["event"], "UserPromptSubmit")
+            self.assertEqual(
+                json.loads(stdout.getvalue())["hookSpecificOutput"][
+                    "additionalContext"
+                ],
+                qe_probe.CONTEXT,
+            )
+
+    def test_record_result_redacts_secret_payload_before_writing(self) -> None:
+        result = ProbeResult(
+            ProbeId.P1,
+            date(2026, 11, 16),
+            {},
+            (),
+            "ghp_abcdefghijklmnopqrstuvwxyz123456",
+            "recorded",
+            Outcome.RECORDED,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "nested/result.json"
+            qe_probe.record_result(result, output)
+            self.assertNotIn("ghp_", output.read_text())
+            self.assertEqual(
+                json.loads(output.read_text())["payload"], "[REDACTED_TOKEN]"
+            )
+
+    def test_prepare_writes_executable_codex_hooks_for_each_event(self) -> None:
+        import shlex
+
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            bin_dir, log_dir = self.make_stub_path(base)
+            root, state = base / "fixture", base / "state"
+            with self.stub_environment(bin_dir, log_dir, mode="versions"):
+                qe_probe.prepare(root, state)
+            hooks = json.loads((root / ".codex/hooks.json").read_text())["hooks"]
+            self.assertEqual(
+                set(hooks), {"UserPromptSubmit", "PreToolUse", "PostToolUse"}
+            )
+            for entries in hooks.values():
+                config = entries[0]["hooks"][0]
+                self.assertEqual(config["timeout"], 60)
+                self.assertEqual(config["type"], "command")
+                self.assertEqual(
+                    shlex.split(config["command"]),
+                    [
+                        "uv",
+                        "run",
+                        "--script",
+                        str(qe_probe.HERE / "qe_probe.py"),
+                        "hook",
+                        "--state",
+                        str(state),
+                    ],
+                )
+            self.assertEqual(
+                json.loads((state / "versions.json").read_text())["codex"],
+                "codex stub-version",
+            )
+
     def make_stub_path(self, root: Path) -> tuple[Path, Path]:
         bin_dir = root / "bin"
         log_dir = root / "logs"
@@ -161,10 +257,18 @@ class HarnessCommandTests(unittest.TestCase):
             message = 'quoted "question"\nsecond line'
             with self.stub_environment(bin_dir, log_dir):
                 rex_results = qe_probe.deliver(
-                    "session-1", "block:abc", "thread-1", message, "rex"
+                    "session-1",
+                    "block:abc",
+                    "thread-1",
+                    message,
+                    qe_probe.Transport.REX,
                 )
                 queue_results = qe_probe.deliver(
-                    "session-1", "block:abc", "thread-1", message, "queue-resume"
+                    "session-1",
+                    "block:abc",
+                    "thread-1",
+                    message,
+                    qe_probe.Transport.QUEUE_RESUME,
                 )
             self.assertEqual([item.returncode for item in rex_results], [0, 0])
             self.assertEqual(len(queue_results), 1)
@@ -191,6 +295,35 @@ class HarnessCommandTests(unittest.TestCase):
 
 
 class RunPlanStubTests(unittest.TestCase):
+    def test_committed_bot_command_is_portable_and_matches_expected_digests(
+        self,
+    ) -> None:
+        import shlex
+
+        command_file = STUB.with_name("p14_bot_command.txt")
+        argv = shlex.split(command_file.read_text())
+        self.assertEqual(
+            argv[:4], ["uv", "run", "--script", "tests/qe/probes/run_plan_stub.py"]
+        )
+        expected = json.loads(STUB.with_name("p14_expected.json").read_text())
+        self.assertEqual(len(argv[-1].encode("ascii")), expected["argv_bytes"])
+        completed = subprocess.run(
+            ["sh", str(command_file)],
+            cwd=STUB.parents[3],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(len(completed.stdout.splitlines()), 1)
+        encoded = completed.stdout.removeprefix("QE-RESULT ").strip()
+        result = json.loads(
+            base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        )
+        self.assertEqual(
+            result, {key: expected[key] for key in ("plan_digest", "received_digest")}
+        )
+
     def test_result_round_trip_preserves_quotes_unicode_newlines_and_cr(self) -> None:
         source = 'quotes: "single\' double"; unicode: café 🐈\nnext line\rfinal'
         encoded = encoded_plan(source)
@@ -263,6 +396,16 @@ class RunPlanStubTests(unittest.TestCase):
         self.assertEqual(invalid.returncode, 64)
         self.assertEqual(malformed.stdout, "")
         self.assertEqual(invalid.stdout, "")
+        self.assertIn("invalid base64url", malformed.stderr)
+        self.assertIn("plan digest mismatch", invalid.stderr)
+        usage = subprocess.run(
+            ["uv", "run", "--script", str(STUB)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(usage.returncode, 64)
+        self.assertIn("usage:", usage.stderr)
 
 
 if __name__ == "__main__":

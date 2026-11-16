@@ -26,8 +26,10 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 try:
+    from .probe_support import HookEvent
     from .probe_support import redact as redact_text
 except ImportError:
+    from probe_support import HookEvent
     from probe_support import redact as redact_text
 
 
@@ -57,15 +59,7 @@ def settings(mode: HookMode, output: Path) -> dict[str, object]:
             str(output.resolve()),
         ]
     )
-    events = (
-        "PreToolUse",
-        "PostToolUse",
-        "PermissionRequest",
-        "UserPromptSubmit",
-        "SubagentStart",
-        "SubagentStop",
-        "Stop",
-    )
+    events = tuple(HookEvent)
     return {
         "hooks": {
             event: [
@@ -121,7 +115,7 @@ def hook(mode: HookMode, output: Path) -> None:
     if mode_file.exists():
         mode = HookMode(mode_file.read_text().strip())
     payload = json.load(sys.stdin)
-    event = payload.get("hook_event_name", "")
+    event = HookEvent(payload["hook_event_name"])
     tool = payload.get("tool_name", "")
     started = time.monotonic()
     response: dict[str, object] = {}
@@ -129,7 +123,7 @@ def hook(mode: HookMode, output: Path) -> None:
         tool_input = payload.get("tool_input", {})
         questions = tool_input.get("questions", [])
         answers = {question["question"]: "tabs" for question in questions}
-        if event == "PermissionRequest" and mode in {
+        if event == HookEvent.PERMISSION_REQUEST and mode in {
             HookMode.PERMISSION_ANSWER,
             HookMode.PERMISSION_PENDING,
         }:
@@ -147,7 +141,7 @@ def hook(mode: HookMode, output: Path) -> None:
             response = {
                 "hookSpecificOutput": {"hookEventName": event, "decision": decision}
             }
-        elif event == "PreToolUse":
+        elif event == HookEvent.PRE_TOOL_USE:
             if mode in {HookMode.DENY_ANSWER, HookMode.DENY_PENDING}:
                 reason = (
                     "QE-ANSWER: use tabs."
@@ -177,7 +171,7 @@ def hook(mode: HookMode, output: Path) -> None:
                         "permissionDecisionReason": "QE-55S-SURVIVED: use tabs.",
                     }
                 }
-    if event == "UserPromptSubmit" and mode == HookMode.CONTEXT:
+    if event == HookEvent.USER_PROMPT_SUBMIT and mode == HookMode.CONTEXT:
         response = {
             "hookSpecificOutput": {
                 "hookEventName": event,

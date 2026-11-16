@@ -11,8 +11,9 @@ Run serve in a visible Services pane before launch. Inspect /hooks normally.
 
 import argparse
 from collections.abc import Callable
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from enum import StrEnum
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -24,13 +25,47 @@ import time
 from urllib.request import Request, urlopen
 
 try:
-    from .probe_support import Outcome, ProbeId, ProbeResult, build_fixture, redact
+    from .probe_support import (
+        HookEvent,
+        Outcome,
+        ProbeId,
+        ProbeResult,
+        build_fixture,
+        redact,
+    )
 except ImportError:
-    from probe_support import Outcome, ProbeId, ProbeResult, build_fixture, redact
+    from probe_support import (
+        HookEvent,
+        Outcome,
+        ProbeId,
+        ProbeResult,
+        build_fixture,
+        redact,
+    )
 
 HERE = Path(__file__).resolve().parent
-EVENTS = ("UserPromptSubmit", "PreToolUse", "PostToolUse")
+EVENTS = (HookEvent.USER_PROMPT_SUBMIT, HookEvent.PRE_TOOL_USE, HookEvent.POST_TOOL_USE)
 CONTEXT = "QE_CONTEXT_7fc1: the fixture uses tabs and oxlint."
+
+
+class CodexMode(StrEnum):
+    CONTEXT = "context"
+    TIMEOUT = "timeout"
+    DENY = "deny"
+    OBSERVE = "observe"
+
+
+class Transport(StrEnum):
+    REX = "rex"
+    QUEUE = "queue"
+    QUEUE_RESUME = "queue-resume"
+
+
+@dataclass(frozen=True, slots=True)
+class HookRecord:
+    recorded_at: str
+    event: HookEvent
+    payload: dict[str, object]
 
 
 def record_result(result: ProbeResult, destination: Path) -> None:
@@ -99,12 +134,14 @@ def hook(
     state: Path, now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
 ) -> None:
     data = json.load(sys.stdin)
-    event = data.get("hook_event_name", "unknown")
-    record = {
-        "recorded_at": now().isoformat(),
-        "event": event,
-        "payload": json.loads(redact(json.dumps(data))),
-    }
+    event = HookEvent(data["hook_event_name"])
+    record = asdict(
+        HookRecord(
+            now().isoformat(),
+            event,
+            json.loads(redact(json.dumps(data))),
+        )
+    )
     state.mkdir(parents=True, exist_ok=True)
     with (state / "hooks.jsonl").open("a") as stream:
         stream.write(json.dumps(record) + "\n")
@@ -121,13 +158,17 @@ def hook(
         except OSError:
             pass
     mode_file = state / "mode"
-    mode = mode_file.read_text().strip() if mode_file.exists() else "observe"
+    mode = (
+        CodexMode(mode_file.read_text().strip())
+        if mode_file.exists()
+        else CodexMode.OBSERVE
+    )
     output = {}
-    if event == "UserPromptSubmit" and mode == "context":
+    if event == HookEvent.USER_PROMPT_SUBMIT and mode == CodexMode.CONTEXT:
         output = {
             "hookSpecificOutput": {"hookEventName": event, "additionalContext": CONTEXT}
         }
-    if event == "UserPromptSubmit" and mode == "timeout":
+    if event == HookEvent.USER_PROMPT_SUBMIT and mode == CodexMode.TIMEOUT:
         started = time.monotonic()
         time.sleep(55)
         output = {
@@ -137,9 +178,9 @@ def hook(
             }
         }
     if (
-        event == "PreToolUse"
+        event == HookEvent.PRE_TOOL_USE
         and "request_user_input" in str(data.get("tool_name"))
-        and mode == "deny"
+        and mode == CodexMode.DENY
     ):
         output = {
             "hookSpecificOutput": {
@@ -235,13 +276,13 @@ def launch(root: Path, state: Path, prompt: str, resume: str = "") -> None:
 
 
 def deliver(
-    session: str, block: str, thread: str, text: str, transport: str
+    session: str, block: str, thread: str, text: str, transport: Transport
 ) -> list[subprocess.CompletedProcess[str]]:
-    if transport == "rex":
+    if transport == Transport.REX:
         argv = ["rex", "send", "-s", session, "-b", block]
         return [command(argv, text=text), command(argv, text="\r")]
     argv = ["codex", "queue", "--thread", thread, "--message", text]
-    if transport == "queue-resume":
+    if transport == Transport.QUEUE_RESUME:
         argv.append("--resume")
     return [command(argv)]
 
@@ -268,7 +309,7 @@ def main() -> None:
     parser.add_argument("--command", action="append", default=[])
     parser.add_argument("--payload-file", type=Path)
     parser.add_argument(
-        "--transport", choices=("rex", "queue", "queue-resume"), default="rex"
+        "--transport", type=Transport, choices=list(Transport), default=Transport.REX
     )
     args = parser.parse_args()
     if args.action == "prepare":
