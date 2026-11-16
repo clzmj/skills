@@ -515,7 +515,7 @@ def lifecycle_hook(data):
         if name == "SessionStart" and callback_parent and callback_parent["thread"] != parent:
             immediate_parent = callback_parent["thread"]
         register(team, parent, "coordinator-" + parent, cwd=data.get("cwd"), parent=immediate_parent, transcript=data.get("transcript_path") or "", model=data.get("model", "") if name == "SessionStart" else "", provisional_parent=not bool(callback_parent))
-        if name in ("PreToolUse", "PostToolUse") and member(team, data.get("agent_id") or parent)["state"] == MemberState.WAITING:
+        if grokbot_callback.resumes_input(data) and member(team, data.get("agent_id") or parent)["state"] == MemberState.WAITING:
             state(team, data.get("agent_id") or parent, MemberState.WORKING)
         if name in ("SessionStart", "UserPromptSubmit"):
             context = f"Follow {POLICY} for scoped coordination in the main Rex session. Team: {team}; this session: {parent}. Use direct tools for deterministic work; for bounded delegation select focused_worker with fork_turns=none and a compact handoff. Select Terra, Sol or Astra by the task routes in the guidance. Read guidance once, then consult changed sections."
@@ -533,7 +533,7 @@ def lifecycle_hook(data):
             if name == "SubagentStart":
                 context = f"Follow {POLICY}. Your team is {team}; your agent id is {child}; coordinator is {actual_parent}. Use native messaging for progress, questions, blockers and final results."
                 reopen_activity(team, child)
-        elif name == "PermissionRequest":
+        elif grokbot_callback.input_request(data):
             state(team, data.get("agent_id") or parent, MemberState.WAITING)
         elif name in ("Stop", "SessionEnd"):
             state(team, data.get("agent_id") or parent, (MemberState.WAITING if grokbot_callback.waiting(data) else MemberState.IDLE) if name == "Stop" else MemberState.ENDED)

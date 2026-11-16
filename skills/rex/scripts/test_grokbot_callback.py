@@ -275,6 +275,54 @@ class CallbackTests(unittest.TestCase):
         self.assertEqual((body["kind"], body["prompt_text"], body["turn_id"]), ("approval", "Run deployment?", "native-turn"))
         self.assertEqual(len(self.requests), 1)
 
+    def test_codex_request_user_input_questions_emit_untrusted_question(self):
+        self.queued("codex", self.data("UserPromptSubmit", turn_id="turn-question"))
+        questions = [{"question": "Which region?", "header": "Region", "id": "region",
+                      "options": [{"label": "East", "description": "Eastern region"}, {"label": "West"}]},
+                     {"title": "How many?", "options": ["one", "two"]}]
+        event = self.data("PreToolUse", turn_id="turn-question", tool_name="request_user_input",
+                          tool_use_id="stable-question-id", tool_input={"questions": questions})
+        path = self.queued("codex", event)
+        self.assertIsNotNone(path)
+        duplicate = self.queued("codex", event)
+        self.assertIsNone(duplicate)
+        self.drain()
+        body = next(body for body, _ in self.requests if body["event"] == "needs_input")
+        self.assertEqual(body["kind"], "question")
+        self.assertIn("Which region?", body["prompt_text"])
+        self.assertIn("How many?", body["prompt_text"])
+        self.assertEqual(body["untrusted"], ["last_message", "prompt_text", "cwd", "repo", "branch", "head_sha", "task_id"])
+        self.assertEqual(body["lineage"]["agent_session_id"], event["session_id"])
+        self.assertEqual(len(self.requests), 1)
+        self.assertEqual(self.session_status("codex", event["session_id"]), "waiting")
+        self.queued("codex", {**event, "hook_event_name": "PostToolUse", "tool_response": {"answers": {"region": "East"}}})
+        self.assertEqual(self.session_status("codex", event["session_id"]), "running")
+
+    def test_codex_question_malformed_fails_open_and_async_waits_for_later_activity(self):
+        root = self.data()["session_id"]
+        bad = self.data("PreToolUse", tool_name="request_user_input", tool_use_id="bad",
+                        tool_input={"questions": [{"question": 3}]})
+        self.assertIsNone(callback.input_request(bad))
+        for inputs in (None, [], "invalid", {"questions": None}, {"questions": "bad"}, {"questions": [None, 3, {}]}):
+            event = {**bad, "tool_input": inputs}
+            self.assertIsNone(callback.input_request(event))
+            with patch.object(callback.subprocess, "Popen") as launch:
+                self.assertEqual(codex_sessions.handle_hook(event), {})
+            launch.assert_not_called()
+        with patch.object(callback.subprocess, "Popen"):
+            codex_sessions.handle_hook(self.data("UserPromptSubmit"))
+            codex_sessions.handle_hook(self.data("PreToolUse", tool_name="request_user_input_async",
+                                                  tool_use_id="async", tool_input={"questions": [{"title": "Choose"}]}))
+            self.assertEqual(codex_sessions.member(root, root)["state"], "waiting")
+            self.assertEqual(self.session_status("codex", root), "waiting")
+            codex_sessions.handle_hook(self.data("PostToolUse", tool_name="request_user_input_async",
+                                                  tool_use_id="async", tool_input={"questions": [{"title": "Choose"}]}))
+            self.assertEqual(codex_sessions.member(root, root)["state"], "waiting")
+            self.assertEqual(self.session_status("codex", root), "waiting")
+            codex_sessions.handle_hook(self.data("PostToolUse", tool_name="Bash"))
+            self.assertEqual(codex_sessions.member(root, root)["state"], "working")
+            self.assertEqual(self.session_status("codex", root), "running")
+
     def test_claude_approval_notifications_do_not_duplicate_permission_requests(self):
         for notification_first in (False, True):
             with patch.object(callback.subprocess, "Popen"):

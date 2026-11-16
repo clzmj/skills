@@ -47,6 +47,14 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(data["trust"], original["trust"])
             self.assertEqual(data["permissions"], original["permissions"])
             self.assertIn("PermissionRequest", data["hooks"])
+            pretool_handlers = [handler for group in data["hooks"]["PreToolUse"] for handler in group["hooks"]]
+            self.assertTrue(any("codex_sessions.py" in handler["command"] for handler in pretool_handlers))
+            # Codex question tools are not guaranteed to match a narrow command matcher.
+            codex_observers = [handler for group in data["hooks"]["PreToolUse"]
+                               for handler in group["hooks"] if "codex_sessions.py" in handler["command"]]
+            self.assertTrue(codex_observers)
+            self.assertTrue(all("matcher" not in group for group in data["hooks"]["PreToolUse"]
+                                if any("codex_sessions.py" in handler["command"] for handler in group["hooks"])))
             for event, groups in data["hooks"].items():
                 for group in groups:
                     for handler in group["hooks"]:

@@ -96,6 +96,16 @@ not applicable. `task_id` uses `GROKBOT_TASK_ID` when set, otherwise
 contains `requester_bot`, `root_session_id`,
 `parent_session_id`, `agent_session_id`, `depth`, `agent_kind`, and `role`.
 
+| Host event | Callback / local status |
+| --- | --- |
+| Codex `PreToolUse(request_user_input)` or `PreToolUse(request_user_input_async)` | `needs_input`, `kind: question`, `waiting`; joined question/title text in untrusted `prompt_text` |
+| Codex or Claude `PermissionRequest` | `needs_input`, `kind: approval`, `waiting` |
+| Claude `Notification(elicitation_dialog)` | `needs_input`, `kind: question`, `waiting` |
+| Question answer (`PostToolUse(request_user_input)`) or later pre/post tool activity | Local `running`; no additional POST |
+| Async question acceptance (`PostToolUse(request_user_input_async)`) | Remains `waiting`; acceptance is not an answer |
+| `UserPromptSubmit` | Local `running` and new turn |
+| Root `Stop` without background tasks/wakeups | `run_finished`, `completed` (or `failed` on error) |
+
 | Field | Type / constraint |
 | --- | --- |
 | `event` | `needs_input` or `run_finished` (manual `test` ping described below) |
@@ -121,8 +131,8 @@ retries retain the same delivery key. Without an ID, identical content in the sa
 turn represents a duplicate. Root completion remains deduplicated per turn.
 Native turn IDs take precedence and prompt generations cover hosts without IDs.
 Observed pre/post tool activity returns a waiting session to running locally,
-without an additional webhook. Both hosts' lifecycle observers receive ordinary
-post-tool activity; installation broadens only their owned handlers and preserves
+without an additional webhook, except async question acceptance. Both hosts' lifecycle observers receive ordinary
+post-tool activity; Codex also receives pre-tool activity for questions. Installation broadens only their owned handlers and preserves
 unrelated hook matchers. Old native turns are rejected
 after a newer prompt. ID-less late hooks cannot reliably identify an earlier turn.
 HTTP uses a five-second timeout. A crash after server acceptance can cause replay;
@@ -136,11 +146,13 @@ approval ping; `idle_prompt` is also ignored for input and does not reopen a
 finished run. Claude `elicitation_dialog` still reports a question; explicit
 `trust_prompt` and `input_prompt` compatibility notifications report trust and
 other input when supplied. Hooks do not approve prompts or change host trust.
-Codex `PermissionRequest` includes `tool_name` and `tool_input`, with an
-optional `tool_input.description`, so approval requests are observable. It does
-not provide a distinct user-question or trust-prompt event. Although
-`tool_name` may identify a question tool, `PermissionRequest` only runs for
-permission checks and does not report ordinary question-tool invocations.
+Codex 0.167.2 was probed locally in an isolated temporary Codex home and Rex tab:
+`PreToolUse` fires for `request_user_input` and `request_user_input_async`, with
+`tool_input.questions` and a stable `tool_use_id`. Neither `Notification` nor
+`PermissionRequest` fired for those questions. Blocking questions return answers
+through `PostToolUse`; async questions return acceptance immediately. The callback
+uses these observed hooks, so no rollout watcher is needed. Only these explicit
+question tool names are recognized; arbitrary tool inputs are not questions.
 Startup trust screens can appear before hooks run. Other question and trust
 prompts are not inferred from arbitrary tool inputs.
 See the official [Codex hooks](https://developers.openai.com/codex/hooks) reference

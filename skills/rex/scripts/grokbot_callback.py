@@ -59,6 +59,20 @@ class InputKind(StrEnum):
     OTHER = "other"
 
 
+class ToolName(StrEnum):
+    REQUEST_USER_INPUT = "request_user_input"
+    REQUEST_USER_INPUT_ASYNC = "request_user_input_async"
+
+
+class Question(TypedDict, total=False):
+    question: str
+    title: str
+
+
+class QuestionInput(TypedDict):
+    questions: list[Question]
+
+
 class NotificationType(StrEnum):
     PERMISSION_PROMPT = "permission_prompt"
     IDLE_PROMPT = "idle_prompt"
@@ -382,9 +396,19 @@ def git_metadata(cwd):
                        head_sha=git("rev-parse", "HEAD"))
 
 
-def input_request(data, agent=AgentKind.CODEX):
+def input_request(data, agent=AgentKind.CODEX) -> tuple[InputKind, str] | None:
     name = data.get("hook_event_name")
     notification = data.get("notification_type", "")
+    if (agent == AgentKind.CODEX and name == HookEvent.PRE_TOOL_USE
+            and data.get("tool_name") in tuple(ToolName)):
+        inputs = data.get("tool_input")
+        if not isinstance(inputs, dict) or not isinstance(inputs.get("questions"), list):
+            return None
+        question_input: QuestionInput = inputs
+        questions = [item.get("question") or item.get("title") for item in question_input["questions"]
+                     if isinstance(item, dict)]
+        prompt = "\n".join(text for text in questions if isinstance(text, str) and text.strip())
+        return (InputKind.QUESTION, prompt[:1000]) if prompt else None
     if name == HookEvent.PERMISSION_REQUEST or (agent != AgentKind.CLAUDE and name == HookEvent.NOTIFICATION and notification == NotificationType.PERMISSION_PROMPT):
         kind = InputKind.APPROVAL
     elif name == HookEvent.NOTIFICATION and notification == NotificationType.ELICITATION_DIALOG:
@@ -400,6 +424,13 @@ def input_request(data, agent=AgentKind.CODEX):
     if not isinstance(prompt, str):
         prompt = json.dumps(prompt, ensure_ascii=False)
     return kind, prompt[:1000]
+
+
+def resumes_input(data):
+    # Async acceptance is not the user's answer. Its next activity may resume.
+    return (data.get("hook_event_name") in (HookEvent.PRE_TOOL_USE, HookEvent.POST_TOOL_USE)
+            and not (data.get("hook_event_name") == HookEvent.POST_TOOL_USE
+                     and data.get("tool_name") == ToolName.REQUEST_USER_INPUT_ASYNC))
 
 
 def input_blocked(agent, data):
@@ -571,7 +602,7 @@ def _notify(agent, data, members):
         event: Event | None = None
         if request:
             event, item["status"] = Event.NEEDS_INPUT, Status.WAITING
-        elif name in (HookEvent.PRE_TOOL_USE, HookEvent.POST_TOOL_USE) and item["status"] == Status.WAITING:
+        elif resumes_input(data) and item["status"] == Status.WAITING:
             item["status"] = Status.RUNNING
         elif name == HookEvent.USER_PROMPT_SUBMIT:
             event, item["status"] = (Event.LINEAGE if item["parent"] else Event.HEARTBEAT), Status.RUNNING

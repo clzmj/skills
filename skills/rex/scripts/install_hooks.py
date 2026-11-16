@@ -54,14 +54,14 @@ def owned_handler(command, script, home, root):
 def rex_hooks(data, root, home, uv, codex):
     definitions = [("rex_visible.py", ("SessionStart", "UserPromptSubmit", "PreToolUse"))]
     if codex:
-        definitions.append(("codex_sessions.py", ("SessionStart", "UserPromptSubmit", "SubagentStart", "SubagentStop", "Stop", "SessionEnd", "PostToolUse", "PermissionRequest")))
+        definitions.append(("codex_sessions.py", ("SessionStart", "UserPromptSubmit", "SubagentStart", "SubagentStop", "Stop", "SessionEnd", "PreToolUse", "PostToolUse", "PermissionRequest")))
     else:
         definitions.append(("claude_sessions.py", ("SessionStart", "UserPromptSubmit", "SubagentStart", "SubagentStop", "PreToolUse", "PostToolUse", "Stop", "StopFailure", "SessionEnd", "TeammateIdle", "TaskCreated", "TaskCompleted", "Notification", "PermissionRequest", "PostModelSwitch")))
     for script, events in definitions:
         for event in events:
             command = shlex.join([uv, "run", "--script", str(root / script), "hook"])
             groups = data.setdefault("hooks", {}).setdefault(event, [])
-            if event == "PostToolUse":
+            if event == "PostToolUse" or (event == "PreToolUse" and script == "codex_sessions.py"):
                 for group in list(groups):
                     owned = [handler for handler in group.get("hooks", [])
                              if owned_handler(handler.get("command", ""), script, home, root)]
