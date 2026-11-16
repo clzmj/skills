@@ -587,6 +587,8 @@ class ScannerTests(unittest.TestCase):
         self.assertEqual(report["coverage"]["discovery"], "git")
         self.assertEqual(len(report["coverage"]["parse_errors"]), 1)
         self.assertEqual(report["coverage"]["parse_errors"][0]["path"], "invalid.py")
+        self.assertEqual(report["coverage"]["parse_errors"][0]["reason"], "parse_error")
+        self.assertNotIn("invalid.py", {item["path"] for item in report["coverage"]["scanned"]})
         self.assertTrue({"infra.tf", "config.json"}.issubset({item["path"] for item in report["coverage"]["unsupported"]}))
         self.assertEqual(self.finding(report, "ready")["counts"]["occurrences"], 3)
 

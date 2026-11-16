@@ -775,7 +775,7 @@ def evidence(node, source, language: ScanLanguage):
     kinds = {item.type for item in chain}
     if any(item.type in {NodeType.IMPORT_STATEMENT, NodeType.EXPORT_STATEMENT} and item.child_by_field_name(FieldName.SOURCE) == node for item in chain): return None
     if kinds & {NodeType.USE_DECLARATION, NodeType.EXTERN_CRATE_DECLARATION}: return None
-    if language == Language.PYTHON and parent:
+    if language == Language.PYTHON:
         expression = parent if parent.type == NodeType.EXPRESSION_STATEMENT else node
         container = expression.parent
         if container and container.type in {NodeType.MODULE, NodeType.BLOCK} and container.named_children and container.named_children[0] == expression and (container.type == NodeType.MODULE or container.parent and container.parent.type in {NodeType.FUNCTION_DEFINITION, NodeType.CLASS_DEFINITION}): return None
@@ -837,7 +837,7 @@ def evidence(node, source, language: ScanLanguage):
                     else CandidateStyle.CONSTANT,
                 )
     comparison = bool(kinds & {NodeType.COMPARISON_OPERATOR, NodeType.CASE_CLAUSE, NodeType.SWITCH_CASE, NodeType.MATCH_ARM, NodeType.LITERAL_PATTERN}) or any(item.type == NodeType.BINARY_EXPRESSION and field(item, FieldName.OPERATOR, source) in {"==", "!=", "===", "!==", "<", ">", "<=", ">=", "in", "instanceof"} for item in chain)
-    role = Role.CONSTANT_DEFINITION if candidate else Role.COMPARISON if comparison else Role.MAPPING_KEY if parent and parent.type in {NodeType.PAIR, NodeType.KEY_VALUE} and parent.child_by_field_name(FieldName.KEY) == node else Role.CONFIGURATION if re.sub(r"[^a-z]", "", key.lower()) in SEMANTIC else Role.ARGUMENT if kinds & {NodeType.ARGUMENTS, NodeType.ARGUMENT_LIST} else Role.ASSIGNMENT if key else Role.LITERAL
+    role = Role.CONSTANT_DEFINITION if candidate else Role.COMPARISON if comparison else Role.MAPPING_KEY if parent.type in {NodeType.PAIR, NodeType.KEY_VALUE} and parent.child_by_field_name(FieldName.KEY) == node else Role.CONFIGURATION if re.sub(r"[^a-z]", "", key.lower()) in SEMANTIC else Role.ARGUMENT if kinds & {NodeType.ARGUMENTS, NodeType.ARGUMENT_LIST} else Role.ASSIGNMENT if key else Role.LITERAL
     inline_test = any(item.type in {NodeType.FUNCTION_DEFINITION, NodeType.FUNCTION_ITEM, NodeType.MOD_ITEM} and (field(item, FieldName.NAME, source).startswith("test_") or field(item, FieldName.NAME, source) == "tests") for item in chain)
     return role, parent.type, " ".join(contexts), candidate, inline_test
 
@@ -909,7 +909,7 @@ def scan(root: Path, options: ScanOptions):
         if tree.root_node.has_error:
             error = next((item for item in descendants(tree.root_node) if item.type == NodeType.ERROR or item.is_missing), tree.root_node)
             coverage.parse_errors.append(
-                CoverageEntry(path=location, language=language, line=error.start_point.row + 1, column=character_column(source, error.start_byte))
+                CoverageEntry(path=location, reason=ExclusionReason.PARSE_ERROR, language=language, line=error.start_point.row + 1, column=character_column(source, error.start_byte))
             )
             continue
         literals = 0
