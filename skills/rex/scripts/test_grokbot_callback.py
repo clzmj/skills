@@ -239,7 +239,7 @@ class CallbackTests(unittest.TestCase):
         self.queued("claude", self.data("UserPromptSubmit"))
         for event in (self.data("PermissionRequest", request_id="approval-1", tool_input={"description": "x" * 1100}),
                       self.data("Notification", request_id="approval-1", notification_type="permission_prompt", message="duplicate approval"),
-                      self.data("Notification", notification_type="idle_prompt", message="Choose a name?"),
+                      self.data("Notification", notification_type="elicitation_dialog", message="Choose a name?"),
                       self.data("Notification", notification_type="trust_prompt", message="Trust this workspace?"),
                       self.data("Notification", notification_type="input_prompt", message="Waiting")):
             self.queued("claude", event)
@@ -265,6 +265,122 @@ class CallbackTests(unittest.TestCase):
         body = next(body for body, _ in self.requests if body["event"] == "needs_input")
         self.assertEqual((body["kind"], body["prompt_text"], body["turn_id"]), ("approval", "Run deployment?", "native-turn"))
         self.assertEqual(len(self.requests), 1)
+
+    def test_claude_approval_notifications_do_not_duplicate_permission_requests(self):
+        for notification_first in (False, True):
+            with patch.object(callback.subprocess, "Popen"):
+                claude_sessions.handle_hook(self.data("UserPromptSubmit"))
+                permission = self.data("PermissionRequest", tool_name="Bash", tool_input={"command": "ls", "description": "Approve listing?"})
+                notification = self.data("Notification", notification_type="permission_prompt", message="Claude needs permission")
+                for event in ((notification, permission) if notification_first else (permission, notification)):
+                    claude_sessions.handle_hook(event)
+                claude_sessions.handle_hook(permission)
+            start = len(self.requests)
+            self.drain()
+            self.assertEqual(len(self.requests) - start, 1)
+            self.assertEqual(self.requests[-1][0]["event"], "needs_input")
+            self.assertEqual(self.requests[-1][0]["prompt_text"], "Approve listing?")
+
+    def test_terminal_root_and_child_ignore_all_late_input(self):
+        for agent in ("codex", "claude"):
+            for terminal, expected in (("Stop", "completed"), ("StopFailure", "failed"), ("SessionEnd", "ended")):
+                root = f"{agent}-{terminal}"
+                base = self.data("UserPromptSubmit", session_id=root)
+                self.queued(agent, base)
+                self.queued(agent, {**base, "hook_event_name": "SubagentStart", "agent_id": "child-" + root})
+                for actor in ("", "child-" + root):
+                    fields = {"agent_id": actor} if actor else {}
+                    self.queued(agent, {**base, "hook_event_name": terminal, **fields})
+                    for event in (self.data("PermissionRequest", prompt="Late approval"),
+                                  self.data("Notification", notification_type="idle_prompt", message="Idle after Stop"),
+                                  self.data("Notification", notification_type="elicitation_dialog", message="Late question")):
+                        late = {**event, "session_id": root, **fields}
+                        self.assertIsNone(self.queued(agent, late))
+                        self.assertEqual(self.session_status(agent, actor or root), expected)
+                # A fresh prompt can start a new root turn after completion.
+                self.queued(agent, base)
+                self.assertIsNotNone(self.queued(agent, {**base, "hook_event_name": "PermissionRequest", "prompt": "New turn approval"}))
+
+    def test_late_claude_input_cannot_reopen_coordination_or_callback_state(self):
+        root = self.data()["session_id"]
+        child = "finished-child"
+        with patch.object(callback.subprocess, "Popen"):
+            claude_sessions.handle_hook(self.data("UserPromptSubmit"))
+            claude_sessions.handle_hook(self.data("SubagentStart", agent_id=child))
+            claude_sessions.handle_hook(self.data("SubagentStop", agent_id=child))
+            claude_sessions.handle_hook(self.data("Stop"))
+            for actor in ("", child):
+                fields = {"agent_id": actor} if actor else {}
+                for name, more in (("Notification", {"notification_type": "idle_prompt"}),
+                                   ("Notification", {"notification_type": "permission_prompt"}),
+                                   ("PermissionRequest", {"prompt": "Stale approval"})):
+                    claude_sessions.handle_hook(self.data(name, **more, **fields))
+                    self.assertEqual(self.session_status("claude", actor or root), "completed")
+                    team = codex_sessions.active_team(claude_sessions.identity(root))
+                    row = codex_sessions.member(team, claude_sessions.identity(root, actor))
+                    self.assertEqual(row["state"], "reported" if actor else "idle")
+        self.drain()
+        self.assertEqual([body["event"] for body, _ in self.requests], ["run_finished"])
+
+    def test_state_and_spool_permissions_are_private_from_creation(self):
+        callback.rex.state_dir()
+        callback.rex.STATE.chmod(0o755)
+        opened_modes = []
+        original = os.open
+
+        def opened(path, flags, mode=0o777, **kwargs):
+            if "grokbot-pending-" in str(path) and flags & os.O_CREAT:
+                opened_modes.append(mode)
+                self.assertEqual(mode, 0o600)
+            return original(path, flags, mode, **kwargs)
+
+        previous_umask = os.umask(0)
+        try:
+            with patch.object(os, "open", side_effect=opened):
+                path = self.queued("codex", self.data("Stop"))
+                self.assertEqual(callback.rex.STATE.stat().st_mode & 0o777, 0o700)
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                self.assertTrue(callback.deliver(path))  # Cached body rewrite uses the same secure creator.
+        finally:
+            os.umask(previous_umask)
+        self.assertEqual(opened_modes, [0o600, 0o600])
+
+    def test_status_caps_history_but_retains_live_sessions_and_actionable_spools(self):
+        with patch.object(callback, "STATUS_HISTORY_LIMIT", 3):
+            first = None
+            for index in range(7):
+                data = self.data("UserPromptSubmit", session_id=f"history-{index}")
+                self.queued("codex", data)
+                path = self.queued("codex", {**data, "hook_event_name": "Stop"})
+                first = first or path
+            key = callback.delivery_key(json.loads(first.read_text()))
+            callback.receipt("delivery_failed", key=key, event="run_finished")
+            for index in range(7):
+                callback.receipt("delivery_failed", key=f"orphan-{index}", event="run_finished")
+            for index in range(2):
+                self.queued("codex", self.data("UserPromptSubmit", session_id=f"active-{index}"))
+            output = io.StringIO()
+            with patch.object(callback.sys, "argv", ["grokbot_callback.py", "status", "--json"]), redirect_stdout(output):
+                self.assertEqual(callback.main(), 0)
+            state = json.loads(output.getvalue())
+            self.assertEqual(len(state["started"]), 3)
+            self.assertEqual(len(state["running"]), 2)
+            self.assertEqual(len(state["sessions"]), 5)
+            self.assertEqual(len(state["pending"]), 6)
+            self.assertEqual(len(state["failed"]), 4)
+            self.assertIn(key, {row["key"] for row in state["failed"]})
+            self.assertEqual({row["id"] for row in state["sessions"] if row["status"] == "completed"}, {"history-4", "history-5", "history-6"})
+            with callback.database() as db:
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0], 9)
+
+    def test_enum_and_typed_payloads_preserve_wire_values(self):
+        self.assertEqual(json.loads(json.dumps({"event": callback.Event.NEEDS_INPUT, "kind": callback.InputKind.APPROVAL,
+                                               "status": callback.Status.WAITING, "role": callback.Role.SUBAGENT})),
+                         {"event": "needs_input", "kind": "approval", "status": "waiting", "role": "subagent"})
+        body = callback.payload(self.envelope())
+        self.assertIsInstance(body, dict)
+        self.assertIs(body["event"], callback.Event.RUN_FINISHED)
+        self.assertIs(body["lineage"]["role"], callback.Role.AGENT)
 
     def test_distinct_approvals_in_one_turn_keep_duplicate_and_retry_identity(self):
         cases = (({"tool_use_id": "call-1", "prompt": "Proceed?"}, {"tool_use_id": "call-2", "prompt": "Proceed?"}),

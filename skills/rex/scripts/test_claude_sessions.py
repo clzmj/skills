@@ -74,6 +74,32 @@ class ClaudeAdapterTests(unittest.TestCase):
         self.hook("SessionEnd")
         self.assertEqual(store.member(self.team, self.root)["state"], "ended")
 
+    def test_permission_and_idle_notifications_are_informational(self):
+        self.hook("UserPromptSubmit")
+        self.hook("Stop")
+        for notification in ("permission_prompt", "idle_prompt"):
+            self.hook("Notification", notification_type=notification, message="May I continue?")
+            self.assertEqual(store.member(self.team, self.root)["state"], "idle")
+        self.hook("StopFailure", error="failed")
+        self.hook("Notification", notification_type="idle_prompt")
+        self.assertEqual(store.member(self.team, self.root)["state"], "blocked")
+
+    def test_late_approval_input_is_filtered_before_registration(self):
+        callback = store.grokbot_callback
+        for state in ("completed", "failed", "ended"):
+            with self.subTest(state=state):
+                self.hook("SessionStart")
+                session = "terminal-" + state
+                event = {"session_id": session, "hook_event_name": "PermissionRequest", "tool_name": "Bash"}
+                actor = claude.identity(session)
+                team = "claude-" + session
+                with patch.object(callback, "input_request", return_value=("approval", "Bash")), \
+                     patch.object(callback, "input_blocked", return_value=True) as blocked:
+                    claude.handle_hook(event)
+                    blocked.assert_called_once_with("claude", event)
+                with self.assertRaises(ValueError):
+                    store.member(team, actor)
+
     def test_session_end_finishes_only_children_of_that_native_session(self):
         self.hook("SubagentStart", agent_id="child")
         claude.handle_hook({"session_id": "independent-background", "hook_event_name": "UserPromptSubmit"})

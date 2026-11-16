@@ -71,11 +71,17 @@ The heartbeat is a local `started` receipt at prompt submission, with running
 session state. Child lineage and status (`running`, `completed`, `failed`, or
 `ended`) remain in the state directory; neither heartbeat nor lineage is a
 webhook event. `status --json` exposes `started` receipts and `sessions` metadata
-for all tracked sessions, including completed children and each session's
+for active sessions and recent history, including completed children and each session's
 `turn_id` and `lineage`; the existing `running` list remains the active subset.
 `needs_input` posts `status: waiting`, `kind`
 (`approval`, `question`, `trust`, or `other`), and `prompt_text` limited to 1000
-characters. Only the root posts `run_finished` (`completed` or `failed`). A root
+characters. Claude reports approval only from `PermissionRequest`; its
+`Notification(permission_prompt)` and `Notification(idle_prompt)` events are
+informational and do not create `needs_input` deliveries or change lifecycle
+state to waiting. Stop hooks with background tasks or scheduled wakeups remain
+waiting. Recognized late input requests are ignored after the callback records a
+session as completed, failed, or ended. Only the root posts `run_finished`
+(`completed` or `failed`). A root
 finish includes `children`, each `{id, depth, status}`. Both automated webhook events carry
 these common fields: `event`, `status`, `agent`, `requester`, `task_id`,
 `turn_id`, `lineage`, `children`, `untrusted`, `prompt_text`,
@@ -124,20 +130,19 @@ receivers should deduplicate `delivery_key`. The `test` diagnostic event carries
 only `event`, `task_id`, `requester`, and `untrusted: ["task_id"]`. The HTTP boundary
 also refreshes safety metadata for cached payloads from older runtime versions.
 
-Claude's `Notification` hook exposes `permission_prompt`, `idle_prompt`, and
-`elicitation_dialog`; Claude and Codex `PermissionRequest` hooks expose approval
-requests. Hooks do not approve prompts or change host
-trust. Codex `PermissionRequest` includes `tool_name` and `tool_input`, with an
+Claude and Codex `PermissionRequest` hooks expose approval requests. Claude
+`Notification(permission_prompt)` is informational and never creates another
+approval ping; `idle_prompt` is also ignored for input and does not reopen a
+finished run. Claude `elicitation_dialog` still reports a question; explicit
+`trust_prompt` and `input_prompt` compatibility notifications report trust and
+other input when supplied. Hooks do not approve prompts or change host trust.
+Codex `PermissionRequest` includes `tool_name` and `tool_input`, with an
 optional `tool_input.description`, so approval requests are observable. It does
 not provide a distinct user-question or trust-prompt event. Although
 `tool_name` may identify a question tool, `PermissionRequest` only runs for
-permission checks and does not report ordinary question-tool invocations. The callback
-classifies Claude `idle_prompt` and `elicitation_dialog` as `question`,
-`trust_prompt` as `trust`, and permission notifications or `PermissionRequest`
-as `approval`. Explicit `trust_prompt` and `input_prompt` notification types
-are accepted as `trust` and `other` for host compatibility; current hosts do not
-guarantee these notifications. Startup trust screens can appear before hooks run.
-Other question and trust prompts are not inferred from arbitrary tool inputs.
+permission checks and does not report ordinary question-tool invocations.
+Startup trust screens can appear before hooks run. Other question and trust
+prompts are not inferred from arbitrary tool inputs.
 See the official [Codex hooks](https://developers.openai.com/codex/hooks) reference
 for its permission-request fields.
 
@@ -162,6 +167,16 @@ The callback suppresses an unknown or ambiguous explicit parent instead of
 creating a root. Hosts cannot identify arbitrary unregistered CLI parentage;
 callers that omit this environment variable and coordination registration cannot
 be distinguished reliably from new bot roots.
+
+Callback state directories use mode 0700 and spool files are created with mode
+0600. Status history retains at most 100 started receipts, recent inactive
+sessions, and orphan failed receipts; active sessions and spool-backed
+deliveries remain uncapped. `Event`, `HookEvent`, `InputKind`, `Status`, `Role`, and
+`AgentKind` are `StrEnum` vocabularies. `Payload`, `Envelope`, `SessionState`, and
+`Health` are `TypedDict` schemas; serialized values remain unchanged.
+The waiting/running marker is per session, not per pending request: activity from
+one parallel tool call can mark the session running while another approval is
+still waiting for the human. There is no per-request pending-approval counter.
 
 Stop with background tasks or scheduled wakeups stays waiting. Claude's
 StopFailure reports a failed turn; SessionEnd alone does not mean completion.

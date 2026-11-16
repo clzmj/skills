@@ -493,6 +493,8 @@ def handle_hook(data):
 
 
 def lifecycle_hook(data):
+    if grokbot_callback.input_blocked("codex", data):
+        return {}
     name = data.get("hook_event_name", "")
     parent = data.get("session_id", "")
     try:

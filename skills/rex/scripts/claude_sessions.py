@@ -123,6 +123,9 @@ def lifecycle_hook(data):
     if not isinstance(data, dict):
         raise TypeError("Claude hook input must be a JSON object")
     name = data.get("hook_event_name", "")
+    callback = store.grokbot_callback
+    if callback.input_request(data, agent="claude") and callback.input_blocked("claude", data):
+        return {}
     session = native_id(data.get("session_id"))
     root = identity(session)
     agent = data.get("agent_id") or ""
@@ -177,7 +180,7 @@ def lifecycle_hook(data):
                 db.execute("UPDATE members SET state='ended',updated=? WHERE provider='claude' AND native_session=? AND state IN ('working','waiting','blocked')", (time.time(), session))
     elif name == "StopFailure":
         store.state(team, actor, "blocked")
-    elif name == "PermissionRequest" or (name == "Notification" and data.get("notification_type") in ("permission_prompt", "idle_prompt", "elicitation_dialog", "trust_prompt", "input_prompt")):
+    elif callback.input_request(data, agent="claude"):
         store.state(team, actor, "waiting")
     text = data.get("last_assistant_message") or ""
     if name == "TeammateIdle":
