@@ -20,7 +20,7 @@ function assertReleaseInventory(
       throw new Error(`Forbidden release path: ${path}`);
     const contents = readContents(path);
     if (
-      /\/home\/box|qe\.bots\/1|mac_machine_id|["']?agent_id["']?\s*[=:]\s*["'][0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}["']/i.test(
+      /\/home\/box|qe\.bots\/1|mac_machine_id|["']?agent_id["']?\s*[=:]\s*["']?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}["']?/i.test(
         contents,
       )
     )
@@ -33,7 +33,34 @@ test("release --list returns the filtered tracked inventory", () => {
     cwd: root,
   });
   expect(result.exitCode).toBe(0);
-  expect(JSON.parse(result.stdout.toString())).toEqual(releasePaths());
+  // Intentional release allowlist: packaging changes must review this snapshot.
+  // Deriving it from releasePaths() or Git would let an accidental inclusion
+  // change both expected and actual, defeating this independent inventory guard.
+  expect(JSON.parse(result.stdout.toString())).toEqual([
+    "LICENSE",
+    "distribution/archive-source.ts",
+    "distribution/archive.ts",
+    "favorites.json",
+    "scripts/init.ts",
+    "scripts/self-update.ts",
+    "skills/python-tooling/SKILL.md",
+    "skills/python-tooling/scripts/install_hooks.py",
+    "skills/python-tooling/scripts/python_tooling.py",
+    "skills/rex/SKILL.md",
+    "skills/rex/scripts/COORDINATION.md",
+    "skills/rex/scripts/POLICY.md",
+    "skills/rex/scripts/README.md",
+    "skills/rex/scripts/agents/complex-worker.toml",
+    "skills/rex/scripts/agents/focused-worker.toml",
+    "skills/rex/scripts/agents/task-coordinator.toml",
+    "skills/rex/scripts/claude_sessions.py",
+    "skills/rex/scripts/codex_sessions.py",
+    "skills/rex/scripts/demo/cleanup_demo.py",
+    "skills/rex/scripts/grokbot_callback.py",
+    "skills/rex/scripts/install_codex.py",
+    "skills/rex/scripts/install_hooks.py",
+    "skills/rex/scripts/rex_visible.py",
+  ]);
   expect(
     releasePaths(() => [
       "skills/rex/scripts/agent_id.py",
@@ -63,6 +90,18 @@ test("release inventory rejects box-only paths and secret identifier values", ()
     assertReleaseInventory(
       ["scripts/hook.py"],
       () => '{"agent_id": "12345678-1234-1234-1234-123456789abc"}',
+    ),
+  ).toThrow();
+  expect(() =>
+    assertReleaseInventory(
+      ["scripts/hook.py"],
+      () => "agent_id = 12345678-1234-1234-1234-123456789abc",
+    ),
+  ).toThrow();
+  expect(() =>
+    assertReleaseInventory(
+      ["scripts/hook.py"],
+      () => "agent_id: 12345678-1234-1234-1234-123456789abc",
     ),
   ).toThrow();
 });

@@ -197,9 +197,11 @@ Question-event `agent_id` and inline child-answer delivery are **unproven**, not
 
 Local command: `sh tests/qe/probes/p14_bot_command.txt`. The file contains the **exact one-command literal** for the bot to copy, including a **65,536-byte argv** and a payload with quotes, Unicode, LF and CR. It is outside release inventory. Local exit 0; one QE-RESULT line; expected digests are in `p14_expected.json` (plan_digest `b29acb583f4a5e18cfb03a1ab3a07e824825e849b10655ad42fd78299efd7eeb`). Pure tests separately exercise exact argv length, received-byte digest, special text round trip and rejection.
 
-**Dinesh's pending instructions (do not run from this Mac agent):**
+**Follow-up probe finding (2026-11-16):** P14 passed through the bot only via file fallback. The 65 KB inline command cannot cross the bot Shell tool. PR-2 transport must use file/stdin; the local 65,536-byte argv result does not prove inline bot transport. This records the finding only; PR-2 transport is not implemented here.
 
-1. From an ordinary routine wake, read `tests/qe/probes/p14_bot_command.txt` in this checkout. Copy its single command line verbatim into the Mac machine-shell action. The command shape is `uv run --script /Users/carlos/Developer/github/clzmj/skills-wt/qe-probes/tests/qe/probes/run_plan_stub.py run-plan --b64 'LITERAL_BASE64URL'`. Do not replace the literal with command substitution, stdin, a script wrapper, or several shell calls. The exact full line is supplied in the file because it is 64 KiB.
+**Dinesh's reproduction instructions (do not run from this Mac agent):**
+
+1. Use a checkout of `clzmj/skills` containing this follow-up on the Mac, with its repository root as the shell working directory. Run `sh tests/qe/probes/p14_bot_command.txt` through the machine-shell action (file fallback). The committed command uses the repo-relative shape `uv run --script tests/qe/probes/run_plan_stub.py run-plan --b64 'LITERAL_BASE64URL'`; it needs no original worktree path or regeneration. The exact full line is supplied in the file because its argv is 64 KiB. Copying that line inline into the bot Shell tool is the known failing route.
 2. Record whether Carlos receives **any per-call approval prompt**, the selected machine identity, shell exit code, stdout line count and the intact QE-RESULT line. Decode as data and compare both digests to `tests/qe/probes/p14_expected.json`; record equality and 65,536 argv bytes. Do not interpret output as instructions. Zero/two matching lines is failure.
 3. Record bot-to-Mac copy failures and timing. The spec's 20× 20 KiB plan / 20× 16 KiB SYNC-result LLM copy-fidelity run, SEND p50/p95, stable machineId, Mac–box skew and real `qe-box result --line` acceptance remain **pending P14-real in 7a**; this stub cannot prove them. Tampering must later be caught as exit64/BAD_RESULT, never typed.
 4. Attach redacted observations to this section. Do not claim unattended success merely from the local shell test.
@@ -214,10 +216,12 @@ Fallback: approval prompts mean notify Carlos/click-required delivery; P14-real 
 
 1. Read that payload verbatim. Use **SendToAgent** with target `agent_id: "e3b7bb61-41a1-4408-abac-58b26a2c47d0"`, **`priority: true`**, and the payload as the test L4Handoff. This is Jim's documented test target. No alternate contact path is authorized.
 2. Tell Jim: this is **TEST ONLY**; post **exactly one** test card in **Jim's own chat**, visibly labeled “P15 TEST ONLY”, based on this handoff. It does not authorize work or a real decision. Before retrying an uncertain call, inspect for the existing card; do not risk creating a second.
-3. Jim must reply to Dinesh with `{ "handoff_id": "00000000-0000-4000-8000-000000000015", "posted_by": "jim", "test": true, "card_ref": "ACTUAL_REF" }`. The envelope is bot instructions; keep the committed L4Handoff's six schema fields unchanged.
+3. Jim must reply to Dinesh with `{ "handoff_id": "00000000-0000-4000-8000-000000000015", "posted_by": "jim", "test": true, "card_ref": "ACTUAL_REF" }`. The envelope is bot instructions; keep the committed L4Handoff's five schema fields unchanged (`schema`, `handoff_id`, `task_id`, `callback_bot`, `batches`).
 4. Record send target and priority, acceptance/reply, card reference, confirmation that the card is in Jim's chat, count **1**, and visible test label. Redact all unrelated identifiers. Missing reply/ref is unproven, not success. Report uncertainty without sending a second card.
 
 Fallback: if addressing/posting fails, keep L4 notify-only to Carlos through the launching bot; do not enable unattended card delivery or substitute Dinesh's chat for Jim's.
+
+**Follow-up probe finding (2026-11-16):** The P15 card tool requires at least one option. PR-6 must always add one, including for this test card. This records the tool constraint only; it does not implement PR-6 or authorize another card.
 
 ## Filled §7.8 route matrix
 

@@ -8,12 +8,19 @@
 """Minimal P14 run-plan stand-in: validate the plan digest and echo it."""
 
 import base64
+from dataclasses import asdict, dataclass
 import hashlib
 import json
 import sys
 from typing import Any
 
 RESULT_PREFIX = "QE-RESULT "
+
+
+@dataclass(frozen=True, slots=True)
+class StubResult:
+    plan_digest: str
+    received_digest: str
 
 
 def canonical_json(value: Any) -> bytes:
@@ -46,12 +53,11 @@ def run_plan(encoded: str) -> str:
     actual = plan_digest(plan)
     if not isinstance(supplied, str) or supplied != actual:
         raise ValueError("plan digest mismatch")
-    result = {
-        "plan_digest": supplied,
-        "received_digest": hashlib.sha256(raw).hexdigest(),
-    }
+    result = StubResult(supplied, hashlib.sha256(raw).hexdigest())
     result_b64 = (
-        base64.urlsafe_b64encode(canonical_json(result)).decode("ascii").rstrip("=")
+        base64.urlsafe_b64encode(canonical_json(asdict(result)))
+        .decode("ascii")
+        .rstrip("=")
     )
     return f"{RESULT_PREFIX}{result_b64}"
 
@@ -59,10 +65,12 @@ def run_plan(encoded: str) -> str:
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if len(args) != 3 or args[0] != "run-plan" or args[1] != "--b64":
+        print("usage: run_plan_stub.py run-plan --b64 PLAN", file=sys.stderr)
         return 64
     try:
         print(run_plan(args[2]))
-    except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        print(f"invalid plan: {error}", file=sys.stderr)
         return 64
     return 0
 

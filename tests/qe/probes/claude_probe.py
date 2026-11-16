@@ -26,12 +26,15 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 try:
+    from .probe_support import HookEvent
     from .probe_support import redact as redact_text
 except ImportError:
+    from probe_support import HookEvent
     from probe_support import redact as redact_text
 
 
 class HookMode(StrEnum):
+    UNKNOWN = "unknown"
     OBSERVE = "observe"
     PERMISSION_ANSWER = "permission-answer"
     PERMISSION_PENDING = "permission-pending"
@@ -57,15 +60,7 @@ def settings(mode: HookMode, output: Path) -> dict[str, object]:
             str(output.resolve()),
         ]
     )
-    events = (
-        "PreToolUse",
-        "PostToolUse",
-        "PermissionRequest",
-        "UserPromptSubmit",
-        "SubagentStart",
-        "SubagentStop",
-        "Stop",
-    )
+    events = tuple(event for event in HookEvent if event != HookEvent.UNKNOWN)
     return {
         "hooks": {
             event: [
@@ -118,10 +113,17 @@ def redact(value: object) -> object:
 
 def hook(mode: HookMode, output: Path) -> None:
     mode_file = output.with_suffix(".mode")
-    if mode_file.exists():
-        mode = HookMode(mode_file.read_text().strip())
+    raw_mode = mode_file.read_text().strip() if mode_file.exists() else None
+    if raw_mode is not None:
+        try:
+            mode = HookMode(raw_mode)
+        except ValueError:
+            mode = HookMode.UNKNOWN
     payload = json.load(sys.stdin)
-    event = payload.get("hook_event_name", "")
+    try:
+        event = HookEvent(payload["hook_event_name"])
+    except (ValueError, KeyError):
+        event = HookEvent.UNKNOWN
     tool = payload.get("tool_name", "")
     started = time.monotonic()
     response: dict[str, object] = {}
@@ -129,7 +131,7 @@ def hook(mode: HookMode, output: Path) -> None:
         tool_input = payload.get("tool_input", {})
         questions = tool_input.get("questions", [])
         answers = {question["question"]: "tabs" for question in questions}
-        if event == "PermissionRequest" and mode in {
+        if event == HookEvent.PERMISSION_REQUEST and mode in {
             HookMode.PERMISSION_ANSWER,
             HookMode.PERMISSION_PENDING,
         }:
@@ -147,7 +149,7 @@ def hook(mode: HookMode, output: Path) -> None:
             response = {
                 "hookSpecificOutput": {"hookEventName": event, "decision": decision}
             }
-        elif event == "PreToolUse":
+        elif event == HookEvent.PRE_TOOL_USE:
             if mode in {HookMode.DENY_ANSWER, HookMode.DENY_PENDING}:
                 reason = (
                     "QE-ANSWER: use tabs."
@@ -177,7 +179,7 @@ def hook(mode: HookMode, output: Path) -> None:
                         "permissionDecisionReason": "QE-55S-SURVIVED: use tabs.",
                     }
                 }
-    if event == "UserPromptSubmit" and mode == HookMode.CONTEXT:
+    if event == HookEvent.USER_PROMPT_SUBMIT and mode == HookMode.CONTEXT:
         response = {
             "hookSpecificOutput": {
                 "hookEventName": event,
@@ -186,6 +188,9 @@ def hook(mode: HookMode, output: Path) -> None:
         }
     record = {
         "mode": mode,
+        "raw_mode": raw_mode,
+        "event": event,
+        "raw_event": payload.get("hook_event_name"),
         "payload": payload,
         "response": response,
         "elapsed_seconds": round(time.monotonic() - started, 3),
