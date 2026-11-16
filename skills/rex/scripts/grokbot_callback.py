@@ -386,7 +386,7 @@ def git_metadata(cwd):
                        head_sha=git("rev-parse", "HEAD"))
 
 
-def input_request(data, agent=AgentKind.CODEX):
+def input_request(data):
     name = data.get("hook_event_name")
     notification = data.get("notification_type", "")
     if name == HookEvent.PERMISSION_REQUEST:
@@ -409,7 +409,7 @@ def input_request(data, agent=AgentKind.CODEX):
 def input_blocked(agent, data):
     """Keep adapter lifecycle writes from reopening a terminal callback session."""
     path = rex.STATE / "grokbot-callback.sqlite3"
-    if not input_request(data, agent=agent) or not data.get("session_id") or not path.exists():
+    if not input_request(data) or not data.get("session_id") or not path.exists():
         return False
     try:
         with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)) as db:
@@ -494,7 +494,7 @@ def notify(agent, data, members=()):
 def _notify(agent, data, members):
     agent = AgentKind(agent)
     name = data.get("hook_event_name")
-    request = input_request(data, agent=agent)
+    request = input_request(data)
     if name not in (HookEvent.SESSION_START, HookEvent.USER_PROMPT_SUBMIT, HookEvent.SUBAGENT_START, HookEvent.SUBAGENT_STOP, HookEvent.STOP, HookEvent.STOP_FAILURE, HookEvent.SESSION_END, HookEvent.POST_TOOL_USE, HookEvent.PRE_TOOL_USE) and not request:
         return
     session = data.get("session_id")
@@ -784,7 +784,13 @@ def deliver(path):
             receipt(Outcome.CONFIG_INVALID, **fields)
             return False
         if 200 <= status < 300:
-            os.close(private_fd(sent, os.O_WRONLY | os.O_CREAT | os.O_EXCL))
+            try:
+                os.close(private_fd(sent, os.O_WRONLY | os.O_CREAT | os.O_EXCL))
+            except FileExistsError:
+                pass  # Another worker already recorded the accepted delivery.
+            except Exception:
+                path.unlink(missing_ok=True)
+                raise
             path.unlink(missing_ok=True)
             try:
                 receipt(Outcome.DELIVERED, **fields, http_status=status)
@@ -793,7 +799,10 @@ def deliver(path):
             return True
         envelope["delivery_outcome"] = Outcome.DELIVERY_FAILED
         write_spool(path, envelope)
-        receipt(Outcome.DELIVERY_FAILED, **fields, http_status=status)
+        try:
+            receipt(Outcome.DELIVERY_FAILED, **fields, http_status=status)
+        except Exception:  # noqa: BLE001, S110 - the failed spool preserves retry state without a receipt.
+            pass
         return False
 
 
