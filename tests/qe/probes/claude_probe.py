@@ -25,6 +25,11 @@ from enum import StrEnum
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
+try:
+    from .probe_support import redact as redact_text
+except ImportError:
+    from probe_support import redact as redact_text
+
 
 class HookMode(StrEnum):
     OBSERVE = "observe"
@@ -105,7 +110,9 @@ def redact(value: object) -> object:
             "<redacted-token>",
             value,
         )
-        return re.sub(r"(https?://)[^/@\s]+@", r"\1<redacted-userinfo>@", value)
+        return re.sub(
+            r"(https?://)[^/@\s]+@", r"\1<redacted-userinfo>@", redact_text(value)
+        )
     return value
 
 

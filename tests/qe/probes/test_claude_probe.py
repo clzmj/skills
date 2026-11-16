@@ -14,6 +14,12 @@ from tests.qe.probes.claude_probe import HookMode, hook, redact
 
 
 class ClaudeRecorderTests(unittest.TestCase):
+    def test_uuid_embedded_in_payload_text_is_redacted(self) -> None:
+        self.assertEqual(
+            redact("child 11111111-2222-3333-4444-555555555555 reported done"),
+            "child [REDACTED_AGENT_ID] reported done",
+        )
+
     def test_webhook_rejects_userinfo_disguised_as_loopback(self) -> None:
         with TemporaryDirectory() as directory:
             output = Path(directory) / "hook.jsonl"
