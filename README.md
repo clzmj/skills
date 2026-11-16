@@ -143,6 +143,17 @@ bun run test
 
 This runs standard-library Python tests through uv and Bun tests for the bootstrap. Unit tests require no network or Rex server. Agents should route substantial commands through their configured visible runner.
 
+For the anti-strings scanner checks, use the committed development lock and configuration:
+
+```sh
+uv sync --locked
+uv run --locked ruff check skills/anti-strings/scripts/scan.py tests/test_anti_strings.py
+uv run --locked ty check
+uv run --locked python -m unittest discover -s tests -p test_anti_strings.py
+```
+
+The standalone scanner keeps its inline dependencies. The development environment supplies the same parser dependencies to ty; no global tools or extra search paths are required. Ruff permits the two files' existing compact statements so unrelated formatting stays intact.
+
 ## Hosting and cost controls
 
 A Cloudflare Worker serves an allowlist from a private R2 bucket. Terraform owns the bucket and custom domain; Wrangler owns the code and bindings. Doppler feeds scoped GitHub environments. See [deployment](docs/deployment.md) and [infrastructure](infra/README.md).
