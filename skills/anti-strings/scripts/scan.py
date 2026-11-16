@@ -201,11 +201,11 @@ ScanLanguage: TypeAlias = Language | SupportedLanguage
 
 
 class DirectoryName(StrEnum):
-    COVERAGE = "coverage"
+    COVERAGE = ReportKey.COVERAGE.value
 
 
 class ArgumentName(StrEnum):
-    ROOT = "root"
+    ROOT = ReportKey.ROOT.value
 
 
 class ExclusionReason(StrEnum):
@@ -843,6 +843,7 @@ def evidence(node, source, language: ScanLanguage):
     comparison = bool(kinds & {NodeType.COMPARISON_OPERATOR, NodeType.CASE_CLAUSE, NodeType.SWITCH_CASE, NodeType.MATCH_ARM, NodeType.LITERAL_PATTERN}) or any(item.type == NodeType.BINARY_EXPRESSION and field(item, FieldName.OPERATOR, source) in {"==", "!=", "===", "!==", "<", ">", "<=", ">=", "in", "instanceof"} for item in chain)
     role = Role.CONSTANT_DEFINITION if candidate else Role.COMPARISON if comparison else Role.MAPPING_KEY if parent and parent.type in {NodeType.PAIR, NodeType.KEY_VALUE} and parent.child_by_field_name(FieldName.KEY) == node else Role.CONFIGURATION if re.sub(r"[^a-z]", "", key.lower()) in SEMANTIC else Role.ARGUMENT if kinds & {NodeType.ARGUMENTS, NodeType.ARGUMENT_LIST} else Role.ASSIGNMENT if key else Role.LITERAL
     inline_test = any(item.type in {NodeType.FUNCTION_DEFINITION, NodeType.FUNCTION_ITEM, NodeType.MOD_ITEM} and (field(item, FieldName.NAME, source).startswith("test_") or field(item, FieldName.NAME, source) == "tests") for item in chain)
+    # Scanned literals always have a parent; node.type is an unreachable defensive fallback.
     return role, parent.type if parent else node.type, " ".join(contexts), candidate, inline_test
 
 

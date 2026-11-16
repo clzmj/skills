@@ -44,8 +44,9 @@ class ScannerTests(unittest.TestCase):
         coverage = report["coverage"]
         for category in ("excluded", "unsupported", "parse_errors"):
             self.assertEqual(coverage[category], [])
-        self.assertEqual(len(coverage["scanned"]), 1)
-        entry = coverage["scanned"][0]
+        scanned = {item["path"]: item for item in coverage["scanned"]}
+        self.assertIn("scanner.py", scanned)
+        entry = scanned["scanner.py"]
         self.assertEqual(entry["path"], "scanner.py")
         self.assertEqual(entry["language"], "python")
         self.assertFalse(entry["test"])
@@ -53,15 +54,22 @@ class ScannerTests(unittest.TestCase):
         self.assertEqual(set(entry), {"path", "language", "test", "literals"})
 
     def test_skill_directory_self_scan_at_default_threshold(self):
-        report = self.run_scan(root=SCANNER.parents[1])
-        self.assertEqual(report["findings"], [])
-        self.assertEqual(report["root"], str(SCANNER.parents[1]))
-        coverage = report["coverage"]
-        self.assertEqual(coverage["parse_errors"], [])
-        self.assertEqual(len(coverage["scanned"]), 1)
-        self.assertEqual(coverage["scanned"][0]["path"], "scripts/scan.py")
-        self.assertEqual(coverage["scanned"][0]["language"], "python")
-        self.assertGreater(coverage["scanned"][0]["literals"], 0)
+        self.write("scripts/scan.py", SCANNER.read_text())
+        self.write("scripts/helper.py", "pass\n")
+        for root in (SCANNER.parents[1], self.root):
+            with self.subTest(root=root):
+                report = self.run_scan(root=root)
+                self.assertEqual(report["findings"], [])
+                self.assertEqual(report["root"], str(root.resolve()))
+                coverage = report["coverage"]
+                self.assertEqual(coverage["parse_errors"], [])
+                scanned = {item["path"]: item for item in coverage["scanned"]}
+                expected_paths = {"scripts/scan.py"}
+                if root == self.root:
+                    expected_paths.add("scripts/helper.py")
+                self.assertLessEqual(expected_paths, scanned.keys())
+                self.assertEqual(scanned["scripts/scan.py"]["language"], "python")
+                self.assertGreater(scanned["scripts/scan.py"]["literals"], 0)
 
     def test_installed_extension_grammars_parse_and_extract_static_strings(self):
         fixtures = {
@@ -112,6 +120,7 @@ class ScannerTests(unittest.TestCase):
         self.assertEqual(report["coverage"]["parse_errors"], [])
 
     def test_sql_dollar_quote_parse_gap_is_reported(self):
+        # Pin this parser gap so grammar upgrades trigger a review of documented coverage.
         self.write("body.sql", "DO $$ BEGIN RAISE NOTICE 'queued'; END $$;")
         report = self.run_scan()
         self.assertEqual(report["coverage"]["scanned"], [])
