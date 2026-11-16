@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("rex_installer", Path(__file__).with_name("install_hooks.py"))
+assert spec is not None and spec.loader is not None
 installer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(installer)
 
@@ -35,6 +36,7 @@ class InstallerTests(unittest.TestCase):
             runtime = home / ".local/share/agent-tooling/rex"
             self.assertEqual(result["runtime"], str(runtime))
             self.assertTrue((runtime / "codex_sessions.py").exists())
+            self.assertTrue((runtime / "grokbot_callback.py").exists())
             self.assertFalse((runtime.parent / "python_tooling.py").exists())
             self.assertFalse((home / ".claude").exists())
             self.assertFalse((home / ".local/state/rex-visible").exists())

@@ -87,6 +87,7 @@ def install(home, agents):
     source = Path(__file__).resolve().parent
     runtime = home / ".local/share/agent-tooling/rex"
     if source != runtime.resolve():
+        # Include the callback used by the existing lifecycle handlers; no extra hooks.
         shutil.copytree(source, runtime, dirs_exist_ok=True,
                         ignore=shutil.ignore_patterns("__pycache__", ".state", "*.pyc"))
     changed = []
