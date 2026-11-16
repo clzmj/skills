@@ -343,7 +343,7 @@ class CallbackTests(unittest.TestCase):
                 self.assertFalse(callback.deliver(path))
             self.assertTrue(path.exists())
             self.assertEqual(len(callback.health()["failed"]), 1)
-            self.assertEqual(callback.health()["failed"][0]["outcome"], "delivery_failed")
+            self.assertEqual(callback.health()["failed"][0]["outcome"], callback.Outcome.DELIVERY_FAILED)
             self.assertEqual(callback.retry(), {"delivered": 1, "failed": 0})
             self.assertFalse(path.exists())
 
@@ -372,6 +372,7 @@ class CallbackTests(unittest.TestCase):
             turn = type(error).__name__
             self.queued("codex", self.data("UserPromptSubmit", turn_id=turn))
             path = self.queued("codex", self.data("Stop", turn_id=turn))
+            key = callback.delivery_key(json.loads(path.read_text()))
             start = len(self.requests)
 
             def marker_unavailable(file, flags, mode=0o777, *, failure=error, **kwargs):
@@ -385,6 +386,32 @@ class CallbackTests(unittest.TestCase):
             self.assertFalse(path.exists())
             self.assertEqual(callback.retry(), {"delivered": 0, "failed": 0})
             self.assertEqual(len(self.requests) - start, 1)
+            delivered = [json.loads(line) for line in callback.receipt_lines() if json.loads(line).get("key") == key]
+            self.assertEqual(len(delivered), 1)
+            self.assertEqual(delivered[0]["outcome"], callback.Outcome.DELIVERED)
+            self.assertEqual(delivered[0]["http_status"], 204)
+
+    def test_sent_marker_error_survives_unavailable_best_effort_receipt(self):
+        path = self.queued("codex", self.data("Stop"))
+        original_open = os.open
+        marker_error = RuntimeError("marker unavailable")
+        receipt_attempts = []
+
+        def unavailable(file, flags, mode=0o777, **kwargs):
+            if Path(file).name.startswith("grokbot-sent-"):
+                raise marker_error
+            if Path(file).name == "grokbot-callback-receipts.jsonl":
+                receipt_attempts.append(file)
+                raise PermissionError("receipt unavailable")
+            return original_open(file, flags, mode, **kwargs)
+
+        with patch.object(os, "open", side_effect=unavailable), self.assertRaises(RuntimeError) as raised:
+            callback.deliver(path)
+        self.assertIs(raised.exception, marker_error)
+        self.assertEqual(len(receipt_attempts), 1)
+        self.assertFalse(path.exists())
+        self.assertEqual(callback.retry(), {"delivered": 0, "failed": 0})
+        self.assertEqual(len(self.requests), 1)
 
     def test_private_fd_rejects_symlinks_without_touching_target(self):
         target = self.root / "outside-state"
