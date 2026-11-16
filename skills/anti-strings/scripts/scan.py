@@ -20,7 +20,7 @@ import sys
 from dataclasses import asdict, dataclass
 from dataclasses import field as dataclass_field
 from enum import StrEnum
-from typing import TypeAlias, TypeGuard, get_args
+from typing import Final, TypeAlias, TypeGuard, get_args
 from urllib.parse import parse_qsl, urlsplit
 
 from pathspec import GitIgnoreSpec
@@ -164,8 +164,8 @@ class ReportKey(StrEnum):
 
 
 class OutputFormat(StrEnum):
-    JSON = "json"
-    MARKDOWN = "markdown"
+    JSON = 'json'
+    MARKDOWN = 'markdown'
 
 
 class ConfigKey(StrEnum):
@@ -200,12 +200,8 @@ class Language(StrEnum):
 ScanLanguage: TypeAlias = Language | SupportedLanguage
 
 
-class DirectoryName(StrEnum):
-    COVERAGE = ReportKey.COVERAGE.value
-
-
-class ArgumentName(StrEnum):
-    ROOT = ReportKey.ROOT.value
+COVERAGE_DIRECTORY: Final[str] = ReportKey.COVERAGE.value
+ROOT_ARGUMENT: Final[str] = ReportKey.ROOT.value
 
 
 class ExclusionReason(StrEnum):
@@ -223,7 +219,6 @@ class ExclusionReason(StrEnum):
     BINARY_UNREADABLE_OR_NONUTF8 = "binary_unreadable_or_nonutf8"
     GENERATED_HEADER = "generated_header"
     PARSER_UNAVAILABLE = "parser_unavailable"
-    UNSUPPORTED_LANGUAGE = "unsupported_language"
     PARSE_ERROR = "parse_error"
 
 
@@ -417,7 +412,7 @@ class Finding:
         )
 
 
-SKIP_DIRS = {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "vendor", "dist", "build", "target", DirectoryName.COVERAGE, ".next", ".nuxt", ".output", "__pycache__", ".cache", ".terraform", ".aws", ".ssh", ".gnupg", ".secrets", ".doppler", "generated", "gen"}
+SKIP_DIRS = {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "vendor", "dist", "build", "target", COVERAGE_DIRECTORY, ".next", ".nuxt", ".output", "__pycache__", ".cache", ".terraform", ".aws", ".ssh", ".gnupg", ".secrets", ".doppler", "generated", "gen"}
 SECRET_NAMES = re.compile(r"(^\.env($|\.)|credentials|secrets?($|[._-])|(^|[._-])(id_rsa|id_ed25519)|\.(pem|key|p12|pfx|keystore)$)", re.I)
 SECRET_CONTEXT = re.compile(r"password|passwd|secret|token|credential|private_?key|api_?key|access_?key|authorization|connection_?string|(^|_)dsn($|_)", re.I)
 SECRET_QUERY = re.compile(r"token|api_?key|signature|credential|password|secret|authorization|access_?key|(^|_)(auth|sig|key)($|_)", re.I)
@@ -776,6 +771,7 @@ def direct_value(owner, node):
 def evidence(node, source, language: ScanLanguage):
     chain = ancestors(node)
     parent = node.parent
+    assert parent is not None
     kinds = {item.type for item in chain}
     if any(item.type in {NodeType.IMPORT_STATEMENT, NodeType.EXPORT_STATEMENT} and item.child_by_field_name(FieldName.SOURCE) == node for item in chain): return None
     if kinds & {NodeType.USE_DECLARATION, NodeType.EXTERN_CRATE_DECLARATION}: return None
@@ -843,8 +839,7 @@ def evidence(node, source, language: ScanLanguage):
     comparison = bool(kinds & {NodeType.COMPARISON_OPERATOR, NodeType.CASE_CLAUSE, NodeType.SWITCH_CASE, NodeType.MATCH_ARM, NodeType.LITERAL_PATTERN}) or any(item.type == NodeType.BINARY_EXPRESSION and field(item, FieldName.OPERATOR, source) in {"==", "!=", "===", "!==", "<", ">", "<=", ">=", "in", "instanceof"} for item in chain)
     role = Role.CONSTANT_DEFINITION if candidate else Role.COMPARISON if comparison else Role.MAPPING_KEY if parent and parent.type in {NodeType.PAIR, NodeType.KEY_VALUE} and parent.child_by_field_name(FieldName.KEY) == node else Role.CONFIGURATION if re.sub(r"[^a-z]", "", key.lower()) in SEMANTIC else Role.ARGUMENT if kinds & {NodeType.ARGUMENTS, NodeType.ARGUMENT_LIST} else Role.ASSIGNMENT if key else Role.LITERAL
     inline_test = any(item.type in {NodeType.FUNCTION_DEFINITION, NodeType.FUNCTION_ITEM, NodeType.MOD_ITEM} and (field(item, FieldName.NAME, source).startswith("test_") or field(item, FieldName.NAME, source) == "tests") for item in chain)
-    # Scanned literals always have a parent; node.type is an unreachable defensive fallback.
-    return role, parent.type if parent else node.type, " ".join(contexts), candidate, inline_test
+    return role, parent.type, " ".join(contexts), candidate, inline_test
 
 
 def scan(root: Path, options: ScanOptions):
@@ -1078,7 +1073,7 @@ def markdown(report):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(ArgumentName.ROOT, nargs="?", default=".")
+    parser.add_argument(ROOT_ARGUMENT, nargs="?", default=".")
     parser.add_argument("--format", type=OutputFormat, choices=tuple(OutputFormat), default=OutputFormat.MARKDOWN)
     parser.add_argument("--output", type=Path, help="Write a report outside the scanned root; stdout is the default")
     parser.add_argument("--include-tests", action="store_true", default=None)
