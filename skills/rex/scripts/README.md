@@ -126,12 +126,15 @@ post-tool activity; installation broadens only their owned handlers and preserve
 unrelated hook matchers. Old native turns are rejected
 after a newer prompt. ID-less late hooks cannot reliably identify an earlier turn.
 HTTP uses a five-second timeout. A crash after server acceptance can cause replay;
-receivers should deduplicate `delivery_key`. The `test` diagnostic event carries
+receivers should deduplicate `delivery_key`. After a 2xx response, delivery writes
+the sent marker and removes the spool before a separate best-effort receipt write;
+a receipt failure cannot cause a retry or override that marker in delivery status.
+The `test` diagnostic event carries
 only `event`, `task_id`, `requester`, and `untrusted: ["task_id"]`. The HTTP boundary
 also refreshes safety metadata for cached payloads from older runtime versions.
 
-Claude and Codex `PermissionRequest` hooks expose approval requests. Claude
-`Notification(permission_prompt)` is informational and never creates another
+Claude and Codex `PermissionRequest` hooks are the only approval sources.
+`Notification(permission_prompt)` is informational for both providers and never creates another
 approval ping; `idle_prompt` is also ignored for input and does not reopen a
 finished run. Claude `elicitation_dialog` still reports a question; explicit
 `trust_prompt` and `input_prompt` compatibility notifications report trust and
@@ -171,7 +174,7 @@ be distinguished reliably from new bot roots.
 Callback state directories use mode 0700. Spools, receipt logs and their archive,
 SQLite databases, lock files, and sent markers are created with mode 0600,
 independent of the process umask; pre-creating the databases also keeps SQLite
-journals private. Receipt writes rotate at 1 MiB and retain one bounded archive;
+journals private. Bookkeeping descriptors reject symlinks. Receipt writes rotate at 1 MiB and retain one bounded archive;
 status reads both generations. Failed delivery outcomes also stay in their spools,
 so rotation cannot hide a retryable failure. `status` and `retry` remove callback
 `grokbot-pending-*.tmp` files older than 24 hours only when no writer holds their

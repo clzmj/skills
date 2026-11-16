@@ -290,6 +290,61 @@ class CallbackTests(unittest.TestCase):
             self.assertEqual(self.requests[-1][0]["event"], "needs_input")
             self.assertEqual(self.requests[-1][0]["prompt_text"], "Approve listing?")
 
+    def test_codex_only_permission_request_creates_approval_input(self):
+        for notification_first in (False, True):
+            with patch.object(callback.subprocess, "Popen"):
+                codex_sessions.handle_hook(self.data("UserPromptSubmit"))
+                permission = self.data("PermissionRequest", tool_name="Bash", tool_input={"command": "ls", "description": "Approve listing?"})
+                notification = self.data("Notification", notification_type="permission_prompt", message="Codex needs permission")
+                for event in ((notification, permission) if notification_first else (permission, notification)):
+                    codex_sessions.handle_hook(event)
+                    if event is notification and notification_first:
+                        self.assertEqual(self.session_status("codex", self.data()["session_id"]), "running")
+                codex_sessions.handle_hook(permission)
+            start = len(self.requests)
+            self.drain()
+            self.assertEqual(len(self.requests) - start, 1)
+            self.assertEqual((self.requests[-1][0]["event"], self.requests[-1][0]["kind"]), ("needs_input", "approval"))
+
+    def test_success_is_final_before_best_effort_receipt(self):
+        for error in (OSError("test-secret"), RuntimeError("test-secret")):
+            turn = type(error).__name__
+            self.queued("codex", self.data("UserPromptSubmit", turn_id=turn))
+            path = self.queued("codex", self.data("Stop", turn_id=turn))
+            envelope = json.loads(path.read_text())
+            key = callback.delivery_key(envelope)
+            sent = callback.rex.STATE / ("grokbot-sent-" + key)
+            self.statuses[:] = [503, 503, 503]
+            self.assertFalse(callback.deliver(path))
+            start = len(self.requests)
+
+            def failed_receipt(outcome, *, expected_sent=sent, expected_path=path, failure=error, **fields):
+                self.assertEqual(outcome, "delivered")
+                self.assertTrue(expected_sent.exists())
+                self.assertFalse(expected_path.exists())
+                raise failure
+
+            with patch.object(callback, "receipt", side_effect=failed_receipt) as record:
+                self.assertTrue(callback.deliver(path))
+                self.assertTrue(callback.deliver(self.spool(envelope)))
+                self.assertEqual(record.call_count, 1)
+            self.assertEqual(len(self.requests) - start, 1)
+            self.assertEqual(callback.retry(), {"delivered": 0, "failed": 0})
+            self.assertIsNone(self.queued("codex", self.data("Stop", turn_id=turn)))
+            self.assertEqual(callback.health()["failed"], [])
+
+    def test_private_fd_rejects_symlinks_without_touching_target(self):
+        target = self.root / "outside-state"
+        target.write_text("preserve this file")
+        target.chmod(0o644)
+        callback.rex.state_dir()
+        link = callback.rex.STATE / "grokbot-symlink"
+        link.symlink_to(target)
+        with self.assertRaises(OSError):
+            callback.private_fd(link, os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+        self.assertEqual(target.read_text(), "preserve this file")
+        self.assertEqual(target.stat().st_mode & 0o777, 0o644)
+
     def test_terminal_root_and_child_ignore_all_late_input(self):
         for agent in ("codex", "claude"):
             for terminal, expected in (("Stop", "completed"), ("StopFailure", "failed"), ("SessionEnd", "ended")):
