@@ -4,11 +4,11 @@ Personal agent skills for Codex and Claude Code: `python-tooling`, `rex`, and `a
 
 The hosted installer bundles `python-tooling` and `rex`; install `anti-strings` separately with Skills CLI. [Question-escalation delivery research is in progress](docs/qe/question-delivery-evidence.md), with probes in [tests/qe](tests/qe/).
 
-| Skill            | Purpose                                                       |
-| ---------------- | ------------------------------------------------------------- |
-| `python-tooling` | Use uv for Python scripts, dependencies, Ruff, and ty         |
-| `rex`            | Manage Rex jobs, agent views, and completed panes             |
-| `anti-strings`   | Find repeated domain values that may need a shared definition |
+| Skill            | Purpose                                                                      |
+| ---------------- | ---------------------------------------------------------------------------- |
+| `python-tooling` | Use uv for Python scripts, dependencies, Ruff, and ty                        |
+| `rex`            | Manage Rex jobs, agent views, and completed panes                            |
+| `anti-strings`   | Audit domain values for closed sets, typed records, and validated boundaries |
 
 ## Install
 
