@@ -27,15 +27,148 @@ from pathspec import GitIgnoreSpec
 from tree_sitter_language_pack import SupportedLanguage, get_parser
 
 
+class NodeType(StrEnum):
+    ERROR = 'ERROR'
+    ANNOTATED_ASSIGNMENT = 'annotated_assignment'
+    ARGUMENT_LIST = 'argument_list'
+    ARGUMENTS = 'arguments'
+    AS_EXPRESSION = 'as_expression'
+    ASSIGNMENT = 'assignment'
+    ASSIGNMENT_EXPRESSION = 'assignment_expression'
+    ASSIGNMENT_STATEMENT = 'assignment_statement'
+    AUGMENTED_ASSIGNMENT = 'augmented_assignment'
+    AUGMENTED_ASSIGNMENT_EXPRESSION = 'augmented_assignment_expression'
+    BINARY_EXPRESSION = 'binary_expression'
+    BINARY_OPERATOR = 'binary_operator'
+    BLOCK = 'block'
+    CALL = 'call'
+    CALL_EXPRESSION = 'call_expression'
+    CASE_CLAUSE = 'case_clause'
+    CLASS_DEFINITION = 'class_definition'
+    COMPARISON_OPERATOR = 'comparison_operator'
+    CONCATENATED_STRING = 'concatenated_string'
+    CONST_ITEM = 'const_item'
+    CONST_SPEC = 'const_spec'
+    DEC_STATEMENT = 'dec_statement'
+    ELEMENT_REFERENCE = 'element_reference'
+    ENCAPSED_STRING = 'encapsed_string'
+    ENUM_ASSIGNMENT = 'enum_assignment'
+    EXPORT_STATEMENT = 'export_statement'
+    EXPRESSION_LIST = 'expression_list'
+    EXPRESSION_STATEMENT = 'expression_statement'
+    EXTERN_CRATE_DECLARATION = 'extern_crate_declaration'
+    FIELD_INITIALIZER = 'field_initializer'
+    FUNCTION_DEFINITION = 'function_definition'
+    FUNCTION_ITEM = 'function_item'
+    IMPORT_STATEMENT = 'import_statement'
+    INC_STATEMENT = 'inc_statement'
+    INDEX_EXPRESSION = 'index_expression'
+    INTERPOLATED_EXPRESSION = 'interpolated_expression'
+    INTERPOLATION = 'interpolation'
+    INTERPOLATION_EXPRESSION = 'interpolation_expression'
+    INTERPRETED_STRING_LITERAL = 'interpreted_string_literal'
+    JSX_ATTRIBUTE = 'jsx_attribute'
+    KEY_VALUE = 'key_value'
+    KEYWORD_FALSE = 'keyword_false'
+    KEYWORD_NULL = 'keyword_null'
+    KEYWORD_TRUE = 'keyword_true'
+    LINE_STRING_LITERAL = 'line_string_literal'
+    LITERAL = 'literal'
+    LITERAL_PATTERN = 'literal_pattern'
+    LITERAL_TYPE = 'literal_type'
+    LOOKUP_TYPE = 'lookup_type'
+    MATCH_ARM = 'match_arm'
+    MOD_ITEM = 'mod_item'
+    MODULE = 'module'
+    NAVIGATION_EXPRESSION = 'navigation_expression'
+    PAIR = 'pair'
+    PARENTHESIZED_EXPRESSION = 'parenthesized_expression'
+    PROPERTY_DECLARATION = 'property_declaration'
+    RAW_STRING_LITERAL = 'raw_string_literal'
+    SATISFIES_EXPRESSION = 'satisfies_expression'
+    STATIC_ITEM = 'static_item'
+    STRING = 'string'
+    STRING_INTERPOLATION = 'string_interpolation'
+    STRING_LITERAL = 'string_literal'
+    SUBSCRIPT = 'subscript'
+    SUBSCRIPT_EXPRESSION = 'subscript_expression'
+    SWITCH_CASE = 'switch_case'
+    TEMPLATE_STRING = 'template_string'
+    TEMPLATE_SUBSTITUTION = 'template_substitution'
+    UPDATE_EXPRESSION = 'update_expression'
+    USE_DECLARATION = 'use_declaration'
+    VARIABLE_DECLARATION = 'variable_declaration'
+    VARIABLE_DECLARATOR = 'variable_declarator'
+    VARIABLE_NAME = 'variable_name'
+
+
+class FieldName(StrEnum):
+    FUNCTION = 'function'
+    INDEX = 'index'
+    KEY = 'key'
+    LEFT = 'left'
+    NAME = 'name'
+    OBJECT = 'object'
+    OPERAND = 'operand'
+    OPERATOR = 'operator'
+    RIGHT = 'right'
+    SOURCE = 'source'
+    SUBSCRIPT = 'subscript'
+    VALUE = 'value'
+
+
+class ReportKey(StrEnum):
+    COLUMN = 'column'
+    CONSTANT_CANDIDATES = 'constant_candidates'
+    CONTEXT = 'context'
+    COUNTS = 'counts'
+    COVERAGE = 'coverage'
+    DISCOVERY = 'discovery'
+    EXCLUDED = 'excluded'
+    FILES = 'files'
+    FINDINGS = 'findings'
+    HEURISTIC = 'heuristic'
+    HEURISTIC_NOTICE = 'heuristic_notice'
+    INDEX_EVIDENCE = 'index_evidence'
+    KIND = 'kind'
+    LANGUAGE = 'language'
+    LINE = 'line'
+    LITERAL_SKIPS = 'literal_skips'
+    LITERALS = 'literals'
+    LOCATIONS = 'locations'
+    NAME = 'name'
+    NOTICE = 'notice'
+    OCCURRENCES = 'occurrences'
+    PARSE_ERRORS = 'parse_errors'
+    PATH = 'path'
+    PRIORITY = 'priority'
+    PRODUCTION = 'production'
+    REASON = 'reason'
+    REDACTED = 'redacted'
+    REDACTION_REASONS = 'redaction_reasons'
+    ROLE = 'role'
+    ROOT = 'root'
+    SCANNED = 'scanned'
+    SCHEMA_VERSION = 'schema_version'
+    SEVERITY = 'severity'
+    STYLE = 'style'
+    TEST = 'test'
+    TESTS = 'tests'
+    UNSUPPORTED = 'unsupported'
+    VALUE = 'value'
+    WARNINGS = 'warnings'
+
+
+class ConfigKey(StrEnum):
+    EXCLUDE = 'exclude'
+    EXTENSIONS = 'extensions'
+    INCLUDE_TESTS = 'include_tests'
+    MAX_FILE_BYTES = 'max_file_bytes'
+    MIN_OCCURRENCES = 'min_occurrences'
+
+
+INTERPOLATED_OR_UNSUPPORTED = "interpolated_or_unsupported"
 UTF8 = "utf-8"
-INDEX_EVIDENCE = "index_evidence"
-COVERAGE = "coverage"
-ROOT = "root"
-FINDINGS = "findings"
-EXTENSIONS = "extensions"
-FIELD_KEY = "key"
-FIELD_NAME = "name"
-ENUM_ASSIGNMENT = "enum_assignment"
 
 
 class Language(StrEnum):
@@ -132,15 +265,15 @@ LANGUAGES = {
     for suffix in suffixes
 }
 LITERALS = {
-    "string",
-    "concatenated_string",
-    "template_string",
-    "string_literal",
-    "raw_string_literal",
-    "interpreted_string_literal",
-    "line_string_literal",
-    "encapsed_string",
-    "literal",
+    NodeType.STRING,
+    NodeType.CONCATENATED_STRING,
+    NodeType.TEMPLATE_STRING,
+    NodeType.STRING_LITERAL,
+    NodeType.RAW_STRING_LITERAL,
+    NodeType.INTERPRETED_STRING_LITERAL,
+    NodeType.LINE_STRING_LITERAL,
+    NodeType.ENCAPSED_STRING,
+    NodeType.LITERAL,
 }
 
 
@@ -245,9 +378,9 @@ class Finding:
 
     def to_json(self) -> dict:
         result = asdict(self)
-        result["priority"] = self.severity  # Stable v1 compatibility alias.
+        result[ReportKey.PRIORITY] = self.severity  # Stable v1 compatibility alias.
         if self.index_evidence is None:
-            del result[INDEX_EVIDENCE]
+            del result[ReportKey.INDEX_EVIDENCE]
         return result
 
     def sort_key(self) -> tuple[int, str, int, int, str, str]:
@@ -262,7 +395,7 @@ class Finding:
         )
 
 
-SKIP_DIRS = {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "vendor", "dist", "build", "target", COVERAGE, ".next", ".nuxt", ".output", "__pycache__", ".cache", ".terraform", ".aws", ".ssh", ".gnupg", ".secrets", ".doppler", "generated", "gen"}
+SKIP_DIRS = {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "vendor", "dist", "build", "target", ReportKey.COVERAGE, ".next", ".nuxt", ".output", "__pycache__", ".cache", ".terraform", ".aws", ".ssh", ".gnupg", ".secrets", ".doppler", "generated", "gen"}
 SECRET_NAMES = re.compile(r"(^\.env($|\.)|credentials|secrets?($|[._-])|(^|[._-])(id_rsa|id_ed25519)|\.(pem|key|p12|pfx|keystore)$)", re.I)
 SECRET_CONTEXT = re.compile(r"password|passwd|secret|token|credential|private_?key|api_?key|access_?key|authorization|connection_?string|(^|_)dsn($|_)", re.I)
 SECRET_QUERY = re.compile(r"token|api_?key|signature|credential|password|secret|authorization|access_?key|(^|_)(auth|sig|key)($|_)", re.I)
@@ -270,7 +403,7 @@ EMAIL = re.compile(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}")
 TOKEN = re.compile(r"(?:\b(?:sk-|ghp_|gho_|github_pat_|AKIA|ASIA)[A-Za-z0-9_/-]{12,}|\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|-----BEGIN .*PRIVATE KEY-----|://[^/\s:@]+:[^/\s@]+@)")
 PRESENTATION = {"class", "classname", "style", "title", "alt", "placeholder", "arialabel", "label", "description", "children", "href", "src"}
 QUIET_CALLS = {"print", "println", "printf", "sprintf", "log", "warn", "debug", "info", "error", "clsx", "cn", "classnames", "cva", "tw"}
-SEMANTIC = {"state", "status", "kind", "type", "mode", "event", "protocol", "method", "operation", "scope", "role", "provider", "format", "encoding", "config", FIELD_KEY, FIELD_NAME}
+SEMANTIC = {"state", "status", "kind", "type", "mode", "event", "protocol", "method", "operation", "scope", "role", "provider", "format", "encoding", "config", FieldName.KEY, FieldName.NAME}
 
 
 def sensitive(value, context=""):
@@ -473,13 +606,13 @@ def normalize(node, source, language):
     if any(
         child.type
         in {
-            "interpolation",
-            "template_substitution",
-            "string_interpolation",
-            "interpolation_expression",
-            "interpolated_expression",
-            "navigation_expression",
-            "variable_name",
+            NodeType.INTERPOLATION,
+            NodeType.TEMPLATE_SUBSTITUTION,
+            NodeType.STRING_INTERPOLATION,
+            NodeType.INTERPOLATION_EXPRESSION,
+            NodeType.INTERPOLATED_EXPRESSION,
+            NodeType.NAVIGATION_EXPRESSION,
+            NodeType.VARIABLE_NAME,
         }
         for child in descendants(node)
     ):
@@ -528,31 +661,75 @@ def string_key_index(node, language: str) -> bool:
         return False
     if language == Language.PYTHON:
         return (
-            parent.type == "subscript"
-            and parent.child_by_field_name("subscript") == node
+            parent.type == NodeType.SUBSCRIPT
+            and parent.child_by_field_name(FieldName.SUBSCRIPT) == node
         )
     if language in {Language.JAVASCRIPT, Language.TYPESCRIPT, Language.TSX}:
         return (
-            parent.type == "subscript_expression"
-            and parent.child_by_field_name("index") == node
+            parent.type == NodeType.SUBSCRIPT_EXPRESSION
+            and parent.child_by_field_name(FieldName.INDEX) == node
         )
     if language == Language.GO:
         return (
-            parent.type == "index_expression"
-            and parent.child_by_field_name("index") == node
+            parent.type == NodeType.INDEX_EXPRESSION
+            and parent.child_by_field_name(FieldName.INDEX) == node
         )
     if language == Language.RUBY:
         return (
-            parent.type == "element_reference"
+            parent.type == NodeType.ELEMENT_REFERENCE
             and len(parent.named_children) == 2
             and parent.named_children[-1] == node
         )
     if language == Language.PHP:
         return (
-            parent.type == "subscript_expression"
+            parent.type == NodeType.SUBSCRIPT_EXPRESSION
             and len(parent.named_children) == 2
             and parent.named_children[-1] == node
         )
+    return False
+
+
+def excluded_index_literal(node, source, language: str) -> bool:
+    """Exclude known non-record lookups and counter targets from both findings."""
+    if language in {Language.TYPESCRIPT, Language.TSX} and any(
+        owner.type == NodeType.LOOKUP_TYPE for owner in ancestors(node)
+    ):
+        return True
+    if not string_key_index(node, language):
+        return False
+    index = node.parent
+    receiver = (
+        index.child_by_field_name(FieldName.VALUE)
+        or index.child_by_field_name(FieldName.OBJECT)
+        or index.child_by_field_name(FieldName.OPERAND)
+    )
+    receiver_name = re.sub(r"\s+", "", text(receiver, source))
+    if language == Language.PYTHON and receiver_name in {"os.environ", "sys.modules"}:
+        return True
+    if language in {Language.JAVASCRIPT, Language.TYPESCRIPT, Language.TSX} and receiver_name == "process.env":
+        return True
+    # Follow only the target's receiver chain, never a computed key or RHS read.
+    target = index
+    while target.parent is not None:
+        owner = target.parent
+        if owner.type in {NodeType.PARENTHESIZED_EXPRESSION, NodeType.EXPRESSION_LIST}:
+            target = owner
+            continue
+        if owner.type in {NodeType.SUBSCRIPT, NodeType.SUBSCRIPT_EXPRESSION, NodeType.INDEX_EXPRESSION} and (
+            owner.child_by_field_name(FieldName.VALUE) == target
+            or owner.child_by_field_name(FieldName.OBJECT) == target
+            or owner.child_by_field_name(FieldName.OPERAND) == target
+        ):
+            target = owner
+            continue
+        if owner.type in {NodeType.AUGMENTED_ASSIGNMENT, NodeType.AUGMENTED_ASSIGNMENT_EXPRESSION}:
+            return owner.child_by_field_name(FieldName.LEFT) == target
+        if owner.type == NodeType.ASSIGNMENT_STATEMENT:
+            return (
+                owner.child_by_field_name(FieldName.LEFT) == target
+                and field(owner, FieldName.OPERATOR, source) not in {"", "="}
+            )
+        return owner.type in {NodeType.UPDATE_EXPRESSION, NodeType.INC_STATEMENT, NodeType.DEC_STATEMENT}
     return False
 
 
@@ -568,8 +745,8 @@ def descendants(node):
 
 
 def direct_value(owner, node):
-    value = owner.child_by_field_name("value") or owner.child_by_field_name("right")
-    while value is not None and value.type in {"expression_list", "parenthesized_expression", "as_expression", "satisfies_expression", "literal_type"} and value.named_children:
+    value = owner.child_by_field_name(FieldName.VALUE) or owner.child_by_field_name(FieldName.RIGHT)
+    while value is not None and value.type in {NodeType.EXPRESSION_LIST, NodeType.PARENTHESIZED_EXPRESSION, NodeType.AS_EXPRESSION, NodeType.SATISFIES_EXPRESSION, NodeType.LITERAL_TYPE} and value.named_children:
         value = value.named_children[0]
     return value == node
 
@@ -578,22 +755,22 @@ def evidence(node, source, language):
     chain = ancestors(node)
     parent = node.parent
     kinds = {item.type for item in chain}
-    if any(item.type in {"import_statement", "export_statement"} and item.child_by_field_name("source") == node for item in chain): return None
-    if kinds & {"use_declaration", "extern_crate_declaration"}: return None
+    if any(item.type in {NodeType.IMPORT_STATEMENT, NodeType.EXPORT_STATEMENT} and item.child_by_field_name(FieldName.SOURCE) == node for item in chain): return None
+    if kinds & {NodeType.USE_DECLARATION, NodeType.EXTERN_CRATE_DECLARATION}: return None
     if language == Language.PYTHON and parent:
-        expression = parent if parent.type == "expression_statement" else node
+        expression = parent if parent.type == NodeType.EXPRESSION_STATEMENT else node
         container = expression.parent
-        if container and container.type in {"module", "block"} and container.named_children and container.named_children[0] == expression and (container.type == "module" or container.parent and container.parent.type in {"function_definition", "class_definition"}): return None
+        if container and container.type in {NodeType.MODULE, NodeType.BLOCK} and container.named_children and container.named_children[0] == expression and (container.type == NodeType.MODULE or container.parent and container.parent.type in {NodeType.FUNCTION_DEFINITION, NodeType.CLASS_DEFINITION}): return None
     key = ""
     candidate = None
     contexts = []
     for item in chain:
-        if item.type in {"pair", "key_value", "field_initializer", "jsx_attribute"}:
-            key = field(item, FIELD_KEY, source) or field(item, FIELD_NAME, source) or text(item.named_children[0], source)
+        if item.type in {NodeType.PAIR, NodeType.KEY_VALUE, NodeType.FIELD_INITIALIZER, NodeType.JSX_ATTRIBUTE}:
+            key = field(item, FieldName.KEY, source) or field(item, FieldName.NAME, source) or text(item.named_children[0], source)
             contexts.append(key)
             if re.sub(r"[^a-z]", "", key.lower()) in PRESENTATION: return None
-        if item.type in {"call_expression", "call"}:
-            function = field(item, "function", source).lower()
+        if item.type in {NodeType.CALL_EXPRESSION, NodeType.CALL}:
+            function = field(item, FieldName.FUNCTION, source).lower()
             if (
                 function.rsplit(".", 1)[-1].replace("!", "") in QUIET_CALLS
                 and not string_key_index(node, language)
@@ -602,24 +779,24 @@ def evidence(node, source, language):
             contexts.append(function)
             key = key or function
         if item.type in {
-            "assignment",
-            "assignment_expression",
-            "annotated_assignment",
-            "property_declaration",
-            "binary_operator",
-            "variable_declarator",
-            "const_spec",
-            "const_item",
-            "static_item",
-            ENUM_ASSIGNMENT,
+            NodeType.ASSIGNMENT,
+            NodeType.ASSIGNMENT_EXPRESSION,
+            NodeType.ANNOTATED_ASSIGNMENT,
+            NodeType.PROPERTY_DECLARATION,
+            NodeType.BINARY_OPERATOR,
+            NodeType.VARIABLE_DECLARATOR,
+            NodeType.CONST_SPEC,
+            NodeType.CONST_ITEM,
+            NodeType.STATIC_ITEM,
+            NodeType.ENUM_ASSIGNMENT,
         }:
-            name = field(item, "left", source) or field(item, FIELD_NAME, source)
-            if not name and item.type == "property_declaration":
+            name = field(item, FieldName.LEFT, source) or field(item, FieldName.NAME, source)
+            if not name and item.type == NodeType.PROPERTY_DECLARATION:
                 binding = next(
                     (
                         child
                         for child in item.named_children
-                        if child.type == "variable_declaration"
+                        if child.type == NodeType.VARIABLE_DECLARATION
                     ),
                     None,
                 )
@@ -631,20 +808,20 @@ def evidence(node, source, language):
                 and direct_value(item, node)
                 and (
                     item.type
-                    in {"const_spec", "const_item", "static_item", ENUM_ASSIGNMENT}
+                    in {NodeType.CONST_SPEC, NodeType.CONST_ITEM, NodeType.STATIC_ITEM, NodeType.ENUM_ASSIGNMENT}
                     or re.fullmatch(r"[A-Z][A-Z0-9_]+", name)
                 )
             ):
                 candidate = DefinitionCandidate(
                     name,
                     CandidateStyle.ENUM_MEMBER
-                    if item.type == ENUM_ASSIGNMENT
+                    if item.type == NodeType.ENUM_ASSIGNMENT
                     else CandidateStyle.CONSTANT,
                 )
-    comparison = bool(kinds & {"comparison_operator", "case_clause", "switch_case", "match_arm", "literal_pattern"}) or any(item.type == "binary_expression" and field(item, "operator", source) in {"==", "!=", "===", "!==", "<", ">", "<=", ">=", "in", "instanceof"} for item in chain)
-    role = Role.CONSTANT_DEFINITION if candidate else Role.COMPARISON if comparison else Role.MAPPING_KEY if parent and parent.type in {"pair", "key_value"} and parent.child_by_field_name(FIELD_KEY) == node else Role.CONFIGURATION if re.sub(r"[^a-z]", "", key.lower()) in SEMANTIC else Role.ARGUMENT if kinds & {"arguments", "argument_list"} else Role.ASSIGNMENT if key else Role.LITERAL
-    inline_test = any(item.type in {"function_definition", "function_item", "mod_item"} and (field(item, FIELD_NAME, source).startswith("test_") or field(item, FIELD_NAME, source) == "tests") for item in chain)
-    return role, parent.type if parent else ROOT, " ".join(contexts), candidate, inline_test
+    comparison = bool(kinds & {NodeType.COMPARISON_OPERATOR, NodeType.CASE_CLAUSE, NodeType.SWITCH_CASE, NodeType.MATCH_ARM, NodeType.LITERAL_PATTERN}) or any(item.type == NodeType.BINARY_EXPRESSION and field(item, FieldName.OPERATOR, source) in {"==", "!=", "===", "!==", "<", ">", "<=", ">=", "in", "instanceof"} for item in chain)
+    role = Role.CONSTANT_DEFINITION if candidate else Role.COMPARISON if comparison else Role.MAPPING_KEY if parent and parent.type in {NodeType.PAIR, NodeType.KEY_VALUE} and parent.child_by_field_name(FieldName.KEY) == node else Role.CONFIGURATION if re.sub(r"[^a-z]", "", key.lower()) in SEMANTIC else Role.ARGUMENT if kinds & {NodeType.ARGUMENTS, NodeType.ARGUMENT_LIST} else Role.ASSIGNMENT if key else Role.LITERAL
+    inline_test = any(item.type in {NodeType.FUNCTION_DEFINITION, NodeType.FUNCTION_ITEM, NodeType.MOD_ITEM} and (field(item, FieldName.NAME, source).startswith("test_") or field(item, FieldName.NAME, source) == "tests") for item in chain)
+    return role, parent.type if parent else ReportKey.ROOT, " ".join(contexts), candidate, inline_test
 
 
 def scan(root: Path, options: ScanOptions):
@@ -711,7 +888,7 @@ def scan(root: Path, options: ScanOptions):
             )
             continue
         if tree.root_node.has_error:
-            error = next((item for item in descendants(tree.root_node) if item.type == "ERROR" or item.is_missing), tree.root_node)
+            error = next((item for item in descendants(tree.root_node) if item.type == NodeType.ERROR or item.is_missing), tree.root_node)
             coverage.parse_errors.append(
                 CoverageEntry(path=location, language=language, line=error.start_point.row + 1, column=character_column(source, error.start_byte))
             )
@@ -723,17 +900,19 @@ def scan(root: Path, options: ScanOptions):
             if "comment" in node.type: continue
             if node.type not in LITERALS:
                 stack.extend(reversed(node.named_children)); continue
+            if excluded_index_literal(node, source, language):
+                continue
             if language == Language.SQL and (
                 re.fullmatch(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?", text(node, source))
-                or any(child.type in {"keyword_true", "keyword_false", "keyword_null"}
+                or any(child.type in {NodeType.KEYWORD_TRUE, NodeType.KEYWORD_FALSE, NodeType.KEYWORD_NULL}
                        for child in node.named_children)
             ):
                 continue  # SQL uses the same literal node for strings and scalars.
             try: value = normalize(node, source, language)
             except (ValueError, SyntaxError, UnicodeError): value = None
             if value is None:
-                coverage.literal_skips["interpolated_or_unsupported"] = (
-                    coverage.literal_skips.get("interpolated_or_unsupported", 0) + 1
+                coverage.literal_skips[INTERPOLATED_OR_UNSUPPORTED] = (
+                    coverage.literal_skips.get(INTERPOLATED_OR_UNSUPPORTED, 0) + 1
                 )
                 continue
             item = evidence(node, source, language)
@@ -839,43 +1018,43 @@ def scan(root: Path, options: ScanOptions):
         entries.sort(key=lambda item: (item.path, item.reason or ""))
     coverage.warnings = sorted(set(coverage.warnings))
     return {
-        "schema_version": 1,
-        ROOT: public_path(root),
-        "heuristic_notice": "Repeated syntax is evidence for review, not proof of shared domain meaning or a mandate to create constants.",
-        COVERAGE: coverage.to_json(),
-        FINDINGS: [item.to_json() for item in findings],
+        ReportKey.SCHEMA_VERSION: 1,
+        ReportKey.ROOT: public_path(root),
+        ReportKey.HEURISTIC_NOTICE: "Repeated syntax is evidence for review, not proof of shared domain meaning or a mandate to create constants.",
+        ReportKey.COVERAGE: coverage.to_json(),
+        ReportKey.FINDINGS: [item.to_json() for item in findings],
     }
 
 
 def markdown(report):
     def safe(value): return html.escape(str(value)).replace("|", "&#124;").replace("`", "&#96;")
 
-    coverage = report[COVERAGE]
-    lines = ["# Repeated literal evidence", "", report["heuristic_notice"], "", f"Root: {safe(report[ROOT])}", f"Coverage: {len(coverage['scanned'])} parsed files; {len(coverage['excluded'])} excluded; {len(coverage['unsupported'])} unsupported; {len(coverage['parse_errors'])} parse errors.", ""]
-    for finding in report[FINDINGS]:
+    coverage = report[ReportKey.COVERAGE]
+    lines = ["# Repeated literal evidence", "", report[ReportKey.HEURISTIC_NOTICE], "", f"Root: {safe(report[ReportKey.ROOT])}", f"Coverage: {len(coverage[ReportKey.SCANNED])} parsed files; {len(coverage[ReportKey.EXCLUDED])} excluded; {len(coverage[ReportKey.UNSUPPORTED])} unsupported; {len(coverage[ReportKey.PARSE_ERRORS])} parse errors.", ""]
+    for finding in report[ReportKey.FINDINGS]:
         lines += [
-            f"## {finding['priority'].title()} · {safe(json.dumps(finding['value'], ensure_ascii=True))}",
-            f"Kind: {finding['kind']} (heuristic)",
-            f"{finding['counts']['occurrences']} occurrences in {finding['counts']['files']} files; {finding['counts']['production']} production / {finding['counts']['tests']} test locations.",
+            f"## {finding[ReportKey.PRIORITY].title()} · {safe(json.dumps(finding[ReportKey.VALUE], ensure_ascii=True))}",
+            f"Kind: {finding[ReportKey.KIND]} (heuristic)",
+            f"{finding[ReportKey.COUNTS][ReportKey.OCCURRENCES]} occurrences in {finding[ReportKey.COUNTS][ReportKey.FILES]} files; {finding[ReportKey.COUNTS][ReportKey.PRODUCTION]} production / {finding[ReportKey.COUNTS][ReportKey.TESTS]} test locations.",
             "",
         ]
-        if INDEX_EVIDENCE in finding:
-            lines.append(finding[INDEX_EVIDENCE]["notice"])
-        for location in finding["locations"]: lines.append(f"- {safe(location['path'])}:{location['line']}:{location['column']} — {location['role']} ({location['context']})")
-        for candidate in finding["constant_candidates"]: lines.append(f"- Existing definition candidate: {safe(candidate[FIELD_NAME])} at {safe(candidate['path'])}:{candidate['line']} ({candidate['style']})")
-        if finding["redacted"]: lines.append("- Value redacted: " + ", ".join(finding["redaction_reasons"]))
+        if ReportKey.INDEX_EVIDENCE in finding:
+            lines.append(finding[ReportKey.INDEX_EVIDENCE][ReportKey.NOTICE])
+        for location in finding[ReportKey.LOCATIONS]: lines.append(f"- {safe(location[ReportKey.PATH])}:{location[ReportKey.LINE]}:{location[ReportKey.COLUMN]} — {location[ReportKey.ROLE]} ({location[ReportKey.CONTEXT]})")
+        for candidate in finding[ReportKey.CONSTANT_CANDIDATES]: lines.append(f"- Existing definition candidate: {safe(candidate[ReportKey.NAME])} at {safe(candidate[ReportKey.PATH])}:{candidate[ReportKey.LINE]} ({candidate[ReportKey.STYLE]})")
+        if finding[ReportKey.REDACTED]: lines.append("- Value redacted: " + ", ".join(finding[ReportKey.REDACTION_REASONS]))
         lines.append("")
-    if not report[FINDINGS]: lines += ["No repeated candidates met the configured threshold.", ""]
+    if not report[ReportKey.FINDINGS]: lines += ["No repeated candidates met the configured threshold.", ""]
     lines += ["## Coverage details", ""]
-    for kind in ("excluded", "unsupported", "parse_errors"):
-        for entry in coverage[kind]: lines.append(f"- {kind}: {safe(entry['path'])} — {entry.get('reason', 'parse_error')}")
-    lines += [f"- {safe(warning)}" for warning in coverage["warnings"]]
+    for kind in (ReportKey.EXCLUDED, ReportKey.UNSUPPORTED, ReportKey.PARSE_ERRORS):
+        for entry in coverage[kind]: lines.append(f"- {kind}: {safe(entry[ReportKey.PATH])} — {entry.get(ReportKey.REASON, 'parse_error')}")
+    lines += [f"- {safe(warning)}" for warning in coverage[ReportKey.WARNINGS]]
     return "\n".join(lines) + "\n"
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(ROOT, nargs="?", default=".")
+    parser.add_argument(ReportKey.ROOT, nargs="?", default=".")
     parser.add_argument("--format", choices=("json", "markdown"), default="markdown")
     parser.add_argument("--output", type=Path, help="Write a report outside the scanned root; stdout is the default")
     parser.add_argument("--include-tests", action="store_true", default=None)
@@ -893,13 +1072,13 @@ def main():
             ScanOptions.__dataclass_fields__
         ):
             parser.error("Unknown configuration keys")
-        options.exclude = config.get("exclude", options.exclude)
-        options.include_tests = config.get("include_tests", options.include_tests)
-        options.min_occurrences = config.get("min_occurrences", options.min_occurrences)
-        options.max_file_bytes = config.get("max_file_bytes", options.max_file_bytes)
-        if EXTENSIONS in config:
-            if not isinstance(config[EXTENSIONS], dict): parser.error("extensions must be an object")
-            options.extensions.update(config[EXTENSIONS])
+        options.exclude = config.get(ConfigKey.EXCLUDE, options.exclude)
+        options.include_tests = config.get(ConfigKey.INCLUDE_TESTS, options.include_tests)
+        options.min_occurrences = config.get(ConfigKey.MIN_OCCURRENCES, options.min_occurrences)
+        options.max_file_bytes = config.get(ConfigKey.MAX_FILE_BYTES, options.max_file_bytes)
+        if ConfigKey.EXTENSIONS in config:
+            if not isinstance(config[ConfigKey.EXTENSIONS], dict): parser.error("extensions must be an object")
+            options.extensions.update(config[ConfigKey.EXTENSIONS])
     for item in args.extension:
         if "=" not in item: parser.error("--extension expects .EXT=GRAMMAR")
         suffix, language = item.split("=", 1)

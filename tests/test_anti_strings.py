@@ -156,6 +156,28 @@ class ScannerTests(unittest.TestCase):
             {value[0] for value in fixtures.values()},
         )
 
+    def test_realistic_swift_elixir_and_sql_fixtures(self):
+        fixture_dir = Path(__file__).parent / "fixtures/anti-strings-realistic"
+        for filename, language, queued_count in (
+            ("job.swift", "swift", 3),
+            ("job.ex", "elixir", 3),
+            ("jobs.sql", "sql", 4),
+        ):
+            with self.subTest(language=language):
+                self.write(f"{language}/{filename}", (fixture_dir / filename).read_text())
+                report = self.run_scan(root=self.root / language)
+                coverage = report["coverage"]
+                self.assertEqual(coverage["parse_errors"], [])
+                self.assertEqual(coverage["unsupported"], [])
+                self.assertEqual(coverage["excluded"], [])
+                self.assertEqual(len(coverage["scanned"]), 1)
+                self.assertEqual(coverage["scanned"][0]["language"], language)
+                finding = self.finding(report, "queued")
+                self.assertEqual(finding["counts"]["occurrences"], queued_count)
+                self.assertEqual({item["path"] for item in finding["locations"]}, {filename})
+                if language == "sql":
+                    self.assertEqual(coverage["literal_skips"], {})
+
     def test_repeated_key_index_is_an_explicit_per_file_heuristic(self):
         fixtures = {
             "state.py": 'a=obj["state"]\nb=other["state"]\nc=obj["state"]',
@@ -210,6 +232,82 @@ class ScannerTests(unittest.TestCase):
         self.assertEqual(len(indexed), 1)
         self.assertTrue(indexed[0]["redacted"])
         self.assertNotIn(secret, json.dumps(report))
+
+    def test_nonrecord_receivers_and_counter_targets_are_not_findings(self):
+        fixtures = {
+            "counter.py": (
+                'a=os.environ["environment_name"]\n'
+                'b=sys.modules["module_registry"]\n'
+                'counts["counter_total"] += 1\n'
+                'counts["counter_group"]["counter_nested"] -= 1\n'
+            ) * 3,
+            "counter.ts": (
+                'const a=process.env["environment_name"]; '
+                'counts["counter_total"] += 1; counts["counter_increment"]++; '
+                '--counts["counter_decrement"]; '
+                'counts["counter_group"]["counter_nested"] *= 2;\n'
+            ) * 3,
+            "counter.go": 'package state\nfunc f(){\n' + (
+                'counts["counter_total"] += 1; counts["counter_increment"]++; '
+                'counts["counter_decrement"]--; '
+                'counts["counter_group"]["counter_nested"] *= 2\n'
+            ) * 3 + '}\n',
+        }
+        for path, source in fixtures.items():
+            self.write(path, source)
+        report = self.run_scan()
+        self.assertEqual(report["coverage"]["parse_errors"], [])
+        self.assertEqual(report["findings"], [])
+
+    def test_counter_exclusions_preserve_rhs_and_computed_key_record_reads(self):
+        fixtures = {
+            "counter.py": (
+                'counts["counter_total"] += row["record_state"]\n'
+                'counts[row["record_field"]] += 1\n'
+                'a=custom.env["custom_field"]\n'
+                'counts["ordinary_field"] = row["ordinary_field"]\n'
+            ) * 3,
+            "counter.ts": (
+                'counts["counter_total"] += row["record_state"]; '
+                'counts[row["record_field"]]++; '
+                'const a=custom.env["custom_field"]; '
+                'counts["ordinary_field"] = row["ordinary_field"];\n'
+            ) * 3,
+            "counter.go": 'package state\nfunc f(){\n' + (
+                'counts["counter_total"] += row["record_state"]; '
+                'counts[row["record_field"]]++; '
+                'a:=custom.env["custom_field"]; '
+                'counts["ordinary_field"] = row["ordinary_field"]\n'
+            ) * 3 + '}\n',
+        }
+        for path, source in fixtures.items():
+            self.write(path, source)
+        report = self.run_scan()
+        self.assertEqual(report["coverage"]["parse_errors"], [])
+        indexed = [item for item in report["findings"]
+                   if item["kind"] == "repeated_string_key"]
+        self.assertEqual(len(indexed), 12)
+        self.assertEqual({item["value"] for item in indexed},
+                         {"record_state", "record_field", "custom_field", "ordinary_field"})
+        self.assertTrue(all(item["counts"]["occurrences"] ==
+                            (6 if item["value"] == "ordinary_field" else 3)
+                            for item in indexed))
+        self.assertNotIn("counter_total", {item["value"] for item in report["findings"]})
+
+    def test_typescript_type_indexes_do_not_count_as_literal_or_runtime_keys(self):
+        self.write(
+            "types.ts",
+            'type Fields = [Foo["type_only_field"], Foo["type_only_field"], Foo["type_only_field"]];\n'
+            'type Mixed = [Foo["runtime_field"], Foo["runtime_field"], Foo["runtime_field"]];\n'
+            + 'const value = row["runtime_field"];\n' * 3,
+        )
+        report = self.run_scan()
+        self.assertEqual(report["coverage"]["parse_errors"], [])
+        self.assertNotIn("type_only_field", {item["value"] for item in report["findings"]})
+        findings = [item for item in report["findings"] if item["value"] == "runtime_field"]
+        self.assertEqual({item["kind"] for item in findings},
+                         {"repeated_literal", "repeated_string_key"})
+        self.assertTrue(all(item["counts"]["occurrences"] == 3 for item in findings))
 
     def test_short_index_fields_and_configured_threshold_are_per_file(self):
         self.write(
