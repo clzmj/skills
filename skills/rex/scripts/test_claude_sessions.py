@@ -5,9 +5,9 @@
 # ///
 import json
 import os
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import claude_sessions as claude
@@ -117,10 +117,11 @@ class ClaudeAdapterTests(unittest.TestCase):
 
     def test_session_environment_uses_supported_file_and_not_codex_identity(self):
         path = self.path / "environment"
-        with patch.dict(os.environ, {"CLAUDE_ENV_FILE": str(path)}): self.hook("SessionStart")
+        with patch.dict(os.environ, {"CLAUDE_ENV_FILE": str(path), "GROKBOT_CALLBACK": "bot"}), patch.object(store.grokbot_callback, "notify"): self.hook("SessionStart")
         content = path.read_text()
         self.assertIn("export REX_COORD_PROVIDER=claude", content)
         self.assertIn("REX_COORD_THREAD", content)
+        self.assertIn("export GROKBOT_PARENT_SESSION=" + self.session, content)
         self.assertNotIn("CODEX_THREAD_ID", content)
         self.hook("PostToolUse", agent_id="worker", tool_name="SendMessage", tool_input={"recipient": "lead", "content": "do not duplicate private message"})
         self.assertEqual(store.snapshot(self.team)["events"][-1]["text"], "Native SendMessage to lead")

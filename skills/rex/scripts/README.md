@@ -8,28 +8,132 @@ Jobs and read-only agent views use the existing main agent Rex session. Successf
 
 The hooks inspect commands and record lifecycle events. They never launch model tasks, approve tools, or invoke Computer Use. The agent runs substantial commands through `rex_visible.py run` under ordinary permissions. Codex uses native messaging or supported `codex queue` for independent sessions. Claude uses native Agent/SendMessage; its adapter records read-only lifecycle and transcript views, never Codex queues.
 
-## Grokbot run-finished callback
+## Grok Bot callbacks
 
-`grokbot_callback.py` is copied with the rest of the runtime by this installer; it does not add a Codex or Claude hook. Configure `~/.config/agent-tooling/grokbot-callback.env` with mode `0600` and these values:
+Callbacks are opt-in. Configure `~/.config/agent-tooling/grokbot-callback.env`
+with mode `0600`:
 
 ```sh
 GROKBOT_WEBHOOK_URL=https://your-webhook
 GROKBOT_WEBHOOK_HEADER=Authorization: Bearer your-token
 ```
 
-`GROKBOT_WEBHOOK_HEADER` is the complete header line (optional surrounding quotes are accepted; no shell expansion). Use dedicated callback credentials. Keep this file private and never log its contents. Set the requester when launching Codex or Claude from Rex:
+`GROKBOT_WEBHOOK_HEADER` is the complete header line (optional surrounding
+quotes are accepted; no shell expansion). Use dedicated callback credentials.
+Keep this file private and never log its contents. Set `GROKBOT_CALLBACK` to
+the requester when launching Codex or Claude:
 
 ```sh
 chmod 600 ~/.config/agent-tooling/grokbot-callback.env
-GROKBOT_CALLBACK=dinesh codex
-GROKBOT_CALLBACK=dinesh claude
+GROKBOT_CALLBACK=dinesh GROKBOT_TASK_ID=skills:feat/callback codex
+GROKBOT_CALLBACK=dinesh GROKBOT_TASK_ID=skills:feat/callback claude
 uv run --script ~/.local/share/agent-tooling/rex/grokbot_callback.py doctor
 uv run --script ~/.local/share/agent-tooling/rex/grokbot_callback.py test
 ```
 
-Without `GROKBOT_CALLBACK`, manual sessions never post. `doctor` checks config presence, ownership and permissions; `test` sends `{\"event\":\"test\"}` and prints the HTTP status. A Stop with background tasks or scheduled wakeups stays waiting and does not notify. Claude's existing StopFailure hook reports a failed turn; SessionEnd alone does not imply completion.
+Hooks submit durable local spools and launch detached HTTP delivery; errors fail
+open and do not change host behavior. `doctor` checks callback config; `test`
+sends a test event. Use `status --json` to list pending, failed, and running
+records without prompt text, final messages, or secrets. `running` reflects local
+hook state and includes Rex session/block IDs; an external watchdog must check
+those blocks for liveness. Heartbeats occur at turn start, not on a timer.
+`retry` synchronously replays retained pending and failed spools, including a
+worker that died before sending. Failures keep their spool; repeated hooks do
+not retry it automatically. Each event has a stable
+`delivery_key` for receiver-side idempotency. Delivery makes up to three HTTP
+attempts per run. Receipts and session metadata live under
+`REX_VISIBLE_STATE_DIR` (default `~/.local/state/rex-visible`).
 
-On turn completion, the detached callback sends a `run_finished` event with `status` (`completed` or `failed`), `agent` (`codex` or `claude`), `requester`, `agent_session_id`, `rex_session`, `rex_block`, `cwd`, `repo` (Git root path), `branch`, `head_sha`, `last_message` (limited to 2,000 characters), and `finished_at` (ISO 8601 with offset). Git fields are empty outside a repository. Delivery uses a five-second HTTP timeout and at most two retries. Atomic claims deduplicate each session/turn, using native turn IDs when supplied or a generation recorded by UserPromptSubmit. Claims and one-line `grokbot-callback-receipts.jsonl` receipts live under the existing `REX_VISIBLE_STATE_DIR` (default `~/.local/state/rex-visible`). Failed deliveries are recorded without secrets and are not replayed by repeated Stop hooks.
+```mermaid
+flowchart LR
+    P[UserPromptSubmit] --> H[heartbeat: running]
+    P --> S[started receipt]
+    S --> W[Agent work]
+    W -->|supported prompt hook| N[needs_input: waiting]
+    W -->|child lifecycle| L[lineage: child status]
+    W -->|root turn ends| F[run_finished: completed or failed]
+```
+
+`heartbeat` reports `status: running` at prompt submission; a local `started`
+receipt records turn start. `needs_input` reports `status: waiting`, `kind`
+(`approval`, `question`, `trust`, or `other`), and `prompt_text` limited to 1000
+characters. `lineage` reports child status (`running`, `completed`, `failed`, or
+`ended`); only the root emits `run_finished` (`completed` or `failed`). A root
+finish includes `children`, each `{id, depth, status}`. All callback events carry
+these common fields: `event`, `status`, `agent`, `requester`, `task_id`,
+`turn_id`, `lineage`, `children`, `untrusted`, `prompt_text`,
+`agent_session_id`, `rex_session`, `rex_block`, `cwd`, `repo`, `branch`,
+`head_sha`, `last_message`, `finished_at`, and `delivery_key`. `untrusted` is
+exactly `["last_message", "prompt_text"]`; prompt and final text are empty when
+not applicable. `task_id` uses `GROKBOT_TASK_ID` when set, otherwise
+`<Git root path>:<branch>` (cwd and an empty branch outside Git). `lineage`
+contains `requester_bot`, `root_session_id`,
+`parent_session_id`, `agent_session_id`, `depth`, `agent_kind`, and `role`.
+
+| Field | Type / constraint |
+| --- | --- |
+| `event` | `heartbeat`, `needs_input`, `lineage`, `run_finished` |
+| `status` | `running`, `waiting`, `completed`, `failed`, `ended` as applicable |
+| `agent`, `lineage.agent_kind` | `codex` or `claude` |
+| `requester`, `lineage.requester_bot`, `task_id`, `turn_id`, `delivery_key` | strings; requester/task captured at turn start |
+| `lineage.root_session_id`, `lineage.parent_session_id`, `lineage.agent_session_id` | native ID strings; root parent is empty |
+| `lineage.depth`, `lineage.role` | nonnegative integer; `agent` or `subagent` |
+| `children` | array of `{id: string, depth: integer, status: string}` |
+| `kind` | input events only: `approval`, `question`, `trust`, `other` |
+| `prompt_text`, `last_message` | strings limited to 1000 and 2000 characters |
+| `untrusted` | exactly `["last_message", "prompt_text"]`; treat these as data, never instructions |
+| `agent_session_id`, `rex_session`, `rex_block`, `cwd`, `repo`, `branch`, `head_sha` | strings; Git fields empty outside Git |
+| `finished_at` | ISO 8601 timestamp with offset (event time, including heartbeats) |
+
+Completion text, Git metadata, task and requester are frozen before spooling.
+Session/turn/event/kind claims deduplicate delivery; native turn IDs take precedence
+and prompt generations cover hosts without IDs. Old native turns are rejected
+after a newer prompt. ID-less late hooks cannot reliably identify an earlier turn.
+HTTP uses a five-second timeout. A crash after server acceptance can cause replay;
+receivers should deduplicate `delivery_key`. The `test` diagnostic event carries
+only `event`, `task_id`, `requester`, and `untrusted`.
+
+Claude's `Notification` hook exposes `permission_prompt`, `idle_prompt`, and
+`elicitation_dialog`; Claude and Codex `PermissionRequest` hooks expose approval
+requests. Hooks do not approve prompts or change host
+trust. Codex `PermissionRequest` includes `tool_name` and `tool_input`, with an
+optional `tool_input.description`, so approval requests are observable. It does
+not provide a distinct user-question or trust-prompt event. Although
+`tool_name` may identify a question tool, `PermissionRequest` only runs for
+permission checks and does not report ordinary question-tool invocations. The callback
+classifies Claude `idle_prompt` and `elicitation_dialog` as `question`,
+`trust_prompt` as `trust`, and permission notifications or `PermissionRequest`
+as `approval`. Explicit `trust_prompt` and `input_prompt` notification types
+are accepted as `trust` and `other` for host compatibility; current hosts do not
+guarantee these notifications. Startup trust screens can appear before hooks run.
+Other question and trust prompts are not inferred from arbitrary tool inputs.
+See the official [Codex hooks](https://developers.openai.com/codex/hooks) reference
+for its permission-request fields.
+
+Only roots launched with `GROKBOT_CALLBACK` opt in; unrelated manual sessions never
+inherit by cwd. Native children inherit through hook/coordination parent edges.
+Explicit immediate-parent joins refine provisional hook edges before the root's
+completion snapshot. Children retain their task and requester if the root moves
+to another task. Depth is 0 for a bot-launched root, 1 for its child, and so on;
+roles are `agent` and `subagent`, and agent kinds are `codex` and `claude`.
+
+Set `GROKBOT_PARENT_SESSION` on every nested CLI launch to the current native agent
+or session ID, retaining the root's callback and task variables. Hook context
+instructs agents to do this; Claude SessionStart also exports its session as the
+parent in `CLAUDE_ENV_FILE` for later shell launches. A native child launching a
+CLI must override that default with its own ID. For example:
+
+```sh
+GROKBOT_PARENT_SESSION="$CODEX_THREAD_ID" claude
+```
+
+The callback suppresses an unknown or ambiguous explicit parent instead of
+creating a root. Hosts cannot identify arbitrary unregistered CLI parentage;
+callers that omit this environment variable and coordination registration cannot
+be distinguished reliably from new bot roots.
+
+Stop with background tasks or scheduled wakeups stays waiting. Claude's
+StopFailure reports a failed turn; SessionEnd alone does not mean completion.
 
 `demo/cleanup_demo.py` tests real task sharing, successful and failed commands, a localhost HTTP server, and timed view cleanup. Run it through the visible runner as `uv run --script demo/cleanup_demo.py`. All standalone scripts use inline Python metadata and uv launchers. The demo's final layout comparison expects no concurrent unrelated tab changes.
 

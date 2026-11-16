@@ -6,10 +6,10 @@
 import contextlib
 import io
 import json
-from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import codex_sessions as cs
@@ -77,9 +77,8 @@ class CoordinationTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT block FROM views WHERE thread=?", (A + "@interactive",)).fetchone()[0], "interactive")
 
     def test_missing_main_session_fails_without_creating_view(self):
-        with patch.object(cs.rex, "main_session", side_effect=RuntimeError("ambiguous"), create=True), patch.object(cs.rex, "state_dir"), patch.object(cs.rex, "rex_json") as rex_json:
-            with self.assertRaisesRegex(RuntimeError, "ambiguous"):
-                cs.open_view("task", B)
+        with patch.object(cs.rex, "main_session", side_effect=RuntimeError("ambiguous"), create=True), patch.object(cs.rex, "state_dir"), patch.object(cs.rex, "rex_json") as rex_json, self.assertRaisesRegex(RuntimeError, "ambiguous"):
+            cs.open_view("task", B)
         rex_json.assert_not_called()
 
     def test_retention_for_all_finished_states_and_board(self):
@@ -119,16 +118,14 @@ class CoordinationTests(unittest.TestCase):
 
     def test_watch_closes_owned_pane_even_on_render_error(self):
         self.track_view()
-        with patch.object(cs, "snapshot", side_effect=RuntimeError("render failed")), patch.object(cs.rex, "close_pane", create=True) as close:
-            with self.assertRaisesRegex(RuntimeError, "render failed"):
-                cs.watch("task", B, "generation")
+        with patch.object(cs, "snapshot", side_effect=RuntimeError("render failed")), patch.object(cs.rex, "close_pane", create=True) as close, self.assertRaisesRegex(RuntimeError, "render failed"):
+            cs.watch("task", B, "generation")
         close.assert_called_once_with("main-rex", "owned")
 
     def test_failed_close_keeps_tracking_for_retry(self):
         self.track_view()
-        with patch.object(cs.rex, "close_pane", side_effect=RuntimeError("unavailable"), create=True):
-            with self.assertRaisesRegex(RuntimeError, "unavailable"):
-                cs.close_view("task", B, "generation")
+        with patch.object(cs.rex, "close_pane", side_effect=RuntimeError("unavailable"), create=True), self.assertRaisesRegex(RuntimeError, "unavailable"):
+            cs.close_view("task", B, "generation")
         with cs.database() as db:
             self.assertEqual(db.execute("SELECT token FROM views WHERE thread=?", (B,)).fetchone()[0], "generation")
 
@@ -193,17 +190,15 @@ class CoordinationTests(unittest.TestCase):
         self.assertIn("failed to resume", result["notice"])
 
     def test_uncertain_queue_is_never_retried(self):
-        with patch.object(cs.shutil, "which", return_value="codex"), patch.object(cs.subprocess, "run", side_effect=subprocess.TimeoutExpired("codex", 20)) as run:
-            with self.assertRaisesRegex(ValueError, "uncertain"):
-                cs.send("task", A, B, "Review")
+        with patch.object(cs.shutil, "which", return_value="codex"), patch.object(cs.subprocess, "run", side_effect=subprocess.TimeoutExpired("codex", 20)) as run, self.assertRaisesRegex(ValueError, "uncertain"):
+            cs.send("task", A, B, "Review")
         self.assertEqual(run.call_count, 1)
         self.assertEqual(cs.snapshot("task")["events"][-1]["kind"], "queue_uncertain")
 
     def test_native_message_uses_native_transport(self):
         cs.register("task", C, "native", mode="native")
-        with patch.object(cs.subprocess, "run") as run:
-            with self.assertRaisesRegex(ValueError, "native"):
-                cs.send("task", A, C, "Hello")
+        with patch.object(cs.subprocess, "run") as run, self.assertRaisesRegex(ValueError, "native"):
+            cs.send("task", A, C, "Hello")
         run.assert_not_called()
 
     def test_lifecycle_names_do_not_collide_on_uuid_prefix(self):
@@ -303,9 +298,8 @@ class CoordinationTests(unittest.TestCase):
         opaque = "gAAAAA" + "A" * 200
         cs.event("task", A, "native_message", opaque, B)
         output = io.StringIO()
-        with contextlib.redirect_stdout(output), patch.object(cs.time, "sleep", side_effect=KeyboardInterrupt):
-            with self.assertRaises(KeyboardInterrupt):
-                cs.watch("task", "")
+        with contextlib.redirect_stdout(output), patch.object(cs.time, "sleep", side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
+            cs.watch("task", "")
         self.assertNotIn(opaque, output.getvalue())
         self.assertIn("content unavailable", output.getvalue())
 

@@ -7,13 +7,13 @@
 import argparse
 import json
 import os
-from pathlib import Path
 import re
 import shlex
 import sqlite3
 import sys
 import time
 import uuid
+from pathlib import Path
 
 import codex_sessions as store
 
@@ -105,22 +105,31 @@ def bind_environment(session, actor, team):
     path = os.environ.get("CLAUDE_ENV_FILE")
     if path:
         with Path(path).open("a") as stream:
-            for key, value in (("REX_COORD_PROVIDER", "claude"), ("REX_COORD_SESSION", session),
-                               ("REX_COORD_THREAD", actor), ("REX_COORD_TEAM", team)):
-                stream.write(f"export {key}={shlex.quote(value)}\n")
+            stream.writelines(f"export {key}={shlex.quote(value)}\n" for key, value in (("REX_COORD_PROVIDER", "claude"), ("REX_COORD_SESSION", session),
+                               ("REX_COORD_THREAD", actor), ("REX_COORD_TEAM", team)))
+            if os.environ.get("GROKBOT_CALLBACK"):
+                stream.write(f"export GROKBOT_PARENT_SESSION={shlex.quote(session)}\n")
 
 
 def handle_hook(data):
+    try:
+        return lifecycle_hook(data)
+    finally:
+        if isinstance(data, dict):
+            store.callback_context(data, "claude")
+
+
+def lifecycle_hook(data):
     if not isinstance(data, dict):
-        raise ValueError("Claude hook input must be a JSON object")
-    store.grokbot_callback.notify("claude", data)
+        raise TypeError("Claude hook input must be a JSON object")
     name = data.get("hook_event_name", "")
     session = native_id(data.get("session_id"))
     root = identity(session)
     agent = data.get("agent_id") or ""
     actor = identity(session, agent)
     # A native agent already belongs to its recorded task even if the coordinator switches tasks.
-    team = store.delegated_team(actor) or store.active_team(root) or os.environ.get("REX_COORD_TEAM") or "claude-" + session
+    callback_parent = store.callback_parent_member(os.environ.get("GROKBOT_PARENT_SESSION", ""))
+    team = store.delegated_team(actor) or store.active_team(root) or (callback_parent["team"] if callback_parent else "") or os.environ.get("REX_COORD_TEAM") or "claude-" + session
     effort = data.get("effort") or {}
     effort = effort.get("level", "") if isinstance(effort, dict) else ""
     transcript = data.get("agent_transcript_path", "") if agent else data.get("transcript_path", "")
@@ -129,6 +138,9 @@ def handle_hook(data):
              effort=effort, name=data.get("agent_type", ""))
     context = ""
     if name == "SessionStart":
+        if callback_parent and not agent and callback_parent["thread"] != root:
+            store.register(team, root, "claude-" + session, cwd=data.get("cwd"), parent=callback_parent["thread"],
+                           provider="claude", native_session=session)
         inherited = os.environ.get("REX_COORD_THREAD", "")
         inherited_session = os.environ.get("REX_COORD_SESSION", "")
         if not agent and inherited and inherited != root and inherited_session != session:
@@ -165,7 +177,7 @@ def handle_hook(data):
                 db.execute("UPDATE members SET state='ended',updated=? WHERE provider='claude' AND native_session=? AND state IN ('working','waiting','blocked')", (time.time(), session))
     elif name == "StopFailure":
         store.state(team, actor, "blocked")
-    elif name == "Notification" and data.get("notification_type") == "permission_prompt":
+    elif name == "PermissionRequest" or (name == "Notification" and data.get("notification_type") in ("permission_prompt", "idle_prompt", "elicitation_dialog", "trust_prompt", "input_prompt")):
         store.state(team, actor, "waiting")
     text = data.get("last_assistant_message") or ""
     if name == "TeammateIdle":
@@ -196,6 +208,9 @@ def handle_hook(data):
     unattributed = not agent and (name == "TeammateIdle" or (name in ("TaskCreated", "TaskCompleted") and data.get("teammate_name")))
     store.event(team, "Claude hook (teammate identity unavailable)" if unattributed else actor, name,
                 store.public_text(text or data.get("agent_type") or name), store.member(team, actor)["parent"] if agent else "")
+    if context and os.environ.get("GROKBOT_CALLBACK"):
+        context += (" For a nested Codex or Claude CLI, explicitly set GROKBOT_PARENT_SESSION="
+                    + (agent or session) + " in its launch environment; preserve GROKBOT_TASK_ID and GROKBOT_CALLBACK.")
     return {"hookSpecificOutput": {"hookEventName": name, "additionalContext": context}} if context else {}
 
 
@@ -243,7 +258,7 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (OSError, ValueError, RuntimeError, sqlite3.Error) as error:
+    except (OSError, ValueError, TypeError, RuntimeError, sqlite3.Error) as error:
         if len(sys.argv) > 1 and sys.argv[1] == "hook":
             print(json.dumps({"systemMessage": f"Claude Rex visibility unavailable: {error}"}))
         else:

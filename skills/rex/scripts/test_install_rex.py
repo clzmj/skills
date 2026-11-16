@@ -6,10 +6,10 @@
 import copy
 import importlib.util
 import json
-from pathlib import Path
 import shlex
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("rex_installer", Path(__file__).with_name("install_hooks.py"))
@@ -46,6 +46,7 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(data["hooks"]["PreToolUse"][0], unrelated)
             self.assertEqual(data["trust"], original["trust"])
             self.assertEqual(data["permissions"], original["permissions"])
+            self.assertIn("PermissionRequest", data["hooks"])
             for event, groups in data["hooks"].items():
                 for group in groups:
                     for handler in group["hooks"]:
@@ -86,7 +87,7 @@ class InstallerTests(unittest.TestCase):
             data = json.loads(path.read_text())
             self.assertEqual(data["permissions"], original["permissions"])
             self.assertEqual(data["enabledPlugins"], original["enabledPlugins"])
-            self.assertTrue({"SessionStart", "UserPromptSubmit", "PreToolUse", "SubagentStart", "SubagentStop", "Stop", "StopFailure", "SessionEnd", "TeammateIdle", "TaskCreated", "TaskCompleted"}.issubset(data["hooks"]))
+            self.assertTrue({"SessionStart", "UserPromptSubmit", "PreToolUse", "SubagentStart", "SubagentStop", "Stop", "StopFailure", "SessionEnd", "TeammateIdle", "TaskCreated", "TaskCompleted", "Notification", "PermissionRequest"}.issubset(data["hooks"]))
             commands = [handler["command"] for groups in data["hooks"].values() for group in groups for handler in group["hooks"]]
             self.assertTrue(any("claude_sessions.py" in command for command in commands))
             self.assertFalse(any("codex_sessions.py" in command for command in commands))

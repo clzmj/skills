@@ -4,17 +4,17 @@
 # dependencies = []
 # ///
 """Local-only callback delivery and hook integration checks."""
-from contextlib import redirect_stderr, redirect_stdout
-from datetime import datetime
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
 import json
 import os
-from pathlib import Path
 import subprocess
 import tempfile
 import threading
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from unittest.mock import patch
 
 import claude_sessions
@@ -28,6 +28,7 @@ class CallbackTests(unittest.TestCase):
         self.addCleanup(self.folder.cleanup)
         self.root = Path(self.folder.name)
         self.config = self.root / "callback.env"
+        self.git_metadata = callback.git_metadata
         self.requests = []
         self.statuses = []
         owner = self
@@ -50,6 +51,7 @@ class CallbackTests(unittest.TestCase):
                                'GROKBOT_WEBHOOK_HEADER="Authorization: Bearer test-secret"\n')
         self.config.chmod(0o600)
         for item in (patch.object(callback, "CONFIG", self.config),
+                     patch.object(callback, "git_metadata", return_value={"repo": "/repo", "branch": "feature", "head_sha": "abc123"}),
                      patch.object(callback.rex, "STATE", self.root / "state"),
                      patch.object(codex_sessions, "DB", self.root / "coordination.sqlite3"),
                      patch.object(codex_sessions, "reopen_activity"),
@@ -77,9 +79,9 @@ class CallbackTests(unittest.TestCase):
         return path
 
     def test_payload_shape_and_git_metadata(self):
-        with patch.object(callback.subprocess, "run", side_effect=[subprocess.CompletedProcess([], 0, value, "") for value in ("/repo\n", "feature\n", "abc123\n")]):
+        with patch.object(callback, "git_metadata", wraps=self.git_metadata), patch.object(callback.subprocess, "run", side_effect=[subprocess.CompletedProcess([], 0, value, "") for value in ("/repo\n", "feature\n", "abc123\n")]):
             body = callback.payload(self.envelope(last_assistant_message="x" * 2100))
-        self.assertEqual(set(body), {"event", "status", "agent", "requester", "agent_session_id", "rex_session", "rex_block", "cwd", "repo", "branch", "head_sha", "last_message", "finished_at"})
+        self.assertEqual(set(body), {"event", "status", "agent", "requester", "agent_session_id", "rex_session", "rex_block", "cwd", "repo", "branch", "head_sha", "last_message", "finished_at", "task_id", "turn_id", "lineage", "children", "untrusted", "prompt_text"})
         self.assertEqual((body["event"], body["status"], body["agent"], body["requester"]), ("run_finished", "completed", "codex", "dinesh"))
         self.assertEqual((body["repo"], body["branch"], body["head_sha"]), ("/repo", "feature", "abc123"))
         self.assertEqual(len(body["last_message"]), 2000)
@@ -100,7 +102,9 @@ class CallbackTests(unittest.TestCase):
                     callback.notify(agent, self.data(**fields))
                 for name in ("SessionEnd", "SubagentStop", "PostToolUse"):
                     callback.notify(agent, self.data(name))
-            launch.assert_not_called()
+            self.assertEqual(launch.call_count, 2)  # Known children emit lineage, never run_finished.
+            for call in launch.call_args_list:
+                self.assertEqual(json.loads(Path(call.args[0][-1]).read_text())["event"], "lineage")
             callback.notify("codex", self.data())
             self.assertTrue(launch.call_args.kwargs["start_new_session"])
             self.assertEqual(launch.call_args.kwargs["stdin"], subprocess.DEVNULL)
@@ -112,7 +116,8 @@ class CallbackTests(unittest.TestCase):
         with patch.object(callback, "notify") as notify:
             for adapter, agent in ((codex_sessions, "codex"), (claude_sessions, "claude")):
                 adapter.handle_hook(self.data(background_tasks=[{"id": "pending"}]))
-                notify.assert_called_with(agent, self.data(background_tasks=[{"id": "pending"}]))
+                self.assertEqual(notify.call_args.args[:2], (agent, self.data(background_tasks=[{"id": "pending"}])))
+                self.assertTrue(notify.call_args.args[2])
             session = self.data()["session_id"]
             self.assertEqual(codex_sessions.member(session, session)["state"], "waiting")
 
@@ -136,18 +141,17 @@ class CallbackTests(unittest.TestCase):
             callback.notify("codex", self.data())
         for child in children:
             self.assertEqual(child.wait(timeout=5), 0)
-        self.assertEqual(len(self.requests), 1)
+        self.assertEqual(len(self.requests), 2)
         with patch.object(callback.subprocess, "Popen") as launch:
             callback.notify("codex", self.data())
-            duplicate = Path(launch.call_args.args[0][-1])
-        callback.deliver(duplicate)
-        self.assertEqual(len(self.requests), 1)
+            launch.assert_not_called()
+        self.assertEqual(len(self.requests), 2)
         with patch.object(callback.subprocess, "Popen") as launch:
             callback.notify("codex", self.data("UserPromptSubmit"))
             callback.notify("codex", self.data())
             next_turn = Path(launch.call_args.args[0][-1])
         callback.deliver(next_turn)
-        self.assertEqual(len(self.requests), 2)
+        self.assertEqual(len(self.requests), 3)
         self.assertEqual(self.requests[0][1], "Bearer test-secret")
         self.assertEqual(self.requests[0][0]["requester"], "dinesh")
 
@@ -204,7 +208,7 @@ class CallbackTests(unittest.TestCase):
             self.assertEqual(connect.call_args.kwargs["timeout"], 5)
         with patch.object(callback.subprocess, "Popen", side_effect=OSError("test-secret")):
             callback.notify("codex", self.data())
-        self.assertEqual(list((self.root / "state").glob("grokbot-pending-*")), [])
+        self.assertEqual(len(list((self.root / "state").glob("grokbot-pending-*"))), 1)
         self.assertNotIn("test-secret", (self.root / "state/grokbot-callback-receipts.jsonl").read_text())
 
     def test_transcript_final_message_fallback(self):
@@ -217,6 +221,254 @@ class CallbackTests(unittest.TestCase):
         ):
             transcript.write_text("\n".join(map(json.dumps, rows)))
             self.assertEqual(callback.final_message(agent, {"transcript_path": str(transcript)}), "Final")
+
+    def queued(self, agent, data, members=()):
+        with patch.object(callback.subprocess, "Popen") as launch:
+            callback.notify(agent, data, members)
+        return Path(launch.call_args.args[0][-1]) if launch.called else None
+
+    def drain(self):
+        for path in list((self.root / "state").glob("grokbot-pending-*")):
+            callback.deliver(path)
+
+    def test_input_kinds_prompt_limits_and_per_turn_dedupe(self):
+        self.queued("claude", self.data("UserPromptSubmit"))
+        for event in (self.data("PermissionRequest", tool_input={"description": "x" * 1100}),
+                      self.data("Notification", notification_type="permission_prompt", message="duplicate approval"),
+                      self.data("Notification", notification_type="idle_prompt", message="Choose a name?"),
+                      self.data("Notification", notification_type="trust_prompt", message="Trust this workspace?"),
+                      self.data("Notification", notification_type="input_prompt", message="Waiting")):
+            self.queued("claude", event)
+        self.drain()
+        inputs = [body for body, _ in self.requests if body["event"] == "needs_input"]
+        self.assertEqual({body["kind"] for body in inputs}, {"approval", "question", "trust", "other"})
+        inputs = sorted(inputs, key=lambda body: body["kind"])
+        self.assertEqual(len(inputs[0]["prompt_text"]), 1000)
+        self.assertEqual(next(body for body in inputs if body["kind"] == "question")["prompt_text"], "Choose a name?")
+        self.assertTrue(all(body["untrusted"] == ["last_message", "prompt_text"] for body in inputs))
+        self.assertIsNone(self.queued("claude", self.data("Notification", notification_type="auth_success", message="Signed in")))
+        self.queued("claude", self.data("UserPromptSubmit"))
+        self.queued("claude", self.data("PermissionRequest", prompt="Again"))
+        self.drain()
+        self.assertEqual(sum(body["event"] == "needs_input" for body, _ in self.requests), 5)
+
+    def test_codex_approval_uses_native_turn_and_description(self):
+        self.queued("codex", self.data("UserPromptSubmit", turn_id="native-turn"))
+        for _ in range(2):
+            self.queued("codex", self.data("PermissionRequest", turn_id="native-turn", tool_name="Bash",
+                                           tool_input={"description": "Run deployment?", "command": "deploy"}))
+        self.drain()
+        body = next(body for body, _ in self.requests if body["event"] == "needs_input")
+        self.assertEqual((body["kind"], body["prompt_text"], body["turn_id"]), ("approval", "Run deployment?", "native-turn"))
+        self.assertEqual(len(self.requests), 2)
+
+    def test_task_identity_is_captured_and_requester_preserved(self):
+        with patch.dict(os.environ, {"GROKBOT_TASK_ID": "repo:task-a"}):
+            first = self.queued("codex", self.data("Stop", turn_id="same-turn"))
+        with patch.dict(os.environ, {"GROKBOT_TASK_ID": "repo:task-b", "GROKBOT_CALLBACK": "another-bot"}):
+            self.queued("codex", self.data("UserPromptSubmit", turn_id="same-turn"))
+            second = self.queued("codex", self.data("Stop", turn_id="same-turn"))
+        callback.deliver(first)
+        callback.deliver(second)
+        self.assertEqual([(body["task_id"], body["requester"]) for body, _ in self.requests],
+                         [("repo:task-a", "dinesh"), ("repo:task-b", "another-bot")])
+        self.assertEqual(callback.payload(self.envelope())["task_id"], "/repo:feature")
+        with patch.object(callback, "git_metadata", return_value={"repo": "", "branch": "", "head_sha": ""}):
+            self.assertEqual(callback.payload(self.envelope())["task_id"], str(self.root) + ":")
+
+    def test_codex_refined_lineage_and_root_children_summary(self):
+        root = self.data()["session_id"]
+        first = "11111111-1111-4111-8111-111111111111"
+        second = "22222222-2222-4222-8222-222222222222"
+        with patch.object(callback.subprocess, "Popen"):
+            codex_sessions.handle_hook(self.data("UserPromptSubmit"))
+            for child in (first, second):
+                codex_sessions.handle_hook(self.data("SubagentStart", agent_id=child))
+            codex_sessions.register(root, second, "nested", parent=first)
+            codex_sessions.handle_hook(self.data("SubagentStop", agent_id=second))
+            codex_sessions.handle_hook(self.data("SubagentStop", agent_id=first))
+            codex_sessions.handle_hook(self.data("Stop"))
+        self.drain()
+        finished = [body for body, _ in self.requests if body["event"] == "run_finished"]
+        self.assertEqual(len(finished), 1)
+        self.assertEqual(finished[0]["children"], [{"id": first, "depth": 1, "status": "completed"},
+                                                  {"id": second, "depth": 2, "status": "completed"}])
+        child_end = next(body for body, _ in self.requests if body["event"] == "lineage" and body["status"] == "completed" and body["agent_session_id"] == second)
+        self.assertEqual(child_end["lineage"], {"requester_bot": "dinesh", "root_session_id": root,
+                         "parent_session_id": first, "agent_session_id": second, "depth": 2,
+                         "agent_kind": "codex", "role": "subagent"})
+
+    def test_claude_native_and_nested_cli_never_finish_as_roots(self):
+        root = "claude-root"
+        first = {**self.data("UserPromptSubmit"), "session_id": root}
+        self.queued("claude", first)
+        self.queued("claude", {**first, "hook_event_name": "SubagentStart", "agent_id": "native-child"})
+        self.queued("claude", {**first, "hook_event_name": "SubagentStop", "agent_id": "native-child"})
+        nested = {**first, "session_id": "nested-cli"}
+        with patch.dict(os.environ, {"GROKBOT_PARENT_SESSION": "native-child"}):
+            self.queued("claude", nested)
+            self.queued("claude", {**nested, "hook_event_name": "Stop"})
+        self.queued("claude", {**first, "hook_event_name": "Stop"})
+        self.drain()
+        finished = [body for body, _ in self.requests if body["event"] == "run_finished"]
+        self.assertEqual([body["agent_session_id"] for body in finished], [root])
+        self.assertEqual(finished[0]["children"], [{"id": "native-child", "depth": 1, "status": "completed"},
+                                                  {"id": "nested-cli", "depth": 2, "status": "completed"}])
+
+    def test_cross_provider_child_and_no_unrelated_opt_in(self):
+        root = self.data()["session_id"]
+        self.queued("codex", self.data("UserPromptSubmit"))
+        child = {**self.data("SessionStart"), "session_id": "claude-child"}
+        with patch.dict(os.environ, {"GROKBOT_PARENT_SESSION": root}):
+            path = self.queued("claude", child)
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertIsNone(self.queued("claude", {**child, "session_id": "manual-session"}))
+            end = self.queued("claude", {**child, "hook_event_name": "Stop"})
+        callback.deliver(path)
+        callback.deliver(end)
+        body = self.requests[-1][0]
+        self.assertEqual((body["event"], body["lineage"]["depth"], body["lineage"]["agent_kind"]), ("lineage", 1, "claude"))
+        self.assertEqual(body["lineage"]["root_session_id"], root)
+        with patch.dict(os.environ, {"GROKBOT_PARENT_SESSION": "unknown"}):
+            self.assertIsNone(self.queued("codex", {**self.data("Stop"), "session_id": "unregistered-nested"}))
+
+    def test_heartbeat_running_health_and_session_end_without_completion(self):
+        path = self.queued("codex", self.data("UserPromptSubmit"))
+        state = callback.health()
+        self.assertEqual((len(state["pending"]), len(state["running"])), (1, 1))
+        self.assertEqual(state["running"][0]["rex_block"], "rex-b")
+        receipts = (self.root / "state/grokbot-callback-receipts.jsonl").read_text()
+        self.assertIn('"outcome": "started"', receipts)
+        self.assertIn('"rex_block": "rex-b"', receipts)
+        callback.deliver(path)
+        self.assertEqual(self.requests[0][0]["event"], "heartbeat")
+        self.assertIsNone(self.queued("codex", self.data("Stop", background_tasks=[{"id": "worker"}])))
+        self.assertEqual(callback.health()["running"][0]["status"], "waiting")
+        self.queued("codex", self.data("SessionEnd"))
+        self.assertEqual(callback.health()["running"], [])
+        self.assertFalse(any(body["event"] == "run_finished" for body, _ in self.requests))
+
+    def test_failed_spool_retry_freezes_payload_and_health_is_safe(self):
+        path = self.queued("codex", self.data("Stop", last_assistant_message="private text"))
+        self.statuses[:] = [503, 503, 503]
+        self.assertFalse(callback.deliver(path))
+        self.assertTrue(path.exists())
+        self.assertEqual(len(callback.health()["failed"]), 1)
+        self.assertEqual(callback.health()["pending"], [])
+        output = io.StringIO()
+        with patch.object(callback.sys, "argv", ["grokbot_callback.py", "status", "--json"]), redirect_stdout(output):
+            self.assertEqual(callback.main(), 0)
+        self.assertNotIn("private text", output.getvalue())
+        self.assertNotIn("test-secret", output.getvalue())
+        with patch.object(callback, "git_metadata", return_value={"repo": "changed", "branch": "changed", "head_sha": "changed"}):
+            self.assertEqual(callback.retry(), {"delivered": 1, "failed": 0})
+        self.assertEqual(self.requests[0][0], self.requests[-1][0])
+        self.assertFalse(path.exists())
+        self.assertEqual(callback.health()["failed"], [])
+
+    def test_children_have_independent_prompt_turns(self):
+        self.queued("claude", self.data("UserPromptSubmit", turn_id="root-turn"))
+        child = self.data("UserPromptSubmit", agent_id="child")
+        for _ in range(2):
+            self.queued("claude", child)
+            self.queued("claude", {**child, "hook_event_name": "PermissionRequest", "prompt": "Proceed?"})
+        self.queued("claude", self.data("Stop", turn_id="root-turn"))
+        self.drain()
+        self.assertEqual(sum(body["event"] == "needs_input" for body, _ in self.requests), 2)
+        self.assertEqual(sum(body["event"] == "run_finished" for body, _ in self.requests), 1)
+
+
+    def test_stale_native_turn_cannot_notify_a_new_task(self):
+        with patch.dict(os.environ, {"GROKBOT_TASK_ID": "task-a"}):
+            self.queued("codex", self.data("UserPromptSubmit", turn_id="turn-a"))
+        with patch.dict(os.environ, {"GROKBOT_TASK_ID": "task-b", "GROKBOT_CALLBACK": "bot-b"}):
+            self.queued("codex", self.data("UserPromptSubmit", turn_id="turn-b"))
+            self.assertIsNone(self.queued("codex", self.data("Stop", turn_id="turn-a")))
+            self.assertIsNone(self.queued("codex", self.data("PermissionRequest", turn_id="turn-a", prompt="Old approval")))
+            self.queued("codex", self.data("Stop", turn_id="turn-b"))
+        self.drain()
+        finished = [body for body, _ in self.requests if body["event"] == "run_finished"]
+        self.assertEqual([(body["task_id"], body["requester"], body["turn_id"]) for body in finished], [("task-b", "bot-b", "turn-b")])
+
+    def test_final_transcript_is_frozen_before_worker_launch(self):
+        transcript = self.root / "turns.jsonl"
+        transcript.write_text(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "Task A done"}]}}))
+        data = self.data("Stop", transcript_path=str(transcript))
+        del data["last_assistant_message"]
+        path = self.queued("claude", data)
+        transcript.write_text(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "Task B private"}]}}))
+        callback.deliver(path)
+        self.assertEqual(self.requests[0][0]["last_message"], "Task A done")
+
+    def test_claude_session_end_updates_active_child_health(self):
+        with patch.object(callback.subprocess, "Popen"):
+            claude_sessions.handle_hook(self.data("UserPromptSubmit"))
+            claude_sessions.handle_hook(self.data("SubagentStart", agent_id="active-child"))
+            self.assertEqual(len(callback.health()["running"]), 2)
+            claude_sessions.handle_hook(self.data("SessionEnd"))
+        self.assertEqual(callback.health()["running"], [])
+
+    def test_callback_state_tracks_native_child_resume(self):
+        root = self.data()["session_id"]
+        child = "11111111-1111-4111-8111-111111111111"
+        with patch.object(callback.subprocess, "Popen"):
+            codex_sessions.handle_hook(self.data("UserPromptSubmit"))
+            codex_sessions.handle_hook(self.data("SubagentStart", agent_id=child))
+            codex_sessions.handle_hook(self.data("PermissionRequest", agent_id=child, prompt="First approval"))
+            codex_sessions.handle_hook(self.data("SubagentStop", agent_id=child))
+            codex_sessions.handle_hook(self.data("PostToolUse", tool_name="followup_task", tool_input={"target": child}))
+        self.assertEqual(codex_sessions.member(root, child)["state"], "working")
+        self.assertEqual({row["id"] for row in callback.health()["running"]}, {root, child})
+        self.queued("codex", self.data("PermissionRequest", agent_id=child, prompt="Second approval"))
+        self.drain()
+        self.assertEqual(sum(body["event"] == "needs_input" for body, _ in self.requests), 2)
+
+
+    def test_prompt_without_native_id_retires_previous_turn(self):
+        self.queued("codex", self.data("UserPromptSubmit", turn_id="old"))
+        self.queued("codex", self.data("UserPromptSubmit"))
+        self.assertIsNone(self.queued("codex", self.data("Stop", turn_id="old")))
+        fresh = self.queued("codex", self.data("PermissionRequest", turn_id="new", prompt="Current approval"))
+        self.assertIsNotNone(fresh)
+        self.assertEqual(json.loads(fresh.read_text())["turn"], "new")
+
+    def test_atomic_spool_failure_does_not_poison_dedupe(self):
+        with patch.object(callback.json, "dump", side_effect=OSError("test-secret")):
+            self.assertIsNone(self.queued("codex", self.data("Stop")))
+        self.assertEqual(list((self.root / "state").glob("grokbot-pending-*")), [])
+        path = self.queued("codex", self.data("Stop"))
+        self.assertIsNotNone(path)
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertTrue(callback.deliver(path))
+
+    def test_nested_cli_parent_environment_registers_cross_provider_edge(self):
+        root = self.data()["session_id"]
+        with patch.object(callback.subprocess, "Popen"):
+            codex_sessions.handle_hook(self.data("UserPromptSubmit"))
+            with patch.dict(os.environ, {"GROKBOT_PARENT_SESSION": root}):
+                claude_sessions.handle_hook({**self.data("SessionStart"), "session_id": "nested-claude"})
+            nested = claude_sessions.identity("nested-claude")
+            self.assertEqual(codex_sessions.member(root, nested)["parent"], root)
+            with patch.dict(os.environ, {"GROKBOT_PARENT_SESSION": "nested-claude"}):
+                child = "33333333-3333-4333-8333-333333333333"
+                codex_sessions.handle_hook(self.data("SessionStart", session_id=child))
+                codex_sessions.handle_hook(self.data("Stop", session_id=child))
+            self.assertEqual(codex_sessions.member(root, child)["parent"], nested)
+        self.drain()
+        self.assertFalse(any(body["event"] == "run_finished" for body, _ in self.requests))
+        self.assertTrue(any(body["lineage"]["depth"] == 2 for body, _ in self.requests))
+
+    def test_child_failure_and_waiting_status_match_webhooks(self):
+        with patch.object(callback.subprocess, "Popen"):
+            claude_sessions.handle_hook(self.data("UserPromptSubmit"))
+            claude_sessions.handle_hook(self.data("SubagentStart", agent_id="child"))
+            claude_sessions.handle_hook(self.data("Notification", agent_id="child", notification_type="trust_prompt", message="Trust?"))
+            self.assertEqual(next(row for row in callback.health()["running"] if row["id"] == "child")["status"], "waiting")
+            claude_sessions.handle_hook(self.data("SubagentStop", agent_id="child", status="failed"))
+            claude_sessions.handle_hook(self.data("Stop"))
+        self.drain()
+        finished = next(body for body, _ in self.requests if body["event"] == "run_finished")
+        self.assertEqual(finished["children"], [{"id": "child", "depth": 1, "status": "failed"}])
 
 
 if __name__ == "__main__":

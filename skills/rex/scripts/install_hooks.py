@@ -6,11 +6,11 @@
 """Install independent Rex hooks without changing Python hooks or host trust."""
 import argparse
 import json
-from pathlib import Path
 import re
 import shlex
 import shutil
 import time
+from pathlib import Path
 
 
 def write(path, content):
@@ -30,7 +30,7 @@ def marked_block(path, name, text):
     begin, end = f"<!-- {name}:start -->", f"<!-- {name}:end -->"
     addition = f"{begin}\n{text.strip()}\n{end}"
     if begin in before and end in before:
-        after = re.sub(re.escape(begin) + r".*?" + re.escape(end), lambda _: addition, before, flags=re.S)
+        after = re.sub(re.escape(begin) + r".*?" + re.escape(end), lambda _: addition, before, flags=re.DOTALL)
     else:
         after = before.rstrip() + ("\n\n" if before.strip() else "") + addition + "\n"
     write(path, after)
@@ -54,9 +54,9 @@ def owned_handler(command, script, home, root):
 def rex_hooks(data, root, home, uv, codex):
     definitions = [("rex_visible.py", ("SessionStart", "UserPromptSubmit", "PreToolUse"))]
     if codex:
-        definitions.append(("codex_sessions.py", ("SessionStart", "UserPromptSubmit", "SubagentStart", "SubagentStop", "Stop", "SessionEnd", "PostToolUse")))
+        definitions.append(("codex_sessions.py", ("SessionStart", "UserPromptSubmit", "SubagentStart", "SubagentStop", "Stop", "SessionEnd", "PostToolUse", "PermissionRequest")))
     else:
-        definitions.append(("claude_sessions.py", ("SessionStart", "UserPromptSubmit", "SubagentStart", "SubagentStop", "PreToolUse", "PostToolUse", "Stop", "StopFailure", "SessionEnd", "TeammateIdle", "TaskCreated", "TaskCompleted", "Notification", "PostModelSwitch")))
+        definitions.append(("claude_sessions.py", ("SessionStart", "UserPromptSubmit", "SubagentStart", "SubagentStop", "PreToolUse", "PostToolUse", "Stop", "StopFailure", "SessionEnd", "TeammateIdle", "TaskCreated", "TaskCompleted", "Notification", "PermissionRequest", "PostModelSwitch")))
     for script, events in definitions:
         for event in events:
             command = shlex.join([uv, "run", "--script", str(root / script), "hook"])
