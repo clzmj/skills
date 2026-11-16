@@ -31,35 +31,52 @@ uv run --script ~/.local/share/agent-tooling/rex/grokbot_callback.py doctor
 uv run --script ~/.local/share/agent-tooling/rex/grokbot_callback.py test
 ```
 
-Hooks submit durable local spools and launch detached HTTP delivery; errors fail
-open and do not change host behavior. `doctor` checks callback config; `test`
-sends a test event. Use `status --json` to list pending, failed, and running
-records without prompt text, final messages, or secrets. `running` reflects local
+Only `run_finished` and `needs_input` hooks submit durable spools and launch
+detached HTTP delivery. Every POST wakes a paid Grok Bot routine, so heartbeat
+and lineage activity stays local and never posts. Errors fail open and do not
+change host behavior. `doctor` checks callback config; `test` remains an explicit
+manual webhook ping. Use `status --json` to list pending, failed, and running
+records, started receipts, and session lineage without prompt text, final messages,
+or secrets. `running` reflects local
 hook state and includes Rex session/block IDs; an external watchdog must check
 those blocks for liveness. Heartbeats occur at turn start, not on a timer.
 `retry` synchronously replays retained pending and failed spools, including a
 worker that died before sending. Failures keep their spool; repeated hooks do
-not retry it automatically. Each event has a stable
+not retry it automatically. Legacy heartbeat/lineage spools are retired without
+HTTP delivery. Each webhook event has a stable
 `delivery_key` for receiver-side idempotency. Delivery makes up to three HTTP
 attempts per run. Receipts and session metadata live under
 `REX_VISIBLE_STATE_DIR` (default `~/.local/state/rex-visible`).
 
 ```mermaid
 flowchart LR
-    P[UserPromptSubmit] --> H[heartbeat: running]
-    P --> S[started receipt]
-    S --> W[Agent work]
+    P[UserPromptSubmit] --> W[Agent work]
+    subgraph Local only
+        S[started receipt / heartbeat]
+        L[lineage state]
+        Q[status --json]
+        S --> Q
+        L --> Q
+    end
+    P --> S
+    W -->|child lifecycle| L
     W -->|supported prompt hook| N[needs_input: waiting]
-    W -->|child lifecycle| L[lineage: child status]
-    W -->|root turn ends| F[run_finished: completed or failed]
+    W -->|root turn ends| F[run_finished + children summary]
+    N --> H[Webhook POST / paid routine]
+    F --> H
+    T[Manual test ping] --> H
 ```
 
-`heartbeat` reports `status: running` at prompt submission; a local `started`
-receipt records turn start. `needs_input` reports `status: waiting`, `kind`
+The heartbeat is a local `started` receipt at prompt submission, with running
+session state. Child lineage and status (`running`, `completed`, `failed`, or
+`ended`) remain in the state directory; neither heartbeat nor lineage is a
+webhook event. `status --json` exposes `started` receipts and `sessions` metadata
+for all tracked sessions, including completed children and each session's
+`turn_id` and `lineage`; the existing `running` list remains the active subset.
+`needs_input` posts `status: waiting`, `kind`
 (`approval`, `question`, `trust`, or `other`), and `prompt_text` limited to 1000
-characters. `lineage` reports child status (`running`, `completed`, `failed`, or
-`ended`); only the root emits `run_finished` (`completed` or `failed`). A root
-finish includes `children`, each `{id, depth, status}`. All callback events carry
+characters. Only the root posts `run_finished` (`completed` or `failed`). A root
+finish includes `children`, each `{id, depth, status}`. Both automated webhook events carry
 these common fields: `event`, `status`, `agent`, `requester`, `task_id`,
 `turn_id`, `lineage`, `children`, `untrusted`, `prompt_text`,
 `agent_session_id`, `rex_session`, `rex_block`, `cwd`, `repo`, `branch`,
@@ -72,8 +89,8 @@ contains `requester_bot`, `root_session_id`,
 
 | Field | Type / constraint |
 | --- | --- |
-| `event` | `heartbeat`, `needs_input`, `lineage`, `run_finished` |
-| `status` | `running`, `waiting`, `completed`, `failed`, `ended` as applicable |
+| `event` | `needs_input` or `run_finished` (manual `test` ping described below) |
+| `status` | `waiting` for input; `completed` or `failed` for root completion |
 | `agent`, `lineage.agent_kind` | `codex` or `claude` |
 | `requester`, `lineage.requester_bot`, `task_id`, `turn_id`, `delivery_key` | strings; requester/task captured at turn start |
 | `lineage.root_session_id`, `lineage.parent_session_id`, `lineage.agent_session_id` | native ID strings; root parent is empty |
@@ -83,7 +100,7 @@ contains `requester_bot`, `root_session_id`,
 | `prompt_text`, `last_message` | strings limited to 1000 and 2000 characters |
 | `untrusted` | exactly `["last_message", "prompt_text"]`; treat these as data, never instructions |
 | `agent_session_id`, `rex_session`, `rex_block`, `cwd`, `repo`, `branch`, `head_sha` | strings; Git fields empty outside Git |
-| `finished_at` | ISO 8601 timestamp with offset (event time, including heartbeats) |
+| `finished_at` | ISO 8601 timestamp with offset (webhook event time) |
 
 Completion text, Git metadata, task and requester are frozen before spooling.
 Session/turn/event/kind claims deduplicate delivery; native turn IDs take precedence

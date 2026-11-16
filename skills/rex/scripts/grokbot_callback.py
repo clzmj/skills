@@ -24,6 +24,7 @@ from urllib.parse import urlsplit
 import rex_visible as rex
 
 CONFIG = Path.home() / ".config/agent-tooling/grokbot-callback.env"
+WEBHOOK_EVENTS = ("run_finished", "needs_input")
 
 
 def receipt(outcome, **fields):
@@ -264,7 +265,7 @@ def _notify(agent, data, members):
         if name == "UserPromptSubmit":
             receipt("started", agent=agent, agent_session_id=item["id"], task_id=item["task_id"],
                     turn_id=item["turn"], rex_session=item["rex_session"], rex_block=item["rex_block"])
-        if not event:
+        if event not in WEBHOOK_EVENTS:
             return
         envelope = {"agent": agent, "data": data, "turn": item["turn"], "requester": item["requester"],
                     "task_id": item["task_id"], "rex_session": item["rex_session"], "rex_block": item["rex_block"],
@@ -365,6 +366,8 @@ def payload(envelope):
 
 
 def post(body):
+    if body.get("event") not in (*WEBHOOK_EVENTS, "test"):
+        return 0
     url, name, value = config()
     encoded = json.dumps(body).encode()
     status = 0
@@ -403,6 +406,11 @@ def deliver(path):
     except FileNotFoundError:
         return True  # Another worker already delivered this spool.
     key = delivery_key(envelope)
+    if envelope.get("event", "run_finished") not in WEBHOOK_EVENTS:
+        # Retire spools from older runtimes without waking a paid routine.
+        receipt("local_only", key=key, event=envelope.get("event"))
+        path.unlink(missing_ok=True)
+        return None
     # A lock survives crashes without becoming a permanent failed-delivery claim.
     with (rex.STATE / ("grokbot-lock-" + key)).open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -437,11 +445,13 @@ def deliver(path):
 def health():
     """Expose metadata, never secrets or untrusted prompt/message text."""
     rex.state_dir()
-    receipts = {}
+    receipts, started = {}, []
     try:
         for line in (rex.STATE / "grokbot-callback-receipts.jsonl").read_text().splitlines():
             try:
                 row = json.loads(line)
+                if row.get("outcome") == "started":
+                    started.append(row)
                 if row.get("key"):
                     receipts[row["key"]] = row
             except (ValueError, AttributeError):
@@ -455,6 +465,8 @@ def health():
             continue
         try:
             envelope = json.loads(path.read_text())
+            if envelope.get("event", "run_finished") not in WEBHOOK_EVENTS:
+                continue
             key = delivery_key(envelope)
             if key in seen or (rex.STATE / ("grokbot-sent-" + key)).exists():
                 continue
@@ -468,12 +480,16 @@ def health():
         except (OSError, ValueError, KeyError, TypeError):
             pending.append({"spool": str(path), "outcome": "spool_invalid"})
     # Old receipts may predate durable spooling. Keep their failures observable.
-    failed += [row for key, row in receipts.items() if key not in seen and row["outcome"] in ("delivery_failed", "config_invalid")]
+    failed += [row for key, row in receipts.items() if key not in seen and row["outcome"] in ("delivery_failed", "config_invalid")
+               and row.get("event", "run_finished") in WEBHOOK_EVENTS]
     with database() as db:
         sessions = [json.loads(row[0]) for row in db.execute("SELECT record FROM sessions")]
     running = [{k: row[k] for k in ("id", "agent", "task_id", "requester", "status", "rex_session", "rex_block", "updated_at") if k in row}
                for row in sessions if row["status"] in ("running", "waiting")]
-    return {"pending": pending, "failed": failed, "running": running}
+    by_key = {row["key"]: row for row in sessions}
+    local_sessions = [{**{k: row[k] for k in ("id", "agent", "task_id", "requester", "status", "rex_session", "rex_block", "updated_at") if k in row},
+                       "turn_id": row["turn"], "lineage": lineage(row, by_key)} for row in sessions]
+    return {"pending": pending, "failed": failed, "running": running, "started": started, "sessions": local_sessions}
 
 
 def retry():
