@@ -61,6 +61,17 @@ def rex_hooks(data, root, home, uv, codex):
         for event in events:
             command = shlex.join([uv, "run", "--script", str(root / script), "hook"])
             groups = data.setdefault("hooks", {}).setdefault(event, [])
+            if event == "PostToolUse":
+                for group in list(groups):
+                    owned = [handler for handler in group.get("hooks", [])
+                             if owned_handler(handler.get("command", ""), script, home, root)]
+                    if owned and group.get("matcher"):
+                        if len(owned) == len(group["hooks"]):
+                            group.pop("matcher")
+                        else:
+                            # Broaden our lifecycle observer without widening unrelated handlers.
+                            group["hooks"] = [handler for handler in group["hooks"] if handler not in owned]
+                            groups.append({"hooks": owned})
             existing = [handler for group in groups for handler in group.get("hooks", [])
                         if owned_handler(handler.get("command", ""), script, home, root)]
             if existing:
@@ -70,8 +81,6 @@ def rex_hooks(data, root, home, uv, codex):
                         handler["timeout"] = 3
                 continue
             matcher = "Bash|exec_command|shell|shell_command" if event == "PreToolUse" and script == "rex_visible.py" else None
-            if event == "PostToolUse":
-                matcher = ".*(send_message|send_input|followup_task)$" if codex else "Agent|Task|SendMessage|TaskCreate|TaskUpdate"
             group = {"hooks": [{"type": "command", "command": command,
                                  "timeout": 3 if event == "SessionEnd" else (20 if event == "SubagentStart" else 5)}]}
             if matcher:

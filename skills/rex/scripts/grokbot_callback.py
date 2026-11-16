@@ -25,6 +25,7 @@ import rex_visible as rex
 
 CONFIG = Path.home() / ".config/agent-tooling/grokbot-callback.env"
 WEBHOOK_EVENTS = ("run_finished", "needs_input")
+UNTRUSTED_FIELDS = ("last_message", "prompt_text", "cwd", "repo", "branch", "head_sha", "task_id")
 
 
 def receipt(outcome, **fields):
@@ -107,6 +108,13 @@ def input_request(data):
     if not isinstance(prompt, str):
         prompt = json.dumps(prompt, ensure_ascii=False)
     return kind, prompt[:1000]
+
+
+def request_identity(data):
+    identifier = data.get("request_id") or data.get("permission_request_id") or data.get("tool_use_id") or data.get("tool_call_id")
+    identity = ["id", identifier] if identifier else ["content", data.get("tool_name") or "", data.get("tool_input") or {},
+                                                    data.get("message") or data.get("prompt") or ""]
+    return hashlib.sha256(json.dumps(identity, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
 def lineage(item, sessions):
@@ -246,6 +254,8 @@ def _notify(agent, data, members):
         event = ""
         if request:
             event, item["status"] = "needs_input", "waiting"
+        elif name in ("PreToolUse", "PostToolUse") and item["status"] == "waiting":
+            item["status"] = "running"
         elif name == "UserPromptSubmit":
             event, item["status"] = ("lineage" if item["parent"] else "heartbeat"), "running"
         elif name == "SubagentStart" or (name == "SessionStart" and item["parent"]):
@@ -275,7 +285,7 @@ def _notify(agent, data, members):
                     "children": [{"id": row["id"], "depth": row["depth"], "status": row["status"]}
                                  for row in sessions.values() if row["root"] == item["root"] and row["parent"] and row["task_id"] == item["task_id"]]}
         if request:
-            envelope.update(kind=request[0], prompt_text=request[1])
+            envelope.update(kind=request[0], prompt_text=request[1], request_key=request_identity(data))
         # One canonical spool per event keeps the first prompt and survives a dead worker.
         delivery = delivery_key(envelope)
         spool = rex.STATE / ("grokbot-pending-" + delivery)
@@ -357,7 +367,7 @@ def payload(envelope):
             "agent": envelope["agent"], "requester": envelope["requester"],
             "task_id": envelope.get("task_id") or f"{metadata['repo'] or cwd}:{metadata['branch']}",
             "turn_id": envelope["turn"], "lineage": ancestry, "children": envelope.get("children", []),
-            "untrusted": ["last_message", "prompt_text"], "prompt_text": envelope.get("prompt_text", "")[:1000],
+            "untrusted": list(UNTRUSTED_FIELDS), "prompt_text": envelope.get("prompt_text", "")[:1000],
             "agent_session_id": ancestry["agent_session_id"], "rex_session": envelope["rex_session"],
             "rex_block": envelope["rex_block"], "cwd": cwd, **metadata,
             "last_message": (envelope.get("last_message", str(data.get("last_assistant_message") or ""))[:2000]
@@ -369,7 +379,8 @@ def post(body):
     if body.get("event") not in (*WEBHOOK_EVENTS, "test"):
         return 0
     url, name, value = config()
-    encoded = json.dumps(body).encode()
+    # Apply current safety metadata to cached legacy payloads as well as new ones.
+    encoded = json.dumps({**body, "untrusted": [field for field in UNTRUSTED_FIELDS if field in body]}).encode()
     status = 0
     for _ in range(3):
         connection = None
@@ -393,10 +404,16 @@ def post(body):
 
 
 def delivery_key(envelope):
-    return hashlib.sha256(json.dumps([envelope.get("task_id", ""), envelope["agent"],
+    cached = (envelope.get("body") or {}).get("delivery_key")
+    if isinstance(cached, str) and len(cached) == 64 and all(c in "0123456789abcdef" for c in cached):
+        return cached  # Retries, including pre-upgrade spools, keep the original key.
+    identity = [envelope.get("task_id", ""), envelope["agent"],
                 envelope.get("lineage", {}).get("agent_session_id") or envelope["data"]["session_id"],
                 envelope["turn"], envelope.get("event", "run_finished"), envelope.get("kind", ""),
-                envelope.get("status", "") if envelope.get("event") == "lineage" else ""]).encode()).hexdigest()
+                envelope.get("status", "") if envelope.get("event") == "lineage" else ""]
+    if envelope.get("event") == "needs_input":
+        identity.append(envelope.get("request_key") or request_identity(envelope["data"]))
+    return hashlib.sha256(json.dumps(identity).encode()).hexdigest()
 
 
 def deliver(path):
@@ -528,7 +545,7 @@ def main():
         status = post({"event": "test", "task_id": os.environ.get("GROKBOT_TASK_ID") or
                        f"{metadata['repo'] or os.getcwd()}:{metadata['branch']}",
                        "requester": os.environ.get("GROKBOT_CALLBACK", ""),
-                       "untrusted": ["last_message", "prompt_text"]})
+                       "untrusted": ["task_id"]})
         print(f"HTTP {status}" if status else "HTTP request failed")
         return 0 if 200 <= status < 300 else 1
     except (OSError, ValueError):

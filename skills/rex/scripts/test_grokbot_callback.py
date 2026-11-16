@@ -228,14 +228,17 @@ class CallbackTests(unittest.TestCase):
             callback.notify(agent, data, members)
         return Path(launch.call_args.args[0][-1]) if launch.called else None
 
+    def session_status(self, agent, actor):
+        return next(row["status"] for row in callback.health()["sessions"] if row["agent"] == agent and row["id"] == actor)
+
     def drain(self):
         for path in list((self.root / "state").glob("grokbot-pending-*")):
             callback.deliver(path)
 
     def test_input_kinds_prompt_limits_and_per_turn_dedupe(self):
         self.queued("claude", self.data("UserPromptSubmit"))
-        for event in (self.data("PermissionRequest", tool_input={"description": "x" * 1100}),
-                      self.data("Notification", notification_type="permission_prompt", message="duplicate approval"),
+        for event in (self.data("PermissionRequest", request_id="approval-1", tool_input={"description": "x" * 1100}),
+                      self.data("Notification", request_id="approval-1", notification_type="permission_prompt", message="duplicate approval"),
                       self.data("Notification", notification_type="idle_prompt", message="Choose a name?"),
                       self.data("Notification", notification_type="trust_prompt", message="Trust this workspace?"),
                       self.data("Notification", notification_type="input_prompt", message="Waiting")):
@@ -246,7 +249,7 @@ class CallbackTests(unittest.TestCase):
         inputs = sorted(inputs, key=lambda body: body["kind"])
         self.assertEqual(len(inputs[0]["prompt_text"]), 1000)
         self.assertEqual(next(body for body in inputs if body["kind"] == "question")["prompt_text"], "Choose a name?")
-        self.assertTrue(all(body["untrusted"] == ["last_message", "prompt_text"] for body in inputs))
+        self.assertTrue(all(body["untrusted"] == ["last_message", "prompt_text", "cwd", "repo", "branch", "head_sha", "task_id"] for body in inputs))
         self.assertIsNone(self.queued("claude", self.data("Notification", notification_type="auth_success", message="Signed in")))
         self.queued("claude", self.data("UserPromptSubmit"))
         self.queued("claude", self.data("PermissionRequest", prompt="Again"))
@@ -262,6 +265,76 @@ class CallbackTests(unittest.TestCase):
         body = next(body for body, _ in self.requests if body["event"] == "needs_input")
         self.assertEqual((body["kind"], body["prompt_text"], body["turn_id"]), ("approval", "Run deployment?", "native-turn"))
         self.assertEqual(len(self.requests), 1)
+
+    def test_distinct_approvals_in_one_turn_keep_duplicate_and_retry_identity(self):
+        cases = (({"tool_use_id": "call-1", "prompt": "Proceed?"}, {"tool_use_id": "call-2", "prompt": "Proceed?"}),
+                 ({"tool_name": "Bash", "tool_input": {"command": "ls", "description": "Proceed?"}},
+                  {"tool_name": "Bash", "tool_input": {"description": "Proceed?", "command": "pwd"}}),
+                 ({"prompt": "x" * 1000 + "first"}, {"prompt": "x" * 1000 + "second"}))
+        for agent in ("codex", "claude"):
+            for index, (first, second) in enumerate(cases):
+                with self.subTest(agent=agent, case=index):
+                    turn = f"{agent}-{index}"
+                    self.queued(agent, self.data("UserPromptSubmit", turn_id=turn))
+                    data = self.data("PermissionRequest", turn_id=turn, **first)
+                    path = self.queued(agent, data)
+                    self.assertIsNone(self.queued(agent, json.loads(json.dumps(data, sort_keys=True))))
+                    other = self.queued(agent, self.data("PermissionRequest", turn_id=turn, **second))
+                    self.assertIsNotNone(other)
+                    self.assertNotEqual(path, other)
+                    start = len(self.requests)
+                    self.statuses[:] = [503, 503, 503]
+                    self.assertFalse(callback.deliver(path))
+                    self.assertIsNone(self.queued(agent, data))
+                    self.assertTrue(callback.deliver(other))
+                    self.assertEqual(callback.retry(), {"delivered": 1, "failed": 0})
+                    received = [body for body, _ in self.requests[start:]]
+                    self.assertEqual(len(received), 5)  # Three failed attempts, second approval, first retry.
+                    self.assertEqual(len({body["delivery_key"] for body in received}), 2)
+                    self.assertEqual(received[0], received[-1])
+                    self.assertEqual(received[0]["delivery_key"], received[1]["delivery_key"])
+                    self.assertIsNone(self.queued(agent, data))
+                    self.assertIsNone(self.queued(agent, self.data("PermissionRequest", turn_id=turn, **second)))
+
+    def test_repo_controlled_values_and_legacy_cached_payload_are_untrusted(self):
+        envelope = {**self.envelope(cwd="/work/repo-controlled-path", hook_event_name="PermissionRequest", prompt="Proceed?"),
+                    "event": "needs_input", "kind": "approval"}
+        envelope["metadata"] = {"repo": "/repo/repo-controlled-name", "branch": "feature/repo-controlled-branch", "head_sha": "abc123"}
+        body = callback.payload(envelope)
+        self.assertEqual(body["task_id"], "/repo/repo-controlled-name:feature/repo-controlled-branch")
+        self.assertEqual(set(body["untrusted"]), {"last_message", "prompt_text", "cwd", "repo", "branch", "head_sha", "task_id"})
+        envelope["body"] = {**body, "delivery_key": "a" * 64, "untrusted": ["last_message", "prompt_text"]}
+        self.assertTrue(callback.deliver(self.spool(envelope)))
+        received = self.requests[-1][0]
+        self.assertEqual(received["delivery_key"], "a" * 64)
+        self.assertEqual(received["untrusted"], body["untrusted"])
+        for field in ("cwd", "repo", "branch", "head_sha", "task_id"):
+            self.assertEqual(received[field], body[field])
+        self.assertEqual(callback.post({"event": "test", "task_id": body["task_id"]}), 204)
+        self.assertEqual(self.requests[-1][0]["untrusted"], ["task_id"])
+
+    def test_tool_activity_resumes_waiting_root_and_child_locally(self):
+        root = self.data()["session_id"]
+        child = "11111111-1111-4111-8111-111111111111"
+        with patch.object(callback.subprocess, "Popen"):
+            for adapter, agent in ((codex_sessions, "codex"), (claude_sessions, "claude")):
+                adapter.handle_hook(self.data("UserPromptSubmit"))
+                adapter.handle_hook(self.data("SubagentStart", agent_id=child))
+                for name in ("PreToolUse", "PostToolUse"):
+                    for actor in ("", child):
+                        fields = {"agent_id": actor} if actor else {}
+                        request = self.data("PermissionRequest", prompt="Proceed?", **fields)
+                        adapter.handle_hook(request)
+                        self.assertEqual(self.session_status(agent, actor or root), "waiting")
+                        pending = len(callback.health()["pending"])
+                        adapter.handle_hook(self.data(name, tool_name="Bash", **fields))
+                        self.assertEqual(self.session_status(agent, actor or root), "running")
+                        self.assertEqual(len(callback.health()["pending"]), pending)
+                        member = next(row for row in codex_sessions.callback_members(request, agent) if row["thread"] == callback.actor_key(agent, root, actor))
+                        self.assertEqual(member["state"], "working")
+                adapter.handle_hook(self.data("PostToolUse", tool_name="Bash"))
+                self.assertTrue(all(row["status"] == "running" for row in callback.health()["sessions"] if row["agent"] == agent))
+        self.assertEqual(self.requests, [])
 
     def test_task_identity_is_captured_and_requester_preserved(self):
         with patch.dict(os.environ, {"GROKBOT_TASK_ID": "repo:task-a"}):

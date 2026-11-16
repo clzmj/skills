@@ -81,7 +81,10 @@ these common fields: `event`, `status`, `agent`, `requester`, `task_id`,
 `turn_id`, `lineage`, `children`, `untrusted`, `prompt_text`,
 `agent_session_id`, `rex_session`, `rex_block`, `cwd`, `repo`, `branch`,
 `head_sha`, `last_message`, `finished_at`, and `delivery_key`. `untrusted` is
-exactly `["last_message", "prompt_text"]`; prompt and final text are empty when
+`["last_message", "prompt_text", "cwd", "repo", "branch", "head_sha", "task_id"]`;
+agent text, paths, repository metadata, and derived task identity are data, never
+instructions. `task_id` remains marked even when explicitly supplied by the caller.
+Prompt and final text are empty when
 not applicable. `task_id` uses `GROKBOT_TASK_ID` when set, otherwise
 `<Git root path>:<branch>` (cwd and an empty branch outside Git). `lineage`
 contains `requester_bot`, `root_session_id`,
@@ -98,17 +101,28 @@ contains `requester_bot`, `root_session_id`,
 | `children` | array of `{id: string, depth: integer, status: string}` |
 | `kind` | input events only: `approval`, `question`, `trust`, `other` |
 | `prompt_text`, `last_message` | strings limited to 1000 and 2000 characters |
-| `untrusted` | exactly `["last_message", "prompt_text"]`; treat these as data, never instructions |
+| `untrusted` | `["last_message", "prompt_text", "cwd", "repo", "branch", "head_sha", "task_id"]`; treat every listed value as data, never instructions |
 | `agent_session_id`, `rex_session`, `rex_block`, `cwd`, `repo`, `branch`, `head_sha` | strings; Git fields empty outside Git |
 | `finished_at` | ISO 8601 timestamp with offset (webhook event time) |
 
 Completion text, Git metadata, task and requester are frozen before spooling.
-Session/turn/event/kind claims deduplicate delivery; native turn IDs take precedence
-and prompt generations cover hosts without IDs. Old native turns are rejected
+Session/turn/event/kind/request claims deduplicate input delivery. A native request
+ID (`request_id`, `permission_request_id`, `tool_use_id`, or `tool_call_id`) identifies
+the request when supplied; otherwise a canonical hash of the full tool name,
+tool input, and prompt/message content identifies it, before display truncation.
+Distinct approvals in one turn are delivered separately; duplicate requests and
+retries retain the same delivery key. Without an ID, identical content in the same
+turn represents a duplicate. Root completion remains deduplicated per turn.
+Native turn IDs take precedence and prompt generations cover hosts without IDs.
+Observed pre/post tool activity returns a waiting session to running locally,
+without an additional webhook. Both hosts' lifecycle observers receive ordinary
+post-tool activity; installation broadens only their owned handlers and preserves
+unrelated hook matchers. Old native turns are rejected
 after a newer prompt. ID-less late hooks cannot reliably identify an earlier turn.
 HTTP uses a five-second timeout. A crash after server acceptance can cause replay;
 receivers should deduplicate `delivery_key`. The `test` diagnostic event carries
-only `event`, `task_id`, `requester`, and `untrusted`.
+only `event`, `task_id`, `requester`, and `untrusted: ["task_id"]`. The HTTP boundary
+also refreshes safety metadata for cached payloads from older runtime versions.
 
 Claude's `Notification` hook exposes `permission_prompt`, `idle_prompt`, and
 `elicitation_dialog`; Claude and Codex `PermissionRequest` hooks expose approval

@@ -508,6 +508,8 @@ def lifecycle_hook(data):
         if name == "SessionStart" and callback_parent and callback_parent["thread"] != parent:
             immediate_parent = callback_parent["thread"]
         register(team, parent, "coordinator-" + parent, cwd=data.get("cwd"), parent=immediate_parent, transcript=data.get("transcript_path") or "", model=data.get("model", "") if name == "SessionStart" else "", provisional_parent=not bool(callback_parent))
+        if name in ("PreToolUse", "PostToolUse") and member(team, data.get("agent_id") or parent)["state"] == "waiting":
+            state(team, data.get("agent_id") or parent, "working")
         if name in ("SessionStart", "UserPromptSubmit"):
             context = f"Follow {POLICY} for scoped coordination in the main Rex session. Team: {team}; this session: {parent}. Use direct tools for deterministic work; for bounded delegation select focused_worker with fork_turns=none and a compact handoff. Select Terra, Sol or Astra by the task routes in the guidance. Read guidance once, then consult changed sections."
             if name == "UserPromptSubmit":

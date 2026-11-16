@@ -187,6 +187,8 @@ def lifecycle_hook(data):
     if name in ("TaskCreated", "TaskCompleted"):
         text = f"{data.get('task_id', '')}: {data.get('task_subject', '')}"
     elif name == "PostToolUse":
+        if store.member(team, actor)["state"] == "waiting":
+            store.state(team, actor, "working")
         tool = data.get("tool_name", "")
         # Observe supported native tools, without writing mailbox files or invoking a Codex queue.
         if tool == "SendMessage":
