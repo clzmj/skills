@@ -1,16 +1,48 @@
-# Remediation guidance
+# Typed value remediation
 
-## Choose an owner
+## Representation choices
 
-Use the closest existing module that owns the concept. Export a shared value only when multiple consumers truly use the same concept; keep local values local. Prefer a type-safe closed set when the domain is finite and the language/version/style supports it. Otherwise use a named constant. Reuse an existing import or domain module when that is the established boundary.
+Use the closest existing module, type, or schema as owner. Model finite domain choices as closed sets and structured data as typed records. Parse and validate external JSON, environment, CLI, HTTP, or database input once at its boundary, then pass typed models inward. Preserve exact serialized, API, and wire spellings. Share a value only when consumers share its meaning; do not consolidate ordinary UI copy, CSS classes, import specifiers, or independent test assertions. Prefer an existing schema or generated bindings for cross-language contracts.
 
-Keep constants near their domain instead of collecting unrelated values in a giant global bucket. Ordinary UI copy, CSS utility classes, import paths, and independent test/wire assertions usually should stay where they are. Same spelling can carry different meanings; consolidate only after checking callers and context.
+The examples below are idiomatic options, not a language coverage guarantee or a mandate. Adapt them to supported language versions and local conventions.
 
-Preserve serialized, API, and wire representations exactly. Cross-language values belong in an established schema or generated bindings when one already fits; a few unrelated strings do not justify introducing a generator.
+| Language | Closed set | Record | Boundary parsing | Exhaustive match |
+| --- | --- | --- | --- | --- |
+| Python | `StrEnum` (3.11+) | `dataclass`; `TypedDict` for dictionary-shaped data | Validate/coerce at ingress (for example, Pydantic); `TypedDict` does not validate at runtime | `match` with qualified enum members; static exhaustiveness depends on tooling |
+| TypeScript | `as const` object plus derived union, or string-literal union | `interface`/`type`; discriminated union for variants | Runtime schema such as Zod; types alone do not validate input | Narrow discriminants; check exhaustive switches |
+| JavaScript | Frozen named object | Object/class with documented or runtime-checked shape | Runtime schema or explicit checks | No compile-time exhaustiveness |
+| Go | Defined string type with named constants | `struct` (tags such as `json:"status"` remain literals) | Validate untrusted values at ingress | No enum exhaustiveness; handle defaults |
+| Rust | `enum` | `struct` | Deserialize and validate; serde attributes preserve wire spellings | `match` is exhaustive |
+| Java | `enum` | `record` (or class) | Parse and validate at ingress | Switch exhaustiveness depends on Java version and enum/sealed type |
+| Kotlin | `enum class` or sealed hierarchy | `data class` | Validate during deserialization | `when` on sealed types/enums can be exhaustive |
+| C# | `enum` or closed hierarchy | `record` | Validate deserialized input; enums admit undefined underlying integers | Switch may need a fallback |
+| Swift | `enum` | `struct` | Decode with `Codable`, then validate constraints | `switch` is exhaustive |
+| Ruby | Module constants or validated value object | `Data` (3.2+) or class | Validate at ingress | No built-in exhaustive enum checking |
+| PHP | Backed `enum` (8.1+) | `readonly class` (8.2+) or typed class | Validate/coerce at ingress | Depends on language/tooling version |
+| Elixir | Atoms for known choices; validate before converting untrusted strings | `defstruct` | Validate before atom conversion | Explicit `case` branches; handle unmatched input |
+| SQL | `ENUM` or `CHECK` constraint; lookup table for shared sets | Table row with declared column types | Validate during application parsing; enforce with database constraints | Not applicable |
 
-## Small examples
+## Examples
 
-Choose idioms compatible with the project's supported language version and conventions:
+```python
+from dataclasses import dataclass
+from enum import StrEnum
+
+class Status(StrEnum):
+    OPEN = "open"
+    CLOSED = "closed"
+
+@dataclass(frozen=True)
+class Ticket:
+    status: Status
+```
+
+```ts
+export const Status = { Open: "open", Closed: "closed" } as const;
+export type Status = (typeof Status)[keyof typeof Status];
+
+type Event = { kind: "created"; id: string } | { kind: "closed"; id: string };
+```
 
 ```go
 type Status string
@@ -19,32 +51,8 @@ const (
 	StatusOpen   Status = "open"
 	StatusClosed Status = "closed"
 )
+
+type Ticket struct { Status Status }
 ```
 
-```rust
-enum Status { Open, Closed }
-// If values cross a serialization boundary, retain the existing wire spellings.
-```
-
-```python
-from enum import StrEnum  # Python 3.11+
-
-class Status(StrEnum):
-    OPEN = "open"
-    CLOSED = "closed"
-```
-
-```ts
-export const Status = { Open: "open", Closed: "closed" } as const;
-export type Status = (typeof Status)[keyof typeof Status];
-```
-
-These are options, not a mandate to change representation. For example, retain established Rust serialization attributes and JavaScript/TypeScript wire values.
-
-In plain JavaScript, a named export can provide the shared value without TypeScript syntax:
-
-```js
-export const Status = Object.freeze({ Open: "open", Closed: "closed" });
-```
-
-Some syntax requires literals: static import specifiers and Go struct tags or Rust serialization attributes cannot be replaced with identifier references. Keep those literals valid for their syntax and use constants at runtime boundaries. A Go typed constant does not make a runtime set closed, so validate untrusted inputs at the boundary. In Python `match`, bare `NAME` is a capture pattern; use qualified enum members such as `Status.OPEN` for constant patterns.
+In Python `match`, bare names are capture patterns; use qualified enum members such as `Status.OPEN` for constant patterns. Keep literals required by syntax, such as static import specifiers, Go struct tags, and Rust serialization attributes. Add language-specific examples only when their behavior and minimum version have been checked; scanner support itself does not establish full language support.

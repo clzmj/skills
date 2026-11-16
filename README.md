@@ -6,7 +6,7 @@ Three independently installable personal skills, plus a bootstrap for favorite u
 | --- | --- |
 | `python-tooling` | uv for all Python execution, standalone scripts, dependencies, Ruff, and ty |
 | `rex` | Rex CLI use, visible jobs, agent coordination, and automatic pane cleanup |
-| `anti-strings` | Find repeated literals and review shared domain values for type-safe reuse |
+| `anti-strings` | Audit domain values for closed sets, typed records, and validated boundaries |
 
 All three are self-contained and installable on their own. Python scripts use uv shebangs and inline PEP 723 metadata; entry points run with `uv run --script`.
 
