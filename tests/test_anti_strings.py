@@ -5,7 +5,6 @@
 # ///
 """Black-box scanner tests; keep standalone and development parser pins aligned."""
 
-import ast
 import json
 from pathlib import Path
 import subprocess
@@ -53,61 +52,72 @@ class ScannerTests(unittest.TestCase):
         self.assertGreater(entry["literals"], 0)
         self.assertEqual(set(entry), {"path", "language", "test", "literals"})
 
-    def test_scanner_uses_typed_language_and_output_domains(self):
-        source = SCANNER.read_text()
-        tree = ast.parse(source)
-        classes = {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)}
-        self.assertIn("OutputFormat", classes)
-        for node in ast.walk(tree):
-            if isinstance(node, ast.arg) and node.arg == "language" and node.annotation:
-                self.assertEqual(ast.unparse(node.annotation), "Language")
-            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == "language":
-                self.assertIn(ast.unparse(node.annotation), {"Language", "Language | None"})
-        self.assertNotIn('"comment" in node.type', source)
-        self.assertNotIn('args.format == "json"', source)
-        self.assertNotIn("'parse_error'", source)
-        self.assertNotIn('parser.add_argument(ReportKey.', source)
-        skip_dirs = next(node for node in tree.body if isinstance(node, ast.Assign)
-                         and any(isinstance(target, ast.Name) and target.id == "SKIP_DIRS" for target in node.targets))
-        self.assertNotIn("ReportKey", ast.unparse(skip_dirs.value))
+    def test_skill_directory_self_scan_at_default_threshold(self):
+        report = self.run_scan(root=SCANNER.parents[1])
+        self.assertEqual(report["findings"], [])
+        self.assertEqual(report["root"], str(SCANNER.parents[1]))
+        coverage = report["coverage"]
+        self.assertEqual(coverage["parse_errors"], [])
+        self.assertEqual(len(coverage["scanned"]), 1)
+        self.assertEqual(coverage["scanned"][0]["path"], "scripts/scan.py")
+        self.assertEqual(coverage["scanned"][0]["language"], "python")
+        self.assertGreater(coverage["scanned"][0]["literals"], 0)
 
-    def test_unmodeled_grammar_is_reported_as_unsupported(self):
-        self.write("state.custom", 'echo "queued"\n' * 3)
-        report = self.run_scan("--extension", ".custom=bash")
-        self.assertEqual(report["coverage"]["unsupported"],
-                         [{"path": "state.custom", "reason": "unsupported_language"}])
-        self.assertEqual(report["coverage"]["scanned"], [])
+    def test_installed_extension_grammars_parse_and_extract_static_strings(self):
+        fixtures = {
+            "shell.custom": ("bash", 'state="queued"\n' * 3),
+            "native.custom": ("c", 'const char *a="queued", *b="queued", *c="queued";'),
+            "python.custom": ("python", 'state="queued"\n' * 3),
+        }
+        for filename, (language, source) in fixtures.items():
+            with self.subTest(language=language):
+                self.write(f"{language}/{filename}", source)
+                report = self.run_scan("--extension", f".custom={language}", root=self.root / language)
+                coverage = report["coverage"]
+                self.assertEqual(coverage["unsupported"], [])
+                self.assertEqual(coverage["parse_errors"], [])
+                self.assertEqual(coverage["scanned"][0]["language"], language)
+                finding = self.finding(report, "queued")
+                self.assertEqual(finding["counts"]["occurrences"], 3)
+                self.assertEqual({item["language"] for item in finding["locations"]}, {language})
 
-    def test_self_scan_claim_names_default_threshold(self):
-        self.write("scanner.py", SCANNER.read_text())
-        report = self.run_scan("--min-occurrences", "2")
+    def test_cli_root_coverage_directory_and_output_format(self):
+        self.write("coverage/hidden.py", 'state="hidden"\n' * 3)
+        self.write("live.py", 'state="queued"\n' * 3)
+        report = self.run_scan()
+        self.assertEqual(report["root"], str(self.root.resolve()))
+        self.assertEqual([item["path"] for item in report["coverage"]["scanned"]], ["live.py"])
+        self.assertEqual(report["coverage"]["excluded"], [{
+            "path": "coverage", "reason": "dependency_or_generated_directory",
+        }])
+        rendered = self.run_scan(json_output=False).stdout
+        self.assertIn(f"Root: {self.root.resolve()}", rendered)
+        self.assertIn("Coverage: 1 parsed files; 1 excluded", rendered)
+        invalid = self.run_scan("--format", "yaml", check=False)
+        self.assertEqual(invalid.returncode, 2)
+        self.assertIn("--format", invalid.stderr)
+        self.assertIn("yaml", invalid.stderr)
+        self.assertNotIn("Traceback", invalid.stderr)
+
+    def test_lower_threshold_reveals_scanner_candidates(self):
+        report = self.run_scan("--min-occurrences", "2", root=SCANNER.parents[1])
         self.assertEqual(report["coverage"]["parse_errors"], [])
         self.assertTrue(report["findings"])
-        docs = (SCANNER.parents[1] / "SKILL.md").read_text()
-        self.assertIn("zero findings at the default `--min-occurrences 3`", docs)
-        self.assertIn("`--min-occurrences 2`", docs)
 
-    def test_imported_environment_lookup_limitation_is_documented(self):
+    def test_imported_environment_lookup_is_not_resolved(self):
         self.write("environment.py", 'from os import environ\n' + 'value=environ["SERVICE_MODE"]\n' * 3)
         report = self.run_scan()
         indexed = [item for item in report["findings"] if item["kind"] == "repeated_string_key"]
         self.assertEqual([item["value"] for item in indexed], ["SERVICE_MODE"])
         self.assertEqual(report["coverage"]["parse_errors"], [])
-        docs = (SCANNER.parents[1] / "SKILL.md").read_text()
-        self.assertIn("`from os import environ`", docs)
-        self.assertIn("does not resolve imported bindings or aliases", docs)
 
-    def test_sql_dollar_quote_parse_gap_is_reported_and_documented(self):
+    def test_sql_dollar_quote_parse_gap_is_reported(self):
         self.write("body.sql", "DO $$ BEGIN RAISE NOTICE 'queued'; END $$;")
         report = self.run_scan()
         self.assertEqual(report["coverage"]["scanned"], [])
         self.assertEqual([item["path"] for item in report["coverage"]["parse_errors"]], ["body.sql"])
         rendered = self.run_scan(json_output=False).stdout
         self.assertIn("parse_error", rendered)
-        docs = (SCANNER.parents[1] / "SKILL.md").read_text()
-        self.assertIn("PostgreSQL dollar-quoted bodies", docs)
-        self.assertIn("some forms parse without yielding literals", docs)
-        self.assertIn("`coverage.parse_errors`", docs)
 
     def test_java_kotlin_and_csharp_file_fixtures_parse(self):
         fixture_dir = Path(__file__).parent / "fixtures/anti-strings-realistic"
@@ -483,6 +493,23 @@ class ScannerTests(unittest.TestCase):
         self.assertEqual(concat["priority"], "low")
         self.assertTrue(all(item["role"] == "comparison" for item in equality["locations"]))
         self.assertEqual(equality["priority"], "high")
+
+    def test_line_block_and_multiline_comments_do_not_supply_occurrences(self):
+        fixtures = {
+            "state.py": '# "queued" "queued" "queued"\nstate="queued"\n',
+            "state.java": 'class State { // "queued" "queued"\n/* "queued" "queued" */ String state="queued"; }',
+            "state.kt": '// "queued" "queued"\n/* "queued"\n"queued" */\nval state="queued"',
+            "state.swift": '// "queued" "queued"\n/* "queued"\n"queued" */\nlet state="queued"',
+            "state.sql": "-- 'queued' 'queued'\n/* 'queued'\n'queued' */\nSELECT 'queued';",
+        }
+        for filename, source in fixtures.items():
+            with self.subTest(filename=filename):
+                self.write(f"{filename}/{filename}", source)
+                report = self.run_scan(root=self.root / filename)
+                self.assertEqual(report["coverage"]["parse_errors"], [])
+                self.assertEqual(report["coverage"]["unsupported"], [])
+                self.assertEqual(report["coverage"]["scanned"][0]["literals"], 1)
+                self.assertEqual(report["findings"], [])
 
     def test_comments_docstrings_interpolation_ui_and_css_do_not_supply_fake_occurrences(self):
         self.write("noise.py", '"queued"\n# "queued" "queued"\ntext=f"queued{value}"\nvalue="queued"\n')

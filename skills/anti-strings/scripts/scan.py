@@ -20,7 +20,7 @@ import sys
 from dataclasses import asdict, dataclass
 from dataclasses import field as dataclass_field
 from enum import StrEnum
-from typing import TypeGuard, get_args
+from typing import TypeAlias, TypeGuard, get_args
 from urllib.parse import parse_qsl, urlsplit
 
 from pathspec import GitIgnoreSpec
@@ -30,6 +30,9 @@ from tree_sitter_language_pack import SupportedLanguage, get_parser
 class NodeType(StrEnum):
     ERROR = 'ERROR'
     COMMENT = 'comment'
+    LINE_COMMENT = 'line_comment'
+    BLOCK_COMMENT = 'block_comment'
+    MULTILINE_COMMENT = 'multiline_comment'
     ANNOTATED_ASSIGNMENT = 'annotated_assignment'
     ARGUMENT_LIST = 'argument_list'
     ARGUMENTS = 'arguments'
@@ -194,6 +197,17 @@ class Language(StrEnum):
     SQL = "sql"
 
 
+ScanLanguage: TypeAlias = Language | SupportedLanguage
+
+
+class DirectoryName(StrEnum):
+    COVERAGE = "coverage"
+
+
+class ArgumentName(StrEnum):
+    ROOT = "root"
+
+
 class ExclusionReason(StrEnum):
     DEPENDENCY_OR_GENERATED_DIRECTORY = "dependency_or_generated_directory"
     SENSITIVE_FILENAME = "sensitive_filename"
@@ -291,7 +305,7 @@ class ScanOptions:
     include_tests: bool = False
     min_occurrences: int = 3
     max_file_bytes: int = 1024 * 1024
-    extensions: dict[str, str] = dataclass_field(
+    extensions: dict[str, ScanLanguage | None] = dataclass_field(
         default_factory=lambda: dict(LANGUAGES)
     )
 
@@ -319,7 +333,7 @@ class Location:
     path: str
     line: int
     column: int
-    language: Language
+    language: ScanLanguage
     role: Role
     context: str
 
@@ -340,7 +354,7 @@ class LocatedCandidate(Location):
 class CoverageEntry:
     path: str
     reason: ExclusionReason | None = None
-    language: Language | None = None
+    language: ScanLanguage | None = None
     line: int | None = None
     column: int | None = None
     test: bool | None = None
@@ -403,7 +417,7 @@ class Finding:
         )
 
 
-SKIP_DIRS = {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "vendor", "dist", "build", "target", "coverage", ".next", ".nuxt", ".output", "__pycache__", ".cache", ".terraform", ".aws", ".ssh", ".gnupg", ".secrets", ".doppler", "generated", "gen"}
+SKIP_DIRS = {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "vendor", "dist", "build", "target", DirectoryName.COVERAGE, ".next", ".nuxt", ".output", "__pycache__", ".cache", ".terraform", ".aws", ".ssh", ".gnupg", ".secrets", ".doppler", "generated", "gen"}
 SECRET_NAMES = re.compile(r"(^\.env($|\.)|credentials|secrets?($|[._-])|(^|[._-])(id_rsa|id_ed25519)|\.(pem|key|p12|pfx|keystore)$)", re.I)
 SECRET_CONTEXT = re.compile(r"password|passwd|secret|token|credential|private_?key|api_?key|access_?key|authorization|connection_?string|(^|_)dsn($|_)", re.I)
 SECRET_QUERY = re.compile(r"token|api_?key|signature|credential|password|secret|authorization|access_?key|(^|_)(auth|sig|key)($|_)", re.I)
@@ -568,7 +582,7 @@ def field(node, name, source):
     return text(node.child_by_field_name(name), source)
 
 
-def decode_escapes(body, language: Language):
+def decode_escapes(body, language: ScanLanguage):
     # Go byte escapes belong to a UTF-8 byte string, unlike Unicode escapes.
     byte_output = bytearray()
     characters: list[str] = []
@@ -609,7 +623,7 @@ def decode_escapes(body, language: Language):
     return value
 
 
-def normalize(node, source, language: Language):
+def normalize(node, source, language: ScanLanguage):
     literal = text(node, source)
     if any(
         child.type
@@ -662,7 +676,7 @@ def normalize(node, source, language: Language):
     return None
 
 
-def string_key_index(node, language: Language) -> bool:
+def string_key_index(node, language: ScanLanguage) -> bool:
     """Syntax only: even Go index expressions need not have a map receiver."""
     parent = node.parent
     if parent is None:
@@ -697,7 +711,7 @@ def string_key_index(node, language: Language) -> bool:
     return False
 
 
-def excluded_index_literal(node, source, language: Language) -> bool:
+def excluded_index_literal(node, source, language: ScanLanguage) -> bool:
     """Exclude known non-record lookups and counter targets from both findings."""
     if language in {Language.TYPESCRIPT, Language.TSX} and any(
         owner.type == NodeType.LOOKUP_TYPE for owner in ancestors(node)
@@ -759,7 +773,7 @@ def direct_value(owner, node):
     return value == node
 
 
-def evidence(node, source, language):
+def evidence(node, source, language: ScanLanguage):
     chain = ancestors(node)
     parent = node.parent
     kinds = {item.type for item in chain}
@@ -829,7 +843,7 @@ def evidence(node, source, language):
     comparison = bool(kinds & {NodeType.COMPARISON_OPERATOR, NodeType.CASE_CLAUSE, NodeType.SWITCH_CASE, NodeType.MATCH_ARM, NodeType.LITERAL_PATTERN}) or any(item.type == NodeType.BINARY_EXPRESSION and field(item, FieldName.OPERATOR, source) in {"==", "!=", "===", "!==", "<", ">", "<=", ">=", "in", "instanceof"} for item in chain)
     role = Role.CONSTANT_DEFINITION if candidate else Role.COMPARISON if comparison else Role.MAPPING_KEY if parent and parent.type in {NodeType.PAIR, NodeType.KEY_VALUE} and parent.child_by_field_name(FieldName.KEY) == node else Role.CONFIGURATION if re.sub(r"[^a-z]", "", key.lower()) in SEMANTIC else Role.ARGUMENT if kinds & {NodeType.ARGUMENTS, NodeType.ARGUMENT_LIST} else Role.ASSIGNMENT if key else Role.LITERAL
     inline_test = any(item.type in {NodeType.FUNCTION_DEFINITION, NodeType.FUNCTION_ITEM, NodeType.MOD_ITEM} and (field(item, FieldName.NAME, source).startswith("test_") or field(item, FieldName.NAME, source) == "tests") for item in chain)
-    return role, parent.type if parent else ReportKey.ROOT, " ".join(contexts), candidate, inline_test
+    return role, parent.type if parent else node.type, " ".join(contexts), candidate, inline_test
 
 
 def scan(root: Path, options: ScanOptions):
@@ -849,7 +863,7 @@ def scan(root: Path, options: ScanOptions):
             coverage.excluded.append(CoverageEntry(path=location, reason=ExclusionReason.TEST_FILE))
             continue
         parser_name = options.extensions.get(relative.suffix.lower())
-        if not parser_name:
+        if relative.suffix.lower() not in options.extensions:
             coverage.unsupported.append(
                 CoverageEntry(path=location, reason=ExclusionReason.UNMAPPED_EXTENSION)
             )
@@ -876,18 +890,12 @@ def scan(root: Path, options: ScanOptions):
             )
             continue
         try:
-            if not supported_parser(parser_name):
+            if parser_name is None or not supported_parser(parser_name):
                 coverage.unsupported.append(
                     CoverageEntry(path=location, reason=ExclusionReason.PARSER_UNAVAILABLE)
                 )
                 continue
-            try:
-                language = Language(parser_name)
-            except ValueError:
-                coverage.unsupported.append(
-                    CoverageEntry(path=location, reason=ExclusionReason.UNSUPPORTED_LANGUAGE)
-                )
-                continue
+            language = parser_name
             if language not in parsers: parsers[language] = get_parser(parser_name)
             tree = parsers[language].parse(source)
         except (
@@ -912,7 +920,7 @@ def scan(root: Path, options: ScanOptions):
         stack = [tree.root_node]
         while stack:
             node = stack.pop()
-            if NodeType.COMMENT in node.type: continue
+            if node.type in {NodeType.COMMENT, NodeType.LINE_COMMENT, NodeType.BLOCK_COMMENT, NodeType.MULTILINE_COMMENT}: continue
             if node.type not in LITERALS:
                 stack.extend(reversed(node.named_children)); continue
             if excluded_index_literal(node, source, language):
@@ -1069,7 +1077,7 @@ def markdown(report):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("root", nargs="?", default=".")
+    parser.add_argument(ArgumentName.ROOT, nargs="?", default=".")
     parser.add_argument("--format", type=OutputFormat, choices=tuple(OutputFormat), default=OutputFormat.MARKDOWN)
     parser.add_argument("--output", type=Path, help="Write a report outside the scanned root; stdout is the default")
     parser.add_argument("--include-tests", action="store_true", default=None)
@@ -1080,6 +1088,7 @@ def main():
     root = Path(args.root).expanduser().resolve()
     if not root.is_dir(): parser.error("ROOT must be an existing directory")
     options = ScanOptions()
+    extension_mappings: dict[str, str] = dict(LANGUAGES)
     if args.config:
         try: config = json.loads(args.config.read_text())
         except (OSError, ValueError): parser.error("Cannot read JSON configuration")
@@ -1093,11 +1102,11 @@ def main():
         options.max_file_bytes = config.get(ConfigKey.MAX_FILE_BYTES, options.max_file_bytes)
         if ConfigKey.EXTENSIONS in config:
             if not isinstance(config[ConfigKey.EXTENSIONS], dict): parser.error("extensions must be an object")
-            options.extensions.update(config[ConfigKey.EXTENSIONS])
+            extension_mappings.update(config[ConfigKey.EXTENSIONS])
     for item in args.extension:
         if "=" not in item: parser.error("--extension expects .EXT=GRAMMAR")
         suffix, language = item.split("=", 1)
-        options.extensions[suffix] = language
+        extension_mappings[suffix] = language
     if args.include_tests is not None:
         options.include_tests = args.include_tests
     if args.min_occurrences is not None:
@@ -1125,9 +1134,13 @@ def main():
         and key.startswith(".")
         and isinstance(value, str)
         and re.fullmatch(r"[a-z][a-z0-9_]*", value)
-        for key, value in options.extensions.items()
+        for key, value in extension_mappings.items()
     ):
         parser.error("Invalid extension/parser mapping")
+    options.extensions = {
+        suffix: language if supported_parser(language) else None
+        for suffix, language in extension_mappings.items()
+    }
     output = args.output.expanduser().resolve() if args.output else None
     if output and output.is_relative_to(root): parser.error("Reports must be written outside ROOT to keep the target read-only")
     report = scan(root, options)
