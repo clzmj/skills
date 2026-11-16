@@ -1066,7 +1066,7 @@ def markdown(report):
     if not report[ReportKey.FINDINGS]: lines += ["No repeated candidates met the configured threshold.", ""]
     lines += ["## Coverage details", ""]
     for kind in (ReportKey.EXCLUDED, ReportKey.UNSUPPORTED, ReportKey.PARSE_ERRORS):
-        for entry in coverage[kind]: lines.append(f"- {kind}: {safe(entry[ReportKey.PATH])} — {entry.get(ReportKey.REASON, ExclusionReason.PARSE_ERROR)}")
+        for entry in coverage[kind]: lines.append(f"- {kind}: {safe(entry[ReportKey.PATH])} — {entry[ReportKey.REASON]}")
     lines += [f"- {safe(warning)}" for warning in coverage[ReportKey.WARNINGS]]
     return "\n".join(lines) + "\n"
 

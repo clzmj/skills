@@ -24,7 +24,7 @@ For a second check outside that file, the same judge sampled five previously uns
 ## Audit mode
 
 1. Resolve `scripts/scan.py` relative to this skill's installed directory, then pass the target repository as an absolute path. For a global install, run `uv run --script ~/.agents/skills/anti-strings/scripts/scan.py /absolute/path/to/repo`; from this source checkout, use `uv run --script /absolute/path/to/skills/anti-strings/scripts/scan.py /absolute/path/to/repo`. Markdown is the default; use `--format json` for structured results. Add `--include-tests` when test literals are in scope. To save a report, pass `--output PATH` outside the target root.
-2. Check `coverage.scanned`, `coverage.unsupported`, `coverage.excluded`, `coverage.parse_errors`, and `coverage.warnings` in JSON (or their Markdown summary). State any gaps; parse errors skip the affected file, and a clean report is not evidence about files the scanner did not parse.
+2. Check `coverage.scanned`, `coverage.unsupported`, `coverage.excluded`, `coverage.parse_errors`, and `coverage.warnings` in JSON (or their Markdown summary). Each excluded, unsupported, or parse-error entry includes `path` and a `reason` code, such as `test_file`, `parser_unavailable`, or `parse_error`. Parse-error entries also include `language`, `line`, and `column`; scanned entries do not carry a reason. State any gaps; parse errors skip the affected file, and a clean report is not evidence about files the scanner did not parse.
 3. Inspect candidates at their reported locations and nearby definitions/usages. Group only values with the same domain meaning; rank findings by exact file and line, impact, and confidence. Report findings and recommendations without editing.
 
 ## Brief and review mode
