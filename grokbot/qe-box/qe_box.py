@@ -457,6 +457,7 @@ class Report:
     batch: str | None
     detail: str
     at: datetime
+    notified_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -603,6 +604,11 @@ class Box:
         self.db = sqlite3.connect(path, isolation_level=None, timeout=30)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(Path(__file__).with_name("schema.sql").read_text())
+        with self.transaction():
+            if "notified_at" not in {
+                row[1] for row in self.db.execute("PRAGMA table_info(report)")
+            }:
+                self.db.execute("ALTER TABLE report ADD COLUMN notified_at TEXT")
 
     def close(self) -> None:
         self.db.close()
@@ -1616,13 +1622,13 @@ class Box:
                     "UPDATE delivery SET paused_by=? WHERE id=?",
                     (pause[0], delivery_id),
                 )
-                return Output()
+                return Output(notices=(f"delivery_held:{delivery_id}:paused",))
             try:
                 return Output(plans=(self._deliver(delivery_id, by=by),))
             except Refused as error:
                 if error.reason != BoxRefusal.CLOCK_SKEW_HOLD:
                     raise
-                return Output()
+                return Output(notices=(f"delivery_held:{delivery_id}:{error.reason}",))
 
     def _current_resolution(self, record: FloorRecord) -> int | None:
         if record.state == BoxBatchState.CORRECTION_DUE:
@@ -2145,7 +2151,19 @@ class Box:
         plan_id: str | None = None,
         why: m.NoResultWhy | None = None,
         detail: str = "",
-        _historical: bool = False,
+    ) -> Output:
+        return self._result(
+            line, plan_id=plan_id, why=why, detail=detail, historical=False
+        )
+
+    def _result(
+        self,
+        line: str | None = None,
+        *,
+        plan_id: str | None = None,
+        why: m.NoResultWhy | None = None,
+        detail: str = "",
+        historical: bool,
     ) -> Output:
         result = None
         if line is not None:
@@ -2210,7 +2228,7 @@ class Box:
                         (evidence, plan.delivery_id),
                     )
                 return Output()
-            if result is not None and not _historical and not result["replayed"]:
+            if result is not None and not historical and not result["replayed"]:
                 self._skew(result)
             if result is None:
                 self.db.execute(
@@ -2693,15 +2711,19 @@ class Box:
             if saved["result_b64"] is not None:
                 try:
                     with self._queue_savepoint():
-                        output = self.result(
-                            m.RESULT_PREFIX + saved["result_b64"], _historical=True
+                        output = self._result(
+                            m.RESULT_PREFIX + saved["result_b64"], historical=True
                         )
                     plans.extend(output.plans)
                     notices.extend(output.notices)
                 except Refused as error:
+                    saved_batch = self.db.execute(
+                        "SELECT coalesce(d.batch,json_extract(p.body_json,'$.batch_id')) FROM plan p LEFT JOIN delivery d ON d.id=p.delivery_id WHERE p.id=?",
+                        (saved["plan_id"],),
+                    ).fetchone()
                     self._report(
                         BoxReport.RESULT_REFUSED,
-                        None,
+                        saved_batch[0] if saved_batch else None,
                         f"{saved['plan_id']}: {error.reason}: {error.detail}",
                     )
         status = payload["status"]
@@ -2794,13 +2816,17 @@ class Box:
             )
             plans: list[PlanTicket] = []
             handoffs: list[m.L4Handoff] = []
-            notices = [
-                f"{row[0]}:{row[1]}"
-                for row in self.db.execute(
-                    "SELECT DISTINCT kind,batch FROM report WHERE kind IN (?,?)",
-                    (BoxReport.SYNC_OVERSIZED.value, BoxReport.CARD_CAP_REACHED.value),
+            notices: list[str] = []
+            for report in self._rows(
+                Report,
+                "SELECT * FROM report WHERE kind IN (?,?) AND notified_at IS NULL ORDER BY id",
+                (BoxReport.SYNC_OVERSIZED.value, BoxReport.CARD_CAP_REACHED.value),
+            ):
+                notices.append(f"{report.kind}:{report.batch}")
+                self.db.execute(
+                    "UPDATE report SET notified_at=? WHERE id=?",
+                    (self.clock().isoformat(), report.id),
                 )
-            ]
             for key, _ in self.db.execute(
                 "SELECT key,value FROM box_meta WHERE key LIKE 'ack:%' OR key LIKE 'cancel:%' OR key LIKE 'registered:%' OR key LIKE 'stale:%'"
             ).fetchall():

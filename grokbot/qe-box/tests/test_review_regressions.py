@@ -7,6 +7,8 @@
 
 from copy import deepcopy
 from datetime import timedelta
+import inspect
+from pathlib import Path
 
 from test_registration import BoxTest, entry, revision, progress, box
 from test_decisions import answer
@@ -163,6 +165,7 @@ class ReviewRegressionTests(BoxTest):
         current = self.box.show(value["batch_id"])
         self.assertEqual(len(current["decisions"]), 2)
         row = current["deliveries"][-1]
+        self.assertEqual(output.notices, (f"delivery_held:{row.id}:paused",))
         self.assertEqual(
             (row.state, row.paused_by), (m.DeliveryState.PENDING, takeover)
         )
@@ -183,6 +186,7 @@ class ReviewRegressionTests(BoxTest):
         self.assertFalse(output.plans)
         row = self.box.show(value["batch_id"])["deliveries"][0]
         self.assertEqual(row.state, m.DeliveryState.PENDING)
+        self.assertEqual(output.notices, (f"delivery_held:{row.id}:clock_skew_hold",))
         sync = next(
             p for p in self.box.tick().plans if p.plan["action"] == m.PlanAction.SYNC
         )
@@ -240,6 +244,73 @@ class ReviewRegressionTests(BoxTest):
         self.assertIn(f"sync_oversized:{batch}", output.notices)
         self.assertEqual(self.box.status(), [])
         self.assertIn(f"sync_oversized:{batch}", self.box.tick().notices)
+
+    def test_watchdog_reports_notify_once_per_occurrence_across_restarts(self):
+        for kind in (box.BoxReport.SYNC_OVERSIZED, box.BoxReport.CARD_CAP_REACHED):
+            with self.subTest(kind=kind):
+                batch = str(box.uuid4())
+                notice = f"{kind}:{batch}"
+                self.box._report(kind, batch)
+                self.assertEqual(self.box.tick().notices.count(notice), 1)
+                self.assertNotIn(notice, self.box.tick().notices)
+                reopened = box.Box(
+                    Path(self.temp.name) / "state" / "box.sqlite3",
+                    clock=lambda: self.now,
+                )
+                try:
+                    self.assertNotIn(notice, reopened.tick().notices)
+                    reopened._report(kind, batch)
+                    self.assertEqual(reopened.tick().notices.count(notice), 1)
+                    self.assertNotIn(notice, reopened.tick().notices)
+                finally:
+                    reopened.close()
+
+    def test_existing_report_storage_migrates_idempotently(self):
+        self.box.db.execute("DROP TABLE report")
+        self.box.db.execute(
+            "CREATE TABLE report (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, "
+            "batch TEXT, detail TEXT NOT NULL, at TEXT NOT NULL)"
+        )
+        batch = str(box.uuid4())
+        self.box._report(box.BoxReport.SYNC_OVERSIZED, batch)
+        for expected in (1, 0):
+            reopened = box.Box(
+                Path(self.temp.name) / "state" / "box.sqlite3",
+                clock=lambda: self.now,
+            )
+            try:
+                self.assertEqual(
+                    reopened.tick().notices.count(f"sync_oversized:{batch}"), expected
+                )
+            finally:
+                reopened.close()
+
+    def test_public_result_cannot_bypass_live_clock_check(self):
+        self.assertNotIn("_historical", inspect.signature(box.Box.result).parameters)
+
+    def test_refused_saved_result_is_scoped_to_its_plan_batch(self):
+        for action in (m.PlanAction.ACK, m.PlanAction.SEND):
+            with self.subTest(action=action):
+                value, sibling = entry(), entry()
+                ticket = self.box.register(value).plans[0]
+                self.box.register(sibling)
+                if action == m.PlanAction.SEND:
+                    ticket = self.box.decide(
+                        box.DecisionKind.ANSWER, 3, value["batch_id"], 1, answer(value)
+                    ).plans[0]
+                self.sync(
+                    saved=[dict(plan_id=ticket.plan["plan_id"], result_b64="invalid")]
+                )
+                reports = self.box.show(value["batch_id"])["reports"]
+                refused = [r for r in reports if r.kind == box.BoxReport.RESULT_REFUSED]
+                self.assertEqual(len(refused), 1)
+                self.assertEqual(refused[0].batch, value["batch_id"])
+                self.assertFalse(
+                    any(
+                        r.kind == box.BoxReport.RESULT_REFUSED
+                        for r in self.box.show(sibling["batch_id"])["reports"]
+                    )
+                )
 
     def test_sync_registration_refusal_names_the_actual_reason(self):
         value = entry()
