@@ -13,6 +13,7 @@ from enum import StrEnum
 from collections.abc import Mapping
 from contextlib import closing
 import json
+import logging
 import os
 from pathlib import Path
 import sqlite3
@@ -249,10 +250,22 @@ def launch(command: str, batch: str | None = None) -> None:
 
 
 def handle(
-    value: object, agent: m.AgentKind, store: ledger.Ledger, *, spawn: bool = True
+    value: object,
+    agent: m.AgentKind,
+    store: ledger.Ledger,
+    *,
+    spawn: bool = True,
+    workers: list[str] | None = None,
 ) -> HookOutput:
     if os.environ.get(m.FLAG_ENV) != "1":
         return {}
+
+    def request_worker(batch: str) -> None:
+        if workers is None:
+            launch(broker.Command.WORKER, batch)
+        else:
+            workers.append(batch)
+
     input = m.parse_hook_input(value, agent)
     state = callback.session_state(agent, input.session, input.child)
     if state is None:
@@ -303,7 +316,7 @@ def handle(
                     )
                 )
             if spawn:
-                launch(broker.Command.WORKER, str(batch.id))
+                request_worker(str(batch.id))
         return {}
     adapter = codex_questions if agent is m.AgentKind.CODEX else claude_questions
     if (
@@ -490,7 +503,7 @@ def handle(
             )
     if spawn:
         launch(broker.Command.TICK)
-        launch(broker.Command.WORKER, str(batch.id))
+        request_worker(str(batch.id))
     return {}
 
 
@@ -506,9 +519,10 @@ def main() -> int:
     try:
         value = json.load(sys.stdin)
         with ledger.Ledger(callback.rex.STATE / m.LEDGER_FILE) as store:
-            result = handle(value, m.AgentKind(args.agent), store)
+            workers: list[str] = []
+            result = handle(value, m.AgentKind(args.agent), store, workers=workers)
             # Every hook recovers durable session intents after recording its
-            # own observation. Hooks enqueue work; they never take its lock.
+            # own observation. Check for a live worker before enqueueing one.
             try:
                 input = m.parse_hook_input(value, m.AgentKind(args.agent))
                 actor = callback.actor_key(input.agent, input.session, input.child)
@@ -524,9 +538,15 @@ def main() -> int:
                         m.DeliveryState.DISPATCH_FAILED,
                     ),
                 ).fetchall()
-                for row in pending:
-                    launch(broker.Command.WORKER, row[0])
+                workers.extend(row[0] for row in pending)
+                for batch in dict.fromkeys(workers):
+                    with broker.Broker(store).worker_lock(batch, wait=0) as acquired:
+                        available = acquired is not None
+                    if available:
+                        launch(broker.Command.WORKER, batch)
+                        break
             except Exception:  # noqa: BLE001 - recovery cannot erase an inline decision.
+                logging.getLogger(__name__).error("Question hook recovery failed")
                 try:
                     callback.receipt(callback.Outcome.ENQUEUE_FAILED)
                 except OSError:
