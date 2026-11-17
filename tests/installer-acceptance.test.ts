@@ -127,13 +127,28 @@ for (const update of [false, true]) test(`core-only preserves saved favorite sel
   expect(f.commands().every(command => command.args[3] === realpathSync(root))).toBe(true);
 });
 
-for (const flags of [["--core-only", "--favorites", "UditAkhourii/adhd"], ["--favorites", "UditAkhourii/adhd", "--core-only"], ["--core-only", "--all-favorites"], ["--all-favorites", "--core-only"]]) test(`rejects conflicting core-only favorites: ${flags.join(" ")}`, () => {
+for (const flags of [["--core-only", "--favorites", "UditAkhourii/adhd"], ["--favorites", "UditAkhourii/adhd", "--core-only"], ["--core-only", "--all-favorites"], ["--all-favorites", "--core-only"], ["--core-only", "--skills", "UditAkhourii/adhd:adhd"], ["--skills", "UditAkhourii/adhd:adhd", "--core-only"]]) test(`rejects conflicting core-only selections: ${flags.join(" ")}`, () => {
   const f = fixture("conflict-" + flags[0]), { config } = seedSettings(f), before = readFileSync(config, "utf8");
   const result = f.run([process.execPath, join(root, "scripts/init.ts"), "--yes", "--agents", "codex", ...flags]);
   expect(result.exitCode).toBe(1);
-  expect(result.stderr.toString()).toContain("--core-only cannot be combined with " + (flags.includes("--all-favorites") ? "--all-favorites" : "--favorites"));
+  expect(result.stderr.toString()).toContain("--core-only cannot be combined with " + (flags.includes("--skills") ? "--skills" : flags.includes("--all-favorites") ? "--all-favorites" : "--favorites"));
   expect(readFileSync(config, "utf8")).toBe(before);
   expect(f.commands()).toEqual([]);
+});
+
+for (const update of [false, true]) test(`unattended core-only tolerates old settings without agents or favorites (update=${update})`, () => {
+  const f = fixture("old-settings-" + update);
+  const { config, record } = seedSettings(f);
+  const { agents: _agents, favorites: _favorites, ...oldOptions } = record.options;
+  writeFileSync(config, JSON.stringify({ ...record, options: oldOptions }));
+  const result = f.run([process.execPath, join(root, "scripts/init.ts"), "--yes", "--core-only", "--agents", "codex", ...(update ? ["--update"] : [])]);
+  expect(result.stderr.toString()).toBe("");
+  expect(result.exitCode).toBe(0);
+  const restored: InstallRecord = JSON.parse(readFileSync(config, "utf8"));
+  expect(restored.options.favorites).toBeUndefined();
+  expect(restored.options.packSkills).toEqual(oldOptions.packSkills);
+  expect(restored.ownedPaths[join(f.home, "previous")]).toBe("previous-fingerprint");
+  expect(f.commands().length).toBeGreaterThan(0);
 });
 
 for (const coreOnly of [false, true]) test(`partial failure records ownership and keeps every selection (core-only=${coreOnly})`, () => {
