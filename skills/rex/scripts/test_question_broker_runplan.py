@@ -706,6 +706,36 @@ class RunPlanTests(unittest.TestCase):
             [m.DeliveryState.DISPATCHED],
         )
 
+    def test_claimed_local_answer_signals_floor_disagreement_in_qe_result(self):
+        self.store.transition(str(self.batch.id), m.BatchState.ESCALATING)
+        message = outbound(self.batch)
+        self.store.resolve(resolution(self.batch), (message,))
+        claim = self.store.claim(str(message.id), "fixture-owner", m.Route.CODEX_QUEUE)
+        assert claim is not None
+        output = io.StringIO()
+        with (
+            patch.object(broker.routes, "RouteRunner", return_value=self.runner),
+            redirect_stdout(output),
+        ):
+            code = broker.main(
+                ["run-plan", "--b64", broker.encode(send_plan(self.batch))]
+            )
+        self.assertEqual(code, 0)
+        self.assertTrue(output.getvalue().startswith(m.RESULT_PREFIX))
+        result = m.parse_result(
+            json.loads(base64.urlsafe_b64decode(output.getvalue().split()[1] + "=="))
+        )
+        # §4.4: an accepted SEND with this flag makes the box raise FLOOR_DISAGREEMENT.
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["local_answer_dispatched"])
+        self.assertEqual(result["send"], m.SendOutcome.SENT_NO_ECHO)
+        answer = next(
+            item
+            for item in self.broker.status()["batches"][0]["outbound"]
+            if item["id"] == str(message.id)
+        )
+        self.assertEqual(answer["state"], m.DeliveryState.CLAIMED)
+
     def test_retry_payload_is_immutable_and_reconcile_preserves_text(self):
         request = send_plan(self.batch)
         unknown = broker.Broker(
