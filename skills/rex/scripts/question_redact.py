@@ -61,9 +61,9 @@ PATTERNS: Final = (
     (
         RedactionRule.ASSIGNMENT,
         # Start once per key run, including leading CLI/environment separators.
-        # Preserve the max_token word-boundary exemption at the key's start.
+        # Apply the max_token/max-token exemption after leading separators only.
         re.compile(
-            r"(?<![\w-])(?![_-]*max[_-]token\b)[_-]*(?:[a-z0-9]+[_-])*"
+            r"(?<![\w-])(?![_-]*max[_-]token\b)[_-]*(?:[a-z0-9]+[_-]+)*"
             r"(?:password|passwd|pwd|passphrase|secret(?:[_-](?:access[_-]key|key(?:[_-]base)?))?|token(?:[_-]key)?|api[_-]?key|private[_-]?key)"
             r"(?:[_-](?:prod|production|staging|stage|dev|development|test|eu|value))*"
             r"[\"']?[ \t]*[:=][ \t]*(?:\"[^\"\r\n]*(?:\"|(?=[\r\n]|\Z))|'[^'\r\n]*(?:'|(?=[\r\n]|\Z))|\S+)",
@@ -72,8 +72,11 @@ PATTERNS: Final = (
     ),
     (
         RedactionRule.JWT,
+        # Consume only the first run so dotted candidates can overlap. Each
+        # run is scanned at most three times; redact() locates eyJ or -eyJ.
         re.compile(
-            r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"
+            r"(?<![A-Za-z0-9_-])([A-Za-z0-9_-]+)"
+            r"(?=\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)\b)"
         ),
     ),
 )
@@ -109,10 +112,20 @@ def redact(text: str) -> RedactionResult:
         text = URL_USERINFO.sub(r"\1", text)
     spans: list[tuple[int, int]] = []
     for rule, pattern in PATTERNS:
-        matches = tuple(pattern.finditer(text))
-        if matches:
-            hits.append(rule)
-            spans.extend(match.span() for match in matches)
+        for match in pattern.finditer(text):
+            start, end = match.span()
+            if rule is RedactionRule.JWT:
+                first = match.group(1)
+                offset = 0 if first.startswith("eyJ") else first.find("-eyJ") + 1
+                if not first.startswith("eyJ") and offset == 0:
+                    continue
+                if len(first) - offset < 4:
+                    continue
+                start += offset
+                end = match.end(3)
+            if rule not in hits:
+                hits.append(rule)
+            spans.append((start, end))
     for match in TOKEN.finditer(text):
         if entropy(match.group()) > 4.0:
             if RedactionRule.HIGH_ENTROPY not in hits:

@@ -98,6 +98,10 @@ class RedactionTests(unittest.TestCase):
             ("apiKey_staging", True),
             ("secret_prod_eu", True),
             ("service_db_password", True),
+            ("my__password", True),
+            ("my--password", True),
+            ("x-_password", True),
+            ("Database__Password", True),
             ("TOKEN", True),
             ("token_count", False),
             ("TOKEN-LIMIT", False),
@@ -178,6 +182,22 @@ class RedactionTests(unittest.TestCase):
                 self.assertTrue(result.secret_present)
                 self.assertNotIn(sample, result.text)
                 self.assertIn(redact.REDACTED, result.text)
+
+    def test_jwt_starts_after_hyphens_and_overlapping_dotted_segments(self):
+        for token in (
+            "eyJa.b.c",
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.fixtureSignature",
+        ):
+            for prefix in ("", "x-", "auth-", "tok-", "a.b.", "a.b.x-"):
+                with self.subTest(prefix=prefix, token=token):
+                    result = redact.redact(prefix + token)
+                    self.assertIn(redact.RedactionRule.JWT, result.hits)
+                    self.assertNotIn(token, result.text)
+                    if len(prefix + token) < 32:
+                        self.assertEqual(result.text, prefix + redact.REDACTED)
+        for value in ("xeyJa.b.c", "x_eyJa.b.c", "x-eyJ.b.c", "a.b.c"):
+            with self.subTest(value=value):
+                self.assertNotIn(redact.RedactionRule.JWT, redact.redact(value).hits)
 
     def test_normal_text_and_low_entropy_strings_survive(self):
         text = "Choose a fixture name " + "a" * 48

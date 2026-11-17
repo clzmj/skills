@@ -50,6 +50,9 @@ REDACTION_PREFIXES = {
     redact.RedactionRule.BEARER: ("Bearer ", "Bearer\t"),
     redact.RedactionRule.ASSIGNMENT: (
         " a_",
+        "a__",
+        "a_-",
+        "a-_password_",
         "_a",
         "--api-key",
         "password=",
@@ -80,7 +83,13 @@ REDACTION_PREFIXES = {
         "--max_token",
         "password\t",
     ),
-    redact.RedactionRule.JWT: ("eyJa-", "eyJa.a-", "eyJa.a.a-"),
+    redact.RedactionRule.JWT: (
+        "eyJa-",
+        "eyJa.a-",
+        "eyJa.a.a-",
+        "x-eyJa-",
+        "a.b.",
+    ),
 }
 
 # Each top-level policy alternative has a seed. Nested alternatives share the
@@ -259,10 +268,11 @@ class RegexScalingTests(unittest.TestCase):
     ) -> None:
         timings = []
         for size in (200_000, 800_000):
-            # Generate outside the timing; two trials reduce scheduler noise.
+            # Generate outside timing. Keep two large trials for noise control;
+            # one small trial preserves the same ratio and absolute bounds.
             values = tuple(inputs(size))
             trials = []
-            for _ in range(2):
+            for _ in range(1 if size == 200_000 else 2):
                 started = time.perf_counter()
                 for value in values:
                     operation(value)
