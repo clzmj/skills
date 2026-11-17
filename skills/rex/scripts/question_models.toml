@@ -6,7 +6,7 @@
 # as evidence but do not define current reservations.
 # Calibrated capabilities only; GROKBOT_QE remains off until operator activation.
 [models.haiku]
-enabled = true
+enabled = false
 bounded = true
 max_turns = 4
 reservation_validated = true
@@ -21,7 +21,7 @@ evidence = "tests/qe/hooks/claude-p12-read-bearing-calibration.json; docs/qe/que
 
 # Initial n=3 empirical nearest-rank p95; small sample, re-measure at 50 attempts.
 [models.sonnet]
-enabled = true
+enabled = false
 bounded = true
 max_turns = 4
 reservation_validated = true

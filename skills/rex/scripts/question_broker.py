@@ -1281,11 +1281,16 @@ class Broker:
         batch: m.QuestionBatch,
         output: answerers.AnswererOutput,
         ref: m.AnswererRef,
-    ) -> m.Resolution:
+    ) -> m.Resolution | None:
         with self.store.transaction():
             current = self.store.get_batch(str(batch.id))
+            # ACK/SEND may have won ownership since the worker's eligibility check.
+            if current.state not in {m.BatchState.OPEN, m.BatchState.ESCALATING}:
+                return None
             if current.context != batch.context:
                 raise ValueError("stale answer context")
+            if current.state is m.BatchState.OPEN:
+                self.store.transition(str(batch.id), m.BatchState.ESCALATING)
             rev = m.ResolutionRev(
                 self.store.db.execute(
                     "SELECT coalesce(max(rev),0)+1 FROM resolution WHERE batch=?",
@@ -1313,7 +1318,7 @@ class Broker:
                 token,
                 child_actor=child,
             )
-            # P5 parked answers remain BLOCKED. Only the verified Codex queue path is local.
+            # Deliberate route guard for future callers: P5 parked answers remain BLOCKED.
             if batch.asker.agent is not m.AgentKind.CODEX:
                 raise ValueError("no verified local route")
             outbound = m.OutboundMessage(
@@ -1416,7 +1421,13 @@ class Broker:
                     entry = register()
                     if entry is None:
                         return False
-                    self.ladder_progress(self.store.get_batch(batch_id), reason=reason)
+                    escalated = self.store.db.execute(
+                        "SELECT escalated FROM batch WHERE id=?", (batch_id,)
+                    ).fetchone()[0]
+                    if escalated is None:
+                        self.ladder_progress(
+                            self.store.get_batch(batch_id), reason=reason
+                        )
                     self.store.take_ownership(
                         batch_id,
                         max(deterministic.floor, m.EscalationLevel.L3_PRINCIPAL),
@@ -1705,12 +1716,11 @@ class Broker:
                     ):
                         escalate(m.EscalationReason.CATEGORY_FLOOR)
                         break
-                    if current.state is m.BatchState.OPEN:
-                        self.store.transition(batch_id, m.BatchState.ESCALATING)
                     eligible = rejection is None
                     if eligible:
                         resolution = self.resolve_local(batch, output, ref)
-                        self.ladder_progress(current, local=resolution)
+                        if resolution is not None:
+                            self.ladder_progress(current, local=resolution)
                         break
                     if level is m.EscalationLevel.L2_NORMAL:
                         escalate(rejection or m.EscalationReason.ANSWER_REJECTED)
@@ -2002,6 +2012,7 @@ class Broker:
                 return False
             self.store.ingest_events(self.store.path.parent / m.EVENTS_DIR)
             self.store.recover_claims(at)
+            self.store.sweep_budget_reservations(at=at)
             for batch in self.store.batches():
                 if batch.state not in ledger.TERMINAL and not self.store.session_alive(
                     batch.asker.actor

@@ -50,6 +50,73 @@ class BudgetTests(unittest.TestCase):
                 (100, 100, "0.10", "0.10"),
             )
 
+    def test_sweep_settles_only_expired_reservations_as_spent(self):
+        at = datetime(2026, 1, 2, 12, tzinfo=timezone.utc)
+        first = self.reserve(at=at)
+        self.store.reserve_budget(
+            "other-task", model=model.Model.SONNET, tokens=50, usd="0.05", at=at
+        )
+
+        self.assertEqual(
+            self.store.sweep_budget_reservations(at=at + ledger.timedelta(minutes=11)),
+            2,
+        )
+        self.assertEqual(
+            self.store.sweep_budget_reservations(at=at + ledger.timedelta(minutes=12)),
+            0,
+        )
+        self.assertEqual(
+            self.store.db.execute(
+                "SELECT settled FROM budget_reservation WHERE id=?", (first,)
+            ).fetchone()[0],
+            1,
+        )
+        for scope, key, tokens in (
+            ("task", "task", 100),
+            ("task", "other-task", 50),
+            ("day", "2026-01-02", 150),
+        ):
+            row = self.store.db.execute(
+                "SELECT * FROM budget WHERE scope=? AND key=?", (scope, key)
+            ).fetchone()
+            self.assertEqual((row["tokens_reserved"], row["tokens_spent"]), (0, tokens))
+            self.assertEqual(Decimal(row["usd_reserved"]), Decimal(0))
+            self.assertEqual(Decimal(row["usd_spent"]), Decimal(tokens) / 1000)
+
+    def test_sweep_does_not_expire_live_or_recent_reservations(self):
+        at = datetime(2026, 1, 2, 12, tzinfo=timezone.utc)
+        reservation = self.reserve(at=at)
+        self.assertEqual(
+            self.store.sweep_budget_reservations(at=at + ledger.timedelta(minutes=9)), 0
+        )
+        self.assertEqual(
+            self.store.sweep_budget_reservations(at=at + ledger.timedelta(minutes=10)),
+            0,
+        )
+        self.assertEqual(
+            self.store.db.execute(
+                "SELECT settled FROM budget_reservation WHERE id=?", (reservation,)
+            ).fetchone()[0],
+            0,
+        )
+
+    def test_tick_sweeps_crashed_worker_budget_even_with_activation_off(self):
+        import os
+        from unittest.mock import patch
+        import question_broker as broker
+
+        at = datetime(2026, 1, 2, 12, tzinfo=timezone.utc)
+        self.reserve(at=at)
+        with patch.dict(os.environ, {model.FLAG_ENV: "0"}):
+            worker = broker.Broker(
+                self.store, clock=lambda: at + ledger.timedelta(minutes=11)
+            )
+            self.assertTrue(worker.tick())
+        row = self.store.db.execute(
+            "SELECT * FROM budget WHERE scope='task'"
+        ).fetchone()
+        self.assertEqual((row["tokens_reserved"], row["tokens_spent"]), (0, 100))
+
     def test_two_overruns_block_same_model_and_day_only(self):
         at = datetime(2026, 1, 2, 12, tzinfo=timezone.utc)
         for usage in (
@@ -82,6 +149,7 @@ class BudgetTests(unittest.TestCase):
                 "task", model=model.Model.HAIKU, tokens=1, usd="0"
             )
             self.assertIsNotNone(reservation)
+            assert reservation is not None
             if index % 2:
                 self.store.settle_budget(
                     reservation, usage=model.Usage(1, 0, Decimal(0))
@@ -96,6 +164,7 @@ class BudgetTests(unittest.TestCase):
         first = self.store.reserve_budget(
             "task", model=model.Model.HAIKU, tokens=400_000, usd="0"
         )
+        assert first is not None
         self.store.settle_budget(first, usage=model.Usage(300_000, 0, Decimal(0)))
         self.assertIsNotNone(
             self.store.reserve_budget(
@@ -112,6 +181,7 @@ class BudgetTests(unittest.TestCase):
         first = self.store.reserve_budget(
             "task", model=model.Model.HAIKU, tokens=0, usd="1.00"
         )
+        assert first is not None
         with ledger.Ledger(self.store.path) as other:
             self.assertIsNotNone(
                 other.reserve_budget(
@@ -156,6 +226,7 @@ class BudgetTests(unittest.TestCase):
 
 
 class ClassificationLedgerTests(unittest.TestCase):
+    store: ledger.Ledger
     setUp = BudgetTests.setUp
 
     def open(self, call="call-1"):
@@ -181,6 +252,7 @@ class ClassificationLedgerTests(unittest.TestCase):
         )
         with ledger.Ledger(self.store.path) as reopened:
             pending = reopened.classification_pending(str(batch.id), batch.rev)
+            assert pending is not None
             self.assertEqual(
                 (
                     pending.remote,
@@ -197,12 +269,11 @@ class ClassificationLedgerTests(unittest.TestCase):
         self.store.queue_classification(
             str(batch.id), remote="next", brief=None, root_session="root"
         )
-        self.assertEqual(
-            self.store.classification_pending(str(batch.id), batch.rev).brief, brief
-        )
-        self.assertEqual(
-            self.store.classification_pending(str(batch.id), newer.rev).remote, "next"
-        )
+        previous = self.store.classification_pending(str(batch.id), batch.rev)
+        current = self.store.classification_pending(str(batch.id), newer.rev)
+        assert previous is not None and current is not None
+        self.assertEqual(previous.brief, brief)
+        self.assertEqual(current.remote, "next")
 
     def test_apply_uses_raw_floor_without_persisting_conservative_read(self):
         batch = self.open()
@@ -236,7 +307,10 @@ class ClassificationLedgerTests(unittest.TestCase):
         ):
             with self.assertRaises(ValueError):
                 self.store.apply_classification(
-                    str(batch.id), batch.rev, batch.context, invalid
+                    str(batch.id),
+                    batch.rev,
+                    batch.context,
+                    invalid,  # ty: ignore[invalid-argument-type] -- exercise runtime validation
                 )
         self.assertFalse(self.store.get_batch(str(batch.id)).classification.classified)
 

@@ -24,12 +24,13 @@ class CapabilityTests(unittest.TestCase):
         configs = a.load_models()
         for model in (Model.HAIKU, Model.SONNET):
             config = configs[model]
+            self.assertFalse(config.enabled)
             self.assertTrue(
-                config.enabled
-                and config.bounded
+                config.bounded
                 and config.tools_validated
                 and config.reservation_validated
             )
+            assert config.bounds is not None
             self.assertEqual(config.bounds.max_turns, 4)
         for model in (Model.GPT_LUNA, Model.GPT_SOL):
             self.assertFalse(configs[model].enabled or configs[model].bounded)
@@ -54,6 +55,9 @@ class CapabilityTests(unittest.TestCase):
             mutate("bounded", '"true"'),
             mutate("reservation_validated", '"false"'),
             mutate("tools_validated", '"false"'),
+            mutate("tools_validated", "false").replace(
+                "enabled = false", "enabled = true", 1
+            ),
             mutate("max_turns", "true"),
             mutate("max_turns", "0"),
             mutate("max_turns", "-1"),
@@ -63,7 +67,6 @@ class CapabilityTests(unittest.TestCase):
             mutate("reserve_usd", '"NaN"'),
             mutate("reserve_usd", '"-1"'),
             mutate("reserve_usd", "0.01"),
-            mutate("tools_validated", "false"),
             source.replace("[models.sonnet]", "[models.unknown]", 1),
             source[: source.index("[models.sonnet]")],
             mutate("enabled", "true\nunknown = true"),
@@ -112,12 +115,14 @@ class CapabilityTests(unittest.TestCase):
         for model in (Model.HAIKU, Model.SONNET):
             samples = [sample for sample in raw["samples"] if sample["model"] == model]
             self.assertEqual(len(samples), 3)
+            bounds = configs[model].bounds
+            assert bounds is not None
             self.assertEqual(
-                configs[model].bounds.reserve_tokens,
+                bounds.reserve_tokens,
                 max(sample["tokens"] for sample in samples),
             )
             self.assertEqual(
-                configs[model].bounds.reserve_usd,
+                bounds.reserve_usd,
                 max(Decimal(sample["usd"]) for sample in samples),
             )
             self.assertEqual(metadata[model]["reservation_samples"], 3)
@@ -260,7 +265,7 @@ class InvocationTests(unittest.TestCase):
             "total_cost_usd": ".001",
         }
         self.stub(
-            'import json, os, sys\nassert "--no-session-persistence" in sys.argv\nassert json.loads(sys.argv[sys.argv.index("--json-schema")+1])["type"]=="object"\nassert sys.argv[sys.argv.index("--tools")+1]=="Read,Grep,Glob"\nassert "GROKBOT_CALLBACK" not in os.environ\nassert "REX_SESSION" not in os.environ\nassert "OTHER_SECRET" not in os.environ\nassert "UNRELATED_SETTING" not in os.environ\nassert os.environ["USER"]=="qe-test-user"\nassert os.environ["LOGNAME"]=="qe-test-login"\nassert "--strict-mcp-config" in sys.argv\nassert sys.argv[sys.argv.index("--permission-mode")+1]=="dontAsk"\nprint('
+            'import json, os, sys\nassert "--no-session-persistence" in sys.argv\nassert json.loads(sys.argv[sys.argv.index("--json-schema")+1])["type"]=="object"\nassert sys.argv[sys.argv.index("--tools")+1]=="Read,Grep,Glob"\nassert "GROKBOT_CALLBACK" not in os.environ\nassert "REX_SESSION" not in os.environ\nassert "OTHER_SECRET" not in os.environ\nassert "UNRELATED_SETTING" not in os.environ\nassert "USER" not in os.environ\nassert "LOGNAME" not in os.environ\nassert "--strict-mcp-config" in sys.argv\nassert sys.argv[sys.argv.index("--permission-mode")+1]=="dontAsk"\nprint('
             + repr(json.dumps(payload))
             + ")\n"
         )
@@ -290,6 +295,7 @@ class InvocationTests(unittest.TestCase):
         self.assertEqual(self.store.reservations, [])
 
     def test_timeout_kills_process_and_retries_when_worker_budget_allows(self):
+        assert self.config.bounds is not None
         self.runner.configs = {
             m.Model.HAIKU: replace(
                 self.config,
@@ -321,6 +327,7 @@ class InvocationTests(unittest.TestCase):
         self.assertFalse(self.store.reservations)
 
     def test_child_process_group_is_killed_and_guard_fd_inherited(self):
+        assert self.config.bounds is not None
         self.runner.configs = {
             m.Model.HAIKU: replace(
                 self.config,
@@ -442,6 +449,31 @@ class InvocationTests(unittest.TestCase):
             self.assertEqual(result.reason, m.EscalationReason.NO_ANSWERER)
         self.assertFalse(self.store.reservations)
 
+    def test_popen_oserror_releases_reservation_without_spend(self):
+        self.runner.executable = str(self.root / "missing-answerer")
+        result = self.runner.invoke(
+            batch(self.root), m.EscalationLevel.L1_CHEAP, "Choose tabs."
+        )
+        self.assertEqual(result.reason, m.EscalationReason.ANSWERER_FAILED)
+        self.assertEqual(len(self.store.reservations), 2)
+        self.assertEqual(
+            self.store.settlements,
+            [("1", m.Usage(0, 0, Decimal(0))), ("2", m.Usage(0, 0, Decimal(0)))],
+        )
+
+    def test_wait_callback_before_launch_has_no_reservation(self):
+        error = ValueError("registration unavailable")
+        with self.assertRaises(ValueError) as raised:
+            self.runner.invoke(
+                batch(self.root),
+                m.EscalationLevel.L1_CHEAP,
+                "Choose tabs.",
+                on_wait=lambda: (_ for _ in ()).throw(error),
+            )
+        self.assertIs(raised.exception, error)
+        self.assertEqual(self.store.reservations, [])
+        self.assertEqual(self.store.settlements, [])
+
     def test_registration_callback_failure_is_reraised_after_kill_and_settle(self):
         import signal
 
@@ -501,6 +533,7 @@ class InvocationTests(unittest.TestCase):
     def test_timeout_retries_only_with_full_invocation_window_left(self):
         import time
 
+        assert self.config.bounds is not None
         self.runner.configs = {
             m.Model.HAIKU: replace(
                 self.config,

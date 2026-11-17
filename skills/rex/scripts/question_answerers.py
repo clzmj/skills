@@ -33,9 +33,7 @@ MAX_PROMPT_BYTES = 24 * 1024
 MAX_CONCURRENT_ANSWERERS = 2
 MIN_USEFUL_SECONDS = 15.0
 ROOT = Path(__file__).parent
-# USER/LOGNAME are the narrow OS identity exception required by calibrated
-# vendor login discovery; no other ambient environment is inherited.
-ESSENTIAL_ENV = frozenset(("PATH", "HOME", "LANG", "TMPDIR", "USER", "LOGNAME"))
+ESSENTIAL_ENV = frozenset(("PATH", "HOME", "LANG", "TMPDIR"))
 VENDOR_AUTH = {
     m.AnswererKind.CLAUDE_PRINT: frozenset(
         ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
@@ -437,7 +435,7 @@ def model_family_matches(raw: object, model: m.Model) -> bool:
 
 
 def answerer_environment(kind: m.AnswererKind) -> dict[str, str]:
-    """Return the scrubbed production environment, including approved OS identity."""
+    """Return only the frozen spec allowlist and approved vendor auth values."""
     return {
         k: v for k, v in os.environ.items() if k in ESSENTIAL_ENV | VENDOR_AUTH[kind]
     }
@@ -563,6 +561,7 @@ class Answerers:
         bounds = config.bounds
         assert bounds is not None
         results = []
+        # ponytail: CLAUDE_PRINT is hard-coded until Codex has validated bounds.
         kind = m.AnswererKind.CLAUDE_PRINT
         env = answerer_environment(kind)
         argv = build_command(config, executable=self.executable)
@@ -667,6 +666,8 @@ class Answerers:
                     except ProcessLookupError:
                         pass
                     process.wait()
+                if process is None:
+                    usage = m.Usage(0, 0, Decimal(0))
                 self.store.settle_budget(reservation, usage=usage)
             outcome = (
                 m.AttemptOutcome.REJECTED

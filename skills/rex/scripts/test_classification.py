@@ -102,6 +102,99 @@ class WorkerLadder(ClassificationAdmission):
         (progress,) = self.store.due_progress()
         self.assertEqual(progress["local_resolution"], 1)
 
+    def test_box_ack_between_eligibility_and_resolution_finishes_worker(self):
+        import json
+        import question_delivery as delivery
+        import question_ledger as ledger
+        from unittest.mock import patch
+
+        self.data.write_text(json.dumps(self.payload()))
+        self.detect()
+        (batch,) = self.store.batches()
+        resolve = self.worker.resolve_local
+
+        def ack_then_resolve(batch, output, ref):
+            (entry,) = self.store.due_registrations()
+            with ledger.Ledger(self.store.path) as other:
+                other.ack_registration(
+                    m.AckBody(
+                        batch_id=str(batch.id),
+                        batch_rev=batch.rev,
+                        content_digest=entry["content_digest"],
+                        progress_seq=0,
+                        owned=True,
+                        floor=m.EscalationLevel.L3_PRINCIPAL,
+                    )
+                )
+            return resolve(batch, output, ref)
+
+        dispatch = delivery.Delivery.dispatch_batch_locked
+        with (
+            patch.object(self.worker, "resolve_local", side_effect=ack_then_resolve),
+            patch.object(
+                delivery.Delivery,
+                "dispatch_batch_locked",
+                autospec=True,
+                side_effect=dispatch,
+            ) as dispatched,
+            patch("question_broker.time.sleep"),
+            patch.object(self.worker, "digest", return_value=[]) as digest,
+        ):
+            result = self.worker.worker(str(batch.id))
+        self.assertEqual(result.state, m.BatchState.BOX_OWNED)
+        self.assertEqual(
+            self.store.db.execute("SELECT count(*) FROM resolution").fetchone()[0], 0
+        )
+        self.assertFalse(
+            any(
+                o.purpose is m.OutboundPurpose.ANSWER
+                for o in self.store.outbounds(str(batch.id))
+            )
+        )
+        self.assertEqual(dispatched.call_count, 2)
+        digest.assert_called_once_with(batch.asker.task)
+
+    def test_timeout_and_failed_classifier_emit_one_escalation_snapshot(self):
+        import question_answerers as a
+        from datetime import timedelta
+        from unittest.mock import patch
+
+        self.detect()
+        (batch,) = self.store.batches()
+        self.worker.clock = lambda: (
+            batch.opened_at + m.CLASSIFY_WAIT + timedelta(seconds=1)
+        )
+        failed = a.AnswerAttempt(
+            m.Model.HAIKU, m.AttemptOutcome.FAILED, m.EscalationReason.TIMEOUT
+        )
+        with patch.object(self.adapter, "invoke", return_value=failed):
+            result = self.worker.worker(str(batch.id), spool_digest=False)
+        self.assertEqual(result.state, m.BatchState.BOX_OWNED)
+        self.assertEqual(
+            self.store.db.execute(
+                "SELECT count(*) FROM progress WHERE batch=?", (str(batch.id),)
+            ).fetchone()[0],
+            1,
+        )
+
+    def over_cap_classifier_case(self, topics):
+        result = self.run_worker(self.payload(sensitive_topics=topics))
+        self.assertEqual(result.state, m.BatchState.BOX_OWNED)
+        self.assertFalse(result.classification.classified)
+        self.assertGreaterEqual(result.classification.floor, 3)
+        (entry,) = self.store.due_registrations()
+        self.assertFalse(entry["classified"])
+        self.assertEqual(entry["sensitive_topics"], [])
+        self.assertEqual(
+            self.store.db.execute("SELECT count(*) FROM resolution").fetchone()[0], 0
+        )
+
+    def test_over_cap_classifier_topic_count_registers_unclassified(self):
+        self.over_cap_classifier_case(["x"] * (m.SENSITIVE_TOPICS_MAX + 1))
+
+    def test_over_cap_classifier_topic_bytes_registers_unclassified(self):
+        self.over_cap_classifier_case(["界" * (m.SENSITIVE_TOPIC_MAX // 3 + 1)])
+
     def test_low_confidence_l1_uses_stronger_other_vendor(self):
         first = self.payload()
         first["answers"][0]["confidence"] = 0.8
@@ -150,6 +243,8 @@ class WorkerLadder(ClassificationAdmission):
         (entry,) = self.store.due_registrations()
         self.assertFalse(entry["classified"])
         (progress,) = self.store.due_progress()
+        assert progress["floor_raise"] is not None
+        assert progress["floor_raise"]["classification"] is not None
         self.assertEqual(
             progress["floor_raise"]["cause"], m.FloorRaiseCause.LATE_CLASSIFICATION
         )
@@ -166,6 +261,7 @@ class WorkerLadder(ClassificationAdmission):
             reservation = self.store.reserve_budget(
                 "fixture", model=m.Model.HAIKU, tokens=1, usd="0"
             )
+            assert reservation is not None
             self.store.settle_budget(reservation, usage=None)
         result = self.run_worker(self.payload())
         self.assertEqual(result.state, m.BatchState.BOX_OWNED)
@@ -186,6 +282,7 @@ class WorkerLadder(ClassificationAdmission):
         (entry,) = self.store.due_registrations()
         self.assertEqual(entry["mac_floor"], 1)
         (progress,) = self.store.due_progress()
+        assert progress["floor_raise"] is not None
         self.assertEqual(progress["floor_raise"]["floor"], 4)
 
     def test_completed_l1_does_not_time_out_while_l2_runs(self):
@@ -350,6 +447,7 @@ class WorkerLadder(ClassificationAdmission):
         self.assertEqual(len(entries), 1)
         self.assertFalse(entries[0]["classified"])
         (progress,) = [p for p in self.store.due_progress() if p["batch_rev"] == 2]
+        assert progress["floor_raise"] is not None
         self.assertEqual(progress["floor_raise"]["floor"], 4)
         self.assertEqual(self.log.read_text().splitlines(), ["haiku"])
         provenance = [
