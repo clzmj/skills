@@ -243,27 +243,91 @@ class ReviewRegressionTests(BoxTest):
         output = self.sync(oversized=[batch])
         self.assertIn(f"sync_oversized:{batch}", output.notices)
         self.assertEqual(self.box.status(), [])
-        self.assertIn(f"sync_oversized:{batch}", self.box.tick().notices)
+        self.assertNotIn(f"sync_oversized:{batch}", self.box.tick().notices)
 
-    def test_watchdog_reports_notify_once_per_occurrence_across_restarts(self):
+    def test_notify_once_repeated_public_sync_and_tick(self):
+        batch = str(box.uuid4())
+        notices = []
+        for _ in range(2):
+            notices.extend(self.sync(oversized=[batch]).notices)
+            notices.extend(self.box.tick().notices)
+        self.assertEqual(notices.count(f"sync_oversized:{batch}"), 1)
+        reopened = box.Box(
+            Path(self.temp.name) / "state" / "box.sqlite3",
+            clock=lambda: self.now,
+        )
+        self.box.close()
+        self.box = reopened
+        self.addCleanup(reopened.close)
+        self.assertNotIn(f"sync_oversized:{batch}", self.box.tick().notices)
+        self.assertNotIn(
+            f"sync_oversized:{batch}", self.sync(oversized=[batch]).notices
+        )
+
+    def test_notify_once_repeated_refused_card_intent(self):
+        value = entry()
+        batch = value["batch_id"]
+        self.box.register(value)
+        self.box.handoff("fixture", "jim")
+        card = self.box.card_intent("fixture", "jim", by="jim")
+        for _ in range(m.MAX_ABANDONED_CARD_GENERATIONS):
+            self.now += timedelta(minutes=10)
+            card = self.box.card_intent("fixture", "jim", reconciles=card.gen, by="jim")
+        self.now += timedelta(minutes=10)
+        notices = []
+        for _ in range(2):
+            self.assertRefused(
+                box.BoxRefusal.CARD_CAP_REACHED,
+                self.box.card_intent,
+                "fixture",
+                "jim",
+                reconciles=card.gen,
+                by="jim",
+            )
+            notices.extend(self.box.tick().notices)
+        self.assertEqual(notices.count(f"card_cap_reached:{batch}"), 1)
+        self.assertNotIn(f"card_cap_reached:{batch}", self.box.tick().notices)
+
+    def test_notify_once_legacy_duplicate_rows(self):
+        self.box.db.execute("DROP TABLE report")
+        self.box.db.execute(
+            "CREATE TABLE report (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, "
+            "batch TEXT, detail TEXT NOT NULL, at TEXT NOT NULL)"
+        )
+        batch = str(box.uuid4())
         for kind in (box.BoxReport.SYNC_OVERSIZED, box.BoxReport.CARD_CAP_REACHED):
-            with self.subTest(kind=kind):
-                batch = str(box.uuid4())
-                notice = f"{kind}:{batch}"
-                self.box._report(kind, batch)
-                self.assertEqual(self.box.tick().notices.count(notice), 1)
-                self.assertNotIn(notice, self.box.tick().notices)
-                reopened = box.Box(
-                    Path(self.temp.name) / "state" / "box.sqlite3",
-                    clock=lambda: self.now,
-                )
-                try:
-                    self.assertNotIn(notice, reopened.tick().notices)
-                    reopened._report(kind, batch)
-                    self.assertEqual(reopened.tick().notices.count(notice), 1)
-                    self.assertNotIn(notice, reopened.tick().notices)
-                finally:
-                    reopened.close()
+            self.box.db.executemany(
+                "INSERT INTO report(kind,batch,detail,at) VALUES (?,?,?,?)",
+                [(kind.value, batch, "legacy", self.now.isoformat())] * 3,
+            )
+        reopened = box.Box(
+            Path(self.temp.name) / "state" / "box.sqlite3",
+            clock=lambda: self.now,
+        )
+        try:
+            notices = reopened.tick().notices
+            for kind in (box.BoxReport.SYNC_OVERSIZED, box.BoxReport.CARD_CAP_REACHED):
+                with self.subTest(kind=kind):
+                    self.assertEqual(notices.count(f"{kind}:{batch}"), 1)
+            self.assertIsNone(
+                reopened.db.execute(
+                    "SELECT 1 FROM report WHERE notified_at IS NULL"
+                ).fetchone()
+            )
+            self.assertFalse(reopened.tick().notices)
+        finally:
+            reopened.close()
+
+    def test_notify_once_second_batch_is_independent(self):
+        batches = [str(box.uuid4()), str(box.uuid4())]
+        notices = []
+        for batch in batches:
+            for _ in range(2):
+                notices.extend(self.sync(oversized=[batch]).notices)
+                notices.extend(self.box.tick().notices)
+        for batch in batches:
+            with self.subTest(batch=batch):
+                self.assertEqual(notices.count(f"sync_oversized:{batch}"), 1)
 
     def test_existing_report_storage_migrates_idempotently(self):
         self.box.db.execute("DROP TABLE report")

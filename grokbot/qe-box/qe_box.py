@@ -669,7 +669,14 @@ class Box:
             return value.value
         return int(value) if isinstance(value, bool) else value
 
-    def _report(self, kind: BoxReport, batch: str | None, detail: str = "") -> None:
+    def _report(self, kind: BoxReport, batch: str | None, detail: str = "") -> bool:
+        # These notices have no reset rule: keep one occurrence per batch lifetime.
+        if kind in (BoxReport.SYNC_OVERSIZED, BoxReport.CARD_CAP_REACHED):
+            if self.db.execute(
+                "SELECT 1 FROM report WHERE kind=? AND batch IS ?",
+                (kind.value, batch),
+            ).fetchone():
+                return False
         self.db.execute(
             "INSERT INTO report(kind,batch,detail,at) VALUES (?,?,?,?)",
             (
@@ -679,6 +686,7 @@ class Box:
                 self.clock().isoformat(),
             ),
         )
+        return True
 
     def _unleased(self, batch: str) -> None:
         self._expire(batch)
@@ -2701,12 +2709,20 @@ class Box:
             except (Refused, ValueError) as error:
                 self._registration_refused(batch, error)
         for identifier in payload["oversized"]:
-            self._report(
+            if self._report(
                 BoxReport.SYNC_OVERSIZED,
                 identifier,
                 "untrusted identifier; item requires operator review",
-            )
-            notices.append(f"{BoxReport.SYNC_OVERSIZED}:{identifier}")
+            ):
+                self.db.execute(
+                    "UPDATE report SET notified_at=? WHERE kind=? AND batch IS ?",
+                    (
+                        self.clock().isoformat(),
+                        BoxReport.SYNC_OVERSIZED.value,
+                        identifier,
+                    ),
+                )
+                notices.append(f"{BoxReport.SYNC_OVERSIZED}:{identifier}")
         for saved in payload["plan_results"]:
             if saved["result_b64"] is not None:
                 try:
@@ -2817,15 +2833,14 @@ class Box:
             plans: list[PlanTicket] = []
             handoffs: list[m.L4Handoff] = []
             notices: list[str] = []
-            for report in self._rows(
-                Report,
-                "SELECT * FROM report WHERE kind IN (?,?) AND notified_at IS NULL ORDER BY id",
+            for kind, batch in self.db.execute(
+                "SELECT kind,batch FROM report WHERE kind IN (?,?) AND notified_at IS NULL GROUP BY kind,batch ORDER BY min(id)",
                 (BoxReport.SYNC_OVERSIZED.value, BoxReport.CARD_CAP_REACHED.value),
-            ):
-                notices.append(f"{report.kind}:{report.batch}")
+            ).fetchall():
+                notices.append(f"{BoxReport(kind)}:{batch}")
                 self.db.execute(
-                    "UPDATE report SET notified_at=? WHERE id=?",
-                    (self.clock().isoformat(), report.id),
+                    "UPDATE report SET notified_at=? WHERE kind=? AND batch IS ?",
+                    (self.clock().isoformat(), kind, batch),
                 )
             for key, _ in self.db.execute(
                 "SELECT key,value FROM box_meta WHERE key LIKE 'ack:%' OR key LIKE 'cancel:%' OR key LIKE 'registered:%' OR key LIKE 'stale:%'"
