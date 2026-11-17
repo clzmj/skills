@@ -10,6 +10,7 @@ benign = [
   'Is this path relative?', 'Should this string end in a newline?', 'Use the existing fixture?',
   'Which test command covers this helper?', 'Should this sentence be shorter?', 'Is this function synchronous?',
   'Choose an example title?', 'Should I include an empty list case?', 'Where is the naming convention documented?',
+  'Read skills/rex/scripts/question_ledger.py?', 'Read src/components/UserProfileCard.tsx?',
 ]
 sensitive = [
   'Rotate the signing key?', 'Should we turn off MFA?', 'Can I skip signature verification for now?',
@@ -39,4 +40,20 @@ adversarial = [
   'What price is acceptable?', 'Could we increase the quota?',
   'Is a new budget needed?', 'A worker can do it quietly?',
   'Cloudflare settings would simplify this?', 'Which workflow should run?',
+  'Ship it to origin/main?', 'Make the change live?', 'Land this on trunk?',
+  'Let everyone use the new build?', 'Fold this work into the shared branch?',
+  'Put the latest bits on the public server?',
+  'git pu​sh to main?', 'turn off M­FA?', 'рush to main?',
+]
+
+# Frozen §5.2.2 patterns and normalization do not detect these sensitive requests.
+known_adversarial_misses = [
+  'Ship it to origin/main?', 'Make the change live?', 'Land this on trunk?',
+  'Let everyone use the new build?', 'Fold this work into the shared branch?',
+  'Put the latest bits on the public server?',
+  'git pu​sh to main?', 'turn off M­FA?', 'рush to main?',
+]
+# Frozen §8.4 entropy rule also quarantines these ordinary path questions.
+known_benign_quarantines = [
+  'Read skills/rex/scripts/question_ledger.py?', 'Read src/components/UserProfileCard.tsx?',
 ]

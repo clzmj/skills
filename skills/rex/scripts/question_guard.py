@@ -289,13 +289,13 @@ def derive_floor(
         floor = EscalationLevel.L4_OWNER
     elif hits:
         floor = max(floor, EscalationLevel.L3_PRINCIPAL)
-    if classification and (
+    if classification is None or (
         not classification.delegable or classification.sensitive_topics
     ):
         floor = max(floor, EscalationLevel.L3_PRINCIPAL)
     return Classification(
         category,
-        classification.delegable if classification else True,
+        classification.delegable if classification else False,
         classification.sensitive_topics if classification else (),
         tuple(dict.fromkeys(hits)),
         floor,
@@ -351,7 +351,7 @@ def validate_answers(
     level: EscalationLevel | DecisionLevel,
     repo: Path | str,
     clearances: Sequence[WeakClearance] = (),
-    hits: Sequence[GuardHit] = (),
+    hits: Sequence[GuardHit],
     rules: Sequence[GuardRule] | None = None,
 ) -> tuple[ValidationFailure, ...]:
     """Validate a complete current-revision answer before any delivery."""
@@ -405,6 +405,11 @@ def validate_answers(
             any(choice not in offered for choice in answer.choice)
             or len(set(answer.choice)) != len(answer.choice)
             or (not question.multi_select and len(answer.choice) != 1)
+            or (
+                question.multi_select
+                and not answer.choice
+                and not (answer.free_text and answer.free_text.text.strip())
+            )
         ):
             failures.append(ValidationFailure.OPTION_NOT_OFFERED)
         if answer.free_text is not None and (

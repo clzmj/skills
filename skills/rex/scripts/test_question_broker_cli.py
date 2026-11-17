@@ -33,7 +33,7 @@ from test_question_ledger import (
 )
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parents[3]
+REPO_ROOT = SCRIPT_DIR.parents[2]
 BROKER_CLI = SCRIPT_DIR / "question_broker.py"
 
 
@@ -241,6 +241,23 @@ class BrokerCliTests(unittest.TestCase):
         local = outbound(self.batch)
         self.store.transition(str(self.batch.id), m.BatchState.ESCALATING)
         self.store.resolve(resolution(self.batch), (local,))
+        premature = self.cli(
+            "ack",
+            "--outbound",
+            str(local.id),
+            "--token-stdin",
+            input_text=local.ack_token + "\n",
+        )
+        self.assertEqual(premature.returncode, 3, premature.stderr)
+        self.assertEqual(
+            self.store.db.execute(
+                "SELECT state FROM outbound WHERE id=?", (str(local.id),)
+            ).fetchone()[0],
+            m.DeliveryState.PENDING,
+        )
+        claim = self.store.claim(str(local.id), "cli-fixture", m.Route.CODEX_QUEUE)
+        assert claim is not None
+        self.assertTrue(self.store.finish_claim(claim, m.DeliveryState.DISPATCHED))
         bad = self.cli(
             "ack", "--outbound", str(local.id), "--token-stdin", input_text="wrong\n"
         )
@@ -249,7 +266,7 @@ class BrokerCliTests(unittest.TestCase):
             self.store.db.execute(
                 "SELECT state FROM outbound WHERE id=?", (str(local.id),)
             ).fetchone()[0],
-            m.DeliveryState.PENDING,
+            m.DeliveryState.DISPATCHED,
         )
         good = self.cli(
             "ack",

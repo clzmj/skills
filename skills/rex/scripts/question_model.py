@@ -20,7 +20,7 @@ import unicodedata
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from enum import IntEnum, StrEnum
 from typing import (
     Any,
@@ -1498,7 +1498,10 @@ def _decode(annotation: Any, value: object) -> Any:
     if annotation is Decimal:
         if not isinstance(value, str):
             raise ValueError("expected decimal string")
-        return Decimal(value)
+        try:
+            return Decimal(value)
+        except InvalidOperation as exc:
+            raise ValueError("invalid decimal") from exc
     if origin in (list, tuple):
         if not isinstance(value, (list, tuple)):
             raise ValueError("expected sequence")

@@ -22,7 +22,7 @@ from contextlib import closing, contextmanager
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, NotRequired, TypedDict
+from typing import Any, NotRequired, TypedDict, cast
 from urllib.parse import urlsplit
 
 from agent_types import AgentKind, Event, HookEvent, InputKind
@@ -398,17 +398,55 @@ def lineage(item: SessionState, sessions: dict[str, SessionState]) -> Lineage:
                    depth=item["depth"], agent_kind=item["agent"], role=Role.SUBAGENT if item["parent"] else Role.AGENT)
 
 
-def session_state(agent: AgentKind, session: str, child: str = "") -> SessionState | None:
+def _parse_session_state(record: str) -> SessionState:
+    value = json.loads(record)
+    string_fields = (
+        "key",
+        "id",
+        "parent",
+        "root",
+        "task_id",
+        "requester",
+        "turn",
+        "rex_session",
+        "rex_block",
+    )
+    if not isinstance(value, dict) or any(
+        not isinstance(value.get(key), str) for key in string_fields
+    ):
+        raise ValueError("invalid session record")
+    if type(value.get("depth")) is not int or value["depth"] < 0:
+        raise ValueError("invalid session depth")
+    value["agent"] = AgentKind(value["agent"])
+    value["status"] = Status(value["status"])
+    for key in ("updated_at", "native_turn"):
+        if key in value and not isinstance(value[key], str):
+            raise ValueError("invalid session field")
+    if "retired_turns" in value and (
+        not isinstance(value["retired_turns"], list)
+        or any(not isinstance(turn, str) for turn in value["retired_turns"])
+    ):
+        raise ValueError("invalid retired turns")
+    return cast(SessionState, value)
+
+
+def session_state(
+    agent: AgentKind, session: str, child: str = ""
+) -> SessionState | None:
     """Read one callback session record without creating or modifying its database."""
     path = rex.STATE / "grokbot-callback.sqlite3"
     if not path.exists():
         return None
     try:
-        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)) as db:
-            row = db.execute("SELECT record FROM sessions WHERE key=?",
-                             (actor_key(agent, session, child),)).fetchone()
-        return json.loads(row[0]) if row else None
-    except (OSError, ValueError, TypeError, sqlite3.Error):
+        with closing(
+            sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)
+        ) as db:
+            row = db.execute(
+                "SELECT record FROM sessions WHERE key=?",
+                (actor_key(agent, session, child),),
+            ).fetchone()
+        return _parse_session_state(row[0]) if row else None
+    except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
         return None
 
 
@@ -423,8 +461,8 @@ def session_lineage(state: SessionState) -> Lineage:
                 for key in keys:
                     row = db.execute("SELECT record FROM sessions WHERE key=?", (key,)).fetchone()
                     if row:
-                        sessions[key] = json.loads(row[0])
-        except (OSError, ValueError, TypeError, sqlite3.Error):
+                        sessions[key] = _parse_session_state(row[0])
+        except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
             pass
     return lineage(state, sessions)
 

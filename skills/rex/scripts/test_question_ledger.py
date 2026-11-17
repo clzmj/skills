@@ -329,12 +329,192 @@ class LedgerTests(unittest.TestCase):
         def reserve(_):
             with ledger.Ledger(self.path) as store:
                 return store.reserve_budget(
-                    "task", tokens=100, usd="0.10", max_attempts=1
+                    "task",
+                    model=ledger.m.Model.HAIKU,
+                    tokens=100,
+                    usd="0.10",
+                    max_attempts=1,
                 )
 
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(reserve, range(2)))
-        self.assertEqual(sorted(results), [False, True])
+        self.assertEqual(sum(result is not None for result in results), 1)
+
+    def test_registration_ack_cannot_ack_unsent_future_progress(self):
+        batch = self.store.open_or_attach(
+            asker(),
+            (question(),),
+            native_call("call-1"),
+            classification(),
+        ).batch
+        entry = registration(batch)
+        self.store.put_registration(entry)
+        self.store.progress(progress(batch, 1))
+        self.store.ack_registration(
+            {
+                "batch_id": entry["batch_id"],
+                "batch_rev": entry["batch_rev"],
+                "content_digest": entry["content_digest"],
+                "progress_seq": 999,
+                "floor": ledger.m.EscalationLevel.L1_CHEAP,
+                "owned": False,
+            }
+        )
+        latest = self.store.progress(progress(batch, 2))
+        self.assertEqual(self.store.due_progress(), (latest,))
+
+    def test_audit_retains_json_metadata_usage_and_redacts_only_content(self):
+        detail = {
+            "batch_id": "01234567-89ab-cdef-0123-456789abcdef",
+            "content_digest": "0123456789abcdef" * 4,
+            "delivery_id": "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef0123456789",
+            "fallback_of": "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef0123456789",
+            "usage": {"input_tokens": 123, "output_tokens": 45, "usd": "0.01"},
+            "rationale": {"text": "password=fixture-secret", "source": "model"},
+        }
+        self.store.audit(ledger.AuditKind.ATTEMPT, "task", ledger.encoded(detail))
+        saved = json.loads(self.store.audit_events("task")[0].detail)
+        self.assertEqual(saved["batch_id"], detail["batch_id"])
+        self.assertEqual(saved["content_digest"], detail["content_digest"])
+        self.assertEqual(saved["delivery_id"], detail["delivery_id"])
+        self.assertEqual(saved["fallback_of"], detail["fallback_of"])
+        self.assertEqual(saved["usage"], detail["usage"])
+        self.assertNotIn("fixture-secret", saved["rationale"]["text"])
+
+    def test_all_unknown_takeovers_must_be_cleared_before_claim(self):
+        m = ledger.m
+        for reverse in (False, True):
+            with self.subTest(reverse=reverse):
+                actor = "takeover-" + str(reverse)
+                batch = self.store.open_or_attach(
+                    asker(actor=actor),
+                    (question(actor),),
+                    native_call(actor, actor=actor),
+                    classification(),
+                ).batch
+                pending = outbound(batch)
+                self.store.put_outbound(pending)
+                takeovers = [
+                    m.Takeover(
+                        m.TakeoverId(uuid4()),
+                        batch.id,
+                        m.PromptOrigin.UNKNOWN,
+                        None,
+                        ledger.now(),
+                        None,
+                        None,
+                    )
+                    for _ in range(2)
+                ]
+                for takeover in takeovers:
+                    self.store.record_takeover(takeover)
+                if reverse:
+                    takeovers.reverse()
+                self.store.clear_takeover(str(takeovers[0].id), "owner")
+                self.assertIsNone(
+                    self.store.claim(str(pending.id), "worker", m.Route.CODEX_QUEUE)
+                )
+                late = ledger.replace(
+                    outbound(batch), resolution_rev=m.ResolutionRev(2)
+                )
+                self.store.put_outbound(late)
+                self.assertIsNone(
+                    self.store.claim(str(late.id), "worker", m.Route.CODEX_QUEUE)
+                )
+                self.store.clear_takeover(str(takeovers[1].id), "owner")
+                self.assertIsNotNone(
+                    self.store.claim(str(pending.id), "worker", m.Route.CODEX_QUEUE)
+                )
+
+    def test_ack_rejects_non_ascii_token_without_crashing(self):
+        batch = self.store.open_or_attach(
+            asker(),
+            (question(),),
+            native_call("call-1"),
+            classification(),
+        ).batch
+        pending = outbound(batch)
+        self.store.put_outbound(pending)
+        self.assertFalse(self.store.ack(str(pending.id), "tökén"))
+
+    def test_ack_only_applies_delivery_that_may_have_been_sent(self):
+        m = ledger.m
+        batch = self.store.open_or_attach(
+            asker(),
+            (question(),),
+            native_call("call-1"),
+            classification(),
+        ).batch
+        for index, state in enumerate(m.DeliveryState, 1):
+            with self.subTest(state=state):
+                message = ledger.replace(
+                    outbound(batch), state=state, resolution_rev=m.ResolutionRev(index)
+                )
+                self.store.put_outbound(message)
+                allowed = state in {
+                    m.DeliveryState.DISPATCHED,
+                    m.DeliveryState.OBSERVED,
+                    m.DeliveryState.DISPATCH_UNCERTAIN,
+                    m.DeliveryState.APPLIED,
+                }
+                self.assertEqual(
+                    self.store.ack(str(message.id), message.ack_token), allowed
+                )
+
+    def test_ingest_events_replay_after_unlink_failure_is_deduplicated(self):
+        event_id = str(uuid4())
+        path = self.path.parent / (event_id + ".json")
+        path.write_text(
+            json.dumps(
+                {"task_id": "task", "text": "Assumed permission", "batch_id": None}
+            )
+        )
+        with patch.object(Path, "unlink", side_effect=OSError("crash after commit")):
+            self.assertEqual(self.store.ingest_events(path.parent), 0)
+        self.assertEqual(self.store.ingest_events(path.parent), 1)
+        notices = self.store.db.execute(
+            "SELECT id FROM notice WHERE task='task'"
+        ).fetchall()
+        self.assertEqual([row[0] for row in notices], [event_id])
+
+    def test_context_bump_is_noop_for_cancelled_and_stale_batches(self):
+        for state in (BatchState.CANCELLED, BatchState.STALE):
+            with self.subTest(state=state):
+                call = "terminal-" + state
+                batch = self.store.open_or_attach(
+                    asker(actor=call),
+                    (question(call),),
+                    native_call(call, actor=call),
+                    classification(),
+                ).batch
+                closed = self.store.transition(str(batch.id), state)
+                before = self.store.audit_events(batch.asker.task)
+                self.assertEqual(
+                    self.store.bump_for_context(
+                        str(batch.id),
+                        ledger.LiveContext(ledger.m.HeadSha("b" * 40), None, True),
+                    ),
+                    closed,
+                )
+                self.assertEqual(self.store.audit_events(batch.asker.task), before)
+
+    def test_brief_path_is_an_explicit_open_input_not_process_environment(self):
+        brief = self.path.parent / "explicit-brief.md"
+        brief.write_text("original")
+        with patch.dict(os.environ, {ledger.m.BRIEF_ENV: "/unrelated/brief.md"}):
+            batch = self.store.open_or_attach(
+                asker(floor_brief=ledger.m.file_digest(brief.read_bytes())),
+                (question(),),
+                native_call("call-1"),
+                classification(),
+                brief=brief,
+            ).batch
+        with patch.object(
+            ledger.subprocess,
+            "run",
+            return_value=ledger.subprocess.CompletedProcess([], 0, "a" * 40),
+        ):
+            self.assertEqual(self.store.live_context(str(batch.id)).brief_path, brief)
 
     def test_open_or_attach_serializes_racing_calls_for_the_same_actor_turn(self):
         def attach(index):
@@ -705,6 +885,7 @@ class LedgerTests(unittest.TestCase):
                 (question("call-saved-brief"),),
                 native_call("call-saved-brief"),
                 classification(),
+                brief=brief,
             )
         brief.write_text("edited original brief")
         with patch.dict(os.environ, {ledger.m.BRIEF_ENV: ""}):
@@ -723,6 +904,7 @@ class LedgerTests(unittest.TestCase):
                 (question("call-lacana-brief"),),
                 native_call("call-lacana-brief"),
                 classification(),
+                brief=brief,
             )
         brief.write_text(
             '```toml qe-escalation\nschema = "qe.brief/1"\nproject = "la_cana"\n'

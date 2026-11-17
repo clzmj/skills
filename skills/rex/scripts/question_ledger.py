@@ -18,11 +18,11 @@ import subprocess
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from pathlib import Path
-from typing import Final, Generator
-from uuid import uuid4
+from typing import Final, Generator, NewType
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import question_model as m
@@ -130,6 +130,9 @@ CREATE TABLE IF NOT EXISTS digest (id TEXT PRIMARY KEY, task TEXT NOT NULL, regi
 CREATE TABLE IF NOT EXISTS budget (scope TEXT NOT NULL, key TEXT NOT NULL, attempts INTEGER NOT NULL,
  tokens_reserved INTEGER NOT NULL, tokens_spent INTEGER NOT NULL, usd_reserved TEXT NOT NULL, usd_spent TEXT NOT NULL,
  PRIMARY KEY(scope,key));
+CREATE TABLE IF NOT EXISTS budget_reservation (id TEXT PRIMARY KEY, task TEXT NOT NULL, model TEXT NOT NULL,
+ day TEXT NOT NULL, tokens INTEGER NOT NULL, usd TEXT NOT NULL, settled INTEGER NOT NULL DEFAULT 0,
+ overrun INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS tick_state (id INTEGER PRIMARY KEY CHECK(id=1), last_run_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
 """
@@ -150,6 +153,53 @@ def now() -> datetime:
 
 def encoded(value: object) -> str:
     return m.canonical(value).decode("utf-8")
+
+
+def redacted_audit_detail(detail: str) -> str:
+    """Scan content values, never the serialized record or its identifiers."""
+    from question_redact import redact
+
+    identifiers = {
+        "id",
+        "batch",
+        "batch_id",
+        "question",
+        "context",
+        "content_digest",
+        "prompt_digest",
+        "head_sha",
+        "actor",
+        "root_actor",
+        "target_actor",
+        "child_actor",
+        "session",
+        "turn",
+        "task",
+        "origin_call",
+        "call",
+        "fallback_of",
+        "digest",
+        "related_to",
+    }
+
+    def clean(value: object, key: str = "") -> object:
+        if isinstance(value, dict):
+            return {field: clean(item, field) for field, item in value.items()}
+        if isinstance(value, list):
+            return [clean(item) for item in value]
+        if isinstance(value, str):
+            return (
+                value
+                if key in identifiers or key.endswith(("_id", "_digest"))
+                else redact(value).text[:500]
+            )
+        return value
+
+    try:
+        record = json.loads(detail)
+    except ValueError:
+        return redact(detail).text[:500]
+    return encoded(clean(record))
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,13 +276,19 @@ class BudgetRecord:
 
     @classmethod
     def parse(cls, row: sqlite3.Row) -> BudgetRecord:
-        return cls(
-            int(row["attempts"]),
-            int(row["tokens_reserved"]),
-            int(row["tokens_spent"]),
-            Decimal(row["usd_reserved"]),
-            Decimal(row["usd_spent"]),
-        )
+        try:
+            return cls(
+                int(row["attempts"]),
+                int(row["tokens_reserved"]),
+                int(row["tokens_spent"]),
+                Decimal(row["usd_reserved"]),
+                Decimal(row["usd_spent"]),
+            )
+        except InvalidOperation as exc:
+            raise ValueError("invalid budget decimal") from exc
+
+
+ReservationId = NewType("ReservationId", str)
 
 
 class Ledger:
@@ -240,6 +296,7 @@ class Ledger:
 
     def __init__(self, path: Path):
         self.path = path
+        self._pending_audits: list[tuple[AuditKind, str, str, str | None]] = []
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
         os.fchmod(fd, 0o600)
@@ -267,8 +324,9 @@ class Ledger:
     def audit(
         self, kind: AuditKind, task: str, detail: str, batch: str | None = None
     ) -> None:
-        from question_redact import redact
-
+        if self.db.in_transaction:
+            self._pending_audits.append((kind, task, detail, batch))
+            return
         path = self.path.parent / m.AUDIT_FILE
         lock_fd = os.open(path.with_suffix(".lock"), os.O_CREAT | os.O_RDWR, 0o600)
         try:
@@ -279,7 +337,9 @@ class Ledger:
             with os.fdopen(fd, "a") as stream:
                 stream.write(
                     encoded(
-                        AuditEvent(kind, task, batch, redact(detail).text[:500], now())
+                        AuditEvent(
+                            kind, task, batch, redacted_audit_detail(detail), now()
+                        )
                     )
                     + "\n"
                 )
@@ -324,7 +384,11 @@ class Ledger:
             self.db.commit()
         except BaseException:
             self.db.rollback()
+            self._pending_audits.clear()
             raise
+        pending, self._pending_audits = self._pending_audits, []
+        for kind, task, detail, batch in pending:
+            self.audit(kind, task, detail, batch)
 
     def get_batch(self, batch_id: str) -> m.QuestionBatch:
         row = self.db.execute("SELECT * FROM batch WHERE id=?", (batch_id,)).fetchone()
@@ -413,7 +477,11 @@ class Ledger:
         return resolutions + notes
 
     def _save_batch(
-        self, batch: m.QuestionBatch, related_to: str | None = None
+        self,
+        batch: m.QuestionBatch,
+        related_to: str | None = None,
+        *,
+        brief: Path | None = None,
     ) -> None:
         self.db.execute(
             """INSERT INTO batch(id,rev,actor,root_actor,turn,task,state,mac_floor,context,asker_json,
@@ -438,12 +506,18 @@ class Ledger:
                 related_to,
                 batch.urgency,
                 batch.level,
-                os.environ.get(m.BRIEF_ENV),
+                str(brief) if brief else None,
             ),
         )
 
-    def _revision(self, batch: m.QuestionBatch, cause: m.SuppressCause) -> None:
-        self._save_batch(batch)
+    def _revision(
+        self,
+        batch: m.QuestionBatch,
+        cause: m.SuppressCause,
+        *,
+        brief: Path | None = None,
+    ) -> None:
+        self._save_batch(batch, brief=brief)
         self.db.execute(
             "INSERT OR IGNORE INTO registration(batch,batch_rev,content_digest,state) VALUES(?,?,?,?)",
             (str(batch.id), batch.rev, "", m.RegistrationState.DUE),
@@ -494,6 +568,8 @@ class Ledger:
         call: m.NativeCall,
         classification: m.Classification,
         urgency: m.Urgency = m.Urgency.BLOCKING,
+        *,
+        brief: Path | None = None,
     ) -> m.AttachResult:
         with self.transaction():
             duplicate = self.db.execute(
@@ -577,7 +653,7 @@ class Ledger:
                         previous.asker.brief_digest,
                     ),
                 )
-            self._revision(batch, m.SuppressCause.NEWER_REVISION)
+            self._revision(batch, m.SuppressCause.NEWER_REVISION, brief=brief)
             if outcome == m.AttachOutcome.OPENED:
                 related = self._related(asker, questions)
                 if related:
@@ -588,7 +664,7 @@ class Ledger:
                     self.audit(
                         AuditKind.CONTEXT,
                         asker.task,
-                        f"related_to={related}; context only",
+                        encoded({"related_to": related, "context_only": True}),
                         str(batch.id),
                     )
             for question in batch.questions:
@@ -714,7 +790,7 @@ class Ledger:
             if row is None or row[0] != body["content_digest"]:
                 raise ValueError("unknown registration digest")
             self.db.execute(
-                """UPDATE registration SET state=?,acked_progress_seq=max(acked_progress_seq,?),
+                """UPDATE registration SET state=?,acked_progress_seq=max(acked_progress_seq,min(?,progress_seq)),
                 acked_floor=max(coalesce(acked_floor,0),?) WHERE batch=? AND batch_rev=?""",
                 (
                     m.RegistrationState.ACKED,
@@ -857,7 +933,7 @@ class Ledger:
 
     def put_outbound(self, outbound: m.OutboundMessage) -> None:
         with self.transaction():
-            self.db.execute(
+            inserted = self.db.execute(
                 """INSERT OR IGNORE INTO outbound(id,batch,purpose,resolution_rev,target_actor,child_actor,text,body_digest,
                 ack_token,route_plan_json,state,suppress_cause,paused_by,claim_owner,claimed_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
@@ -880,11 +956,13 @@ class Ledger:
                 ),
             )
 
+            if not inserted.rowcount:
+                return
             batch = self.get_batch(str(outbound.batch))
             self.audit(
                 AuditKind.OUTBOUND,
                 batch.asker.task,
-                f"{outbound.id}: {outbound.state}",
+                encoded({"outbound_id": str(outbound.id), "state": outbound.state}),
                 str(batch.id),
             )
 
@@ -943,7 +1021,8 @@ class Ledger:
     def claim(self, outbound: str, owner: str, route: m.Route) -> Claim | None:
         with self.transaction():
             updated = self.db.execute(
-                "UPDATE outbound SET state=?,claim_owner=?,claimed_at=?,updated_at=? WHERE id=? AND state IN (?,?) AND paused_by IS NULL",
+                """UPDATE outbound SET state=?,claim_owner=?,claimed_at=?,updated_at=? WHERE id=? AND state IN (?,?) AND paused_by IS NULL
+                AND NOT EXISTS(SELECT 1 FROM takeover WHERE takeover.batch=outbound.batch AND origin=? AND cleared_at IS NULL)""",
                 (
                     m.DeliveryState.CLAIMED,
                     owner,
@@ -952,6 +1031,7 @@ class Ledger:
                     outbound,
                     m.DeliveryState.PENDING,
                     m.DeliveryState.DISPATCH_FAILED,
+                    m.PromptOrigin.UNKNOWN,
                 ),
             )
             if updated.rowcount != 1:
@@ -996,7 +1076,7 @@ class Ledger:
                 self.audit(
                     AuditKind.OUTBOUND,
                     batch.asker.task,
-                    f"{claim.outbound}: {state}",
+                    encoded({"outbound_id": claim.outbound, "state": state}),
                     str(batch.id),
                 )
             return bool(changed)
@@ -1062,7 +1142,7 @@ class Ledger:
             self.audit(
                 AuditKind.BOX_NOTE,
                 batch.asker.task,
-                f"{note.delivery_id}: attempt {note.attempt}",
+                encoded({"delivery_id": note.delivery_id, "attempt": note.attempt}),
                 str(batch.id),
             )
 
@@ -1082,12 +1162,22 @@ class Ledger:
             row = self.db.execute(
                 "SELECT ack_token,resolution_rev FROM outbound WHERE id=?", (outbound,)
             ).fetchone()
-            if row and hmac.compare_digest(row[0], token):
-                self.db.execute(
-                    "UPDATE outbound SET state=?,applied_rev=resolution_rev,updated_at=? WHERE id=?",
-                    (m.DeliveryState.APPLIED, now().isoformat(), outbound),
+            if row and hmac.compare_digest(row[0].encode(), token.encode()):
+                return bool(
+                    self.db.execute(
+                        """UPDATE outbound SET state=?,applied_rev=resolution_rev,updated_at=?
+                    WHERE id=? AND state IN (?,?,?,?)""",
+                        (
+                            m.DeliveryState.APPLIED,
+                            now().isoformat(),
+                            outbound,
+                            m.DeliveryState.DISPATCHED,
+                            m.DeliveryState.OBSERVED,
+                            m.DeliveryState.DISPATCH_UNCERTAIN,
+                            m.DeliveryState.APPLIED,
+                        ),
+                    ).rowcount
                 )
-                return True
             row = self.db.execute(
                 "SELECT ack_token_digest,resolution_rev FROM box_note WHERE delivery_id=?",
                 (outbound,),
@@ -1103,16 +1193,22 @@ class Ledger:
             return False
 
     def notice(
-        self, kind: m.NoticeKind, task: str, detail: str, batch: str | None = None
+        self,
+        kind: m.NoticeKind,
+        task: str,
+        detail: str,
+        batch: str | None = None,
+        *,
+        notice_id: m.NoticeId | None = None,
     ) -> str:
         from question_redact import redact
 
-        notice_id = str(uuid4())
+        notice_key = str(notice_id or uuid4())
         with self.transaction():
-            self.db.execute(
-                "INSERT INTO notice VALUES(?,?,?,?,?,?,?)",
+            inserted = self.db.execute(
+                "INSERT OR IGNORE INTO notice VALUES(?,?,?,?,?,?,?)",
                 (
-                    notice_id,
+                    notice_key,
                     kind,
                     task,
                     batch,
@@ -1121,8 +1217,9 @@ class Ledger:
                     False,
                 ),
             )
-            self.audit(AuditKind.NOTICE, task, f"{kind}: {detail}", batch)
-        return notice_id
+            if inserted.rowcount:
+                self.audit(AuditKind.NOTICE, task, f"{kind}: {detail}", batch)
+        return notice_key
 
     def clear_takeover(self, takeover: str, by: str) -> None:
         with self.transaction():
@@ -1135,7 +1232,10 @@ class Ledger:
                 (takeover,),
             ).fetchone():
                 self.db.execute(
-                    "UPDATE outbound SET paused_by=NULL WHERE paused_by=?", (takeover,)
+                    """UPDATE outbound SET paused_by=(SELECT id FROM takeover
+                    WHERE takeover.batch=outbound.batch AND origin=? AND cleared_at IS NULL
+                    ORDER BY at,id LIMIT 1) WHERE paused_by=?""",
+                    (m.PromptOrigin.UNKNOWN, takeover),
                 )
                 row = self.db.execute(
                     "SELECT batch FROM takeover WHERE id=?", (takeover,)
@@ -1144,7 +1244,7 @@ class Ledger:
                 self.audit(
                     AuditKind.CLEARANCE,
                     batch.asker.task,
-                    f"{takeover}: {by}",
+                    encoded({"takeover_id": takeover, "by": by}),
                     str(batch.id),
                 )
 
@@ -1186,7 +1286,7 @@ class Ledger:
     def bump_for_context(self, batch_id: str, live: LiveContext) -> m.QuestionBatch:
         with self.transaction():
             batch = self.get_batch(batch_id)
-            if not live.changed:
+            if not live.changed or batch.state in TERMINAL:
                 return batch
             rev = m.BatchRev(batch.rev + 1)
             from question_guard import BriefInvalid, derive_floor, parse_brief
@@ -1257,11 +1357,13 @@ class Ledger:
         for path in sorted(directory.glob("*.json")):
             try:
                 value = L0Event.parse(json.loads(path.read_bytes()))
+                notice_id = m.NoticeId(UUID(path.stem))
                 self.notice(
                     m.NoticeKind.L0_VIOLATION,
                     value.task_id,
                     value.text,
                     value.batch_id,
+                    notice_id=notice_id,
                 )
                 path.unlink()
                 count += 1
@@ -1323,7 +1425,7 @@ class Ledger:
             )
             if takeover.origin == m.PromptOrigin.UNKNOWN:
                 self.db.execute(
-                    "UPDATE outbound SET paused_by=? WHERE batch=? AND state IN (?,?,?)",
+                    "UPDATE outbound SET paused_by=? WHERE batch=? AND state IN (?,?,?) AND paused_by IS NULL",
                     (str(takeover.id), str(takeover.batch), *UNDISPATCHED),
                 )
             else:
@@ -1453,6 +1555,7 @@ class Ledger:
         self,
         task: str,
         *,
+        model: m.Model,
         tokens: int,
         usd: str | Decimal,
         max_attempts: int = 20,
@@ -1460,12 +1563,24 @@ class Ledger:
         task_usd: Decimal = Decimal("1.50"),
         day_usd: Decimal = Decimal("10"),
         at: datetime | None = None,
-    ) -> bool:
-        amount = Decimal(usd)
+    ) -> ReservationId | None:
+        try:
+            amount = Decimal(usd)
+        except InvalidOperation as exc:
+            raise ValueError("invalid reservation") from exc
+        model = m.Model(model)
         if tokens < 0 or not amount.is_finite() or amount < 0:
             raise ValueError("invalid reservation")
         day = (at or now()).astimezone(ZoneInfo(m.LOCAL_TZ)).date().isoformat()
         with self.transaction():
+            if (
+                self.db.execute(
+                    "SELECT count(*) FROM budget_reservation WHERE model=? AND day=? AND overrun=1",
+                    (model, day),
+                ).fetchone()[0]
+                >= 2
+            ):
+                return None
             keys = (
                 (m.BudgetScope.TASK, task, task_usd),
                 (m.BudgetScope.DAY, day, day_usd),
@@ -1481,12 +1596,12 @@ class Ledger:
                     ).fetchone()
                 )
                 if row.usd_reserved + row.usd_spent + amount > cap:
-                    return False
+                    return None
                 if scope == m.BudgetScope.TASK and (
                     row.attempts >= max_attempts
                     or row.tokens_reserved + row.tokens_spent + tokens > max_tokens
                 ):
-                    return False
+                    return None
             for scope, key, _ in keys:
                 row = self.db.execute(
                     "SELECT usd_reserved FROM budget WHERE scope=? AND key=?",
@@ -1496,24 +1611,40 @@ class Ledger:
                     "UPDATE budget SET attempts=attempts+1,tokens_reserved=tokens_reserved+?,usd_reserved=? WHERE scope=? AND key=?",
                     (tokens, str(Decimal(row[0]) + amount), scope, key),
                 )
+            reservation = ReservationId(str(uuid4()))
+            self.db.execute(
+                "INSERT INTO budget_reservation (id,task,model,day,tokens,usd) VALUES (?,?,?,?,?,?)",
+                (reservation, task, model, day, tokens, str(amount)),
+            )
             self.audit(
                 AuditKind.BUDGET, task, f"reserved {tokens} tokens, USD {amount}"
             )
-            return True
+            return reservation
 
     def settle_budget(
         self,
-        task: str,
+        reservation: ReservationId,
         *,
-        tokens_reserved: int,
-        usd_reserved: Decimal,
         usage: m.Usage | None,
-        reserved_at: datetime,
     ) -> None:
-        tokens = usage.input_tokens + usage.output_tokens if usage else tokens_reserved
-        usd = usage.usd if usage else usd_reserved
-        day = reserved_at.astimezone(ZoneInfo(m.LOCAL_TZ)).date().isoformat()
         with self.transaction():
+            reserved = self.db.execute(
+                "SELECT * FROM budget_reservation WHERE id=?", (reservation,)
+            ).fetchone()
+            if reserved is None:
+                raise ValueError("no matching reservation")
+            if reserved["settled"]:
+                return
+            task, day = reserved["task"], reserved["day"]
+            tokens_reserved = reserved["tokens"]
+            try:
+                usd_reserved = Decimal(reserved["usd"])
+            except InvalidOperation as exc:
+                raise ValueError("invalid reservation decimal") from exc
+            tokens = (
+                usage.input_tokens + usage.output_tokens if usage else tokens_reserved
+            )
+            usd = usage.usd if usage else usd_reserved
             for scope, key in ((m.BudgetScope.TASK, task), (m.BudgetScope.DAY, day)):
                 raw = self.db.execute(
                     "SELECT * FROM budget WHERE scope=? AND key=?", (scope, key)
@@ -1537,4 +1668,8 @@ class Ledger:
                         key,
                     ),
                 )
+            self.db.execute(
+                "UPDATE budget_reservation SET settled=1,overrun=? WHERE id=?",
+                (int(tokens > tokens_reserved or usd > usd_reserved), reservation),
+            )
             self.audit(AuditKind.BUDGET, task, f"settled {tokens} tokens, USD {usd}")
