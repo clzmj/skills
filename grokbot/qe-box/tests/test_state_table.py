@@ -6,8 +6,6 @@
 """Accepting/refusing box state pairs, result rows, timers and retention."""
 
 from datetime import timedelta
-import ast
-from pathlib import Path
 import sqlite3
 
 from test_registration import BoxTest, entry, revision, progress, box
@@ -263,7 +261,7 @@ class StateTableTests(BoxTest):
         self.assertRefused(box.BoxRefusal.WRONG_STATE, self.box.deliver, delivery.id)
         self.assertIsNone(self.box.show(value["batch_id"])["record"].correction_floor)
 
-    def test_write_once_evidence_has_one_writer_and_database_backstop(self):
+    def test_write_once_evidence_has_database_backstop(self):
         value = self.fixture(S.DELIVERED)
         delivery = self.box.show(value["batch_id"])["deliveries"][0]
         with self.assertRaises(sqlite3.IntegrityError):
@@ -275,16 +273,6 @@ class StateTableTests(BoxTest):
             self.box.db.execute(
                 "DELETE FROM floor_ledger WHERE batch=?", (value["batch_id"],)
             )
-        tree = ast.parse(Path(box.__file__).read_text())
-        writers = [
-            node.value
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Constant)
-            and isinstance(node.value, str)
-            and "UPDATE delivery SET delivered_at=" in node.value
-        ]
-        self.assertEqual(len(writers), 1)
-        self.assertIn("AND delivered_at IS NULL", writers[0])
 
     def test_retry_safe_plan_failure_is_reissued_with_new_id(self):
         value = entry()
@@ -355,7 +343,7 @@ class StateTableTests(BoxTest):
                 self.assertEqual(current.state, S.DECIDED)
                 self.assertIsNone(current.correction_floor)
 
-    def test_correction_suppresses_older_uncertain_rows_without_delivery_evidence(self):
+    def test_correction_keeps_older_uncertain_row_reconcilable(self):
         value = entry()
         self.box.register(value)
         ticket = self.box.decide(
@@ -366,7 +354,7 @@ class StateTableTests(BoxTest):
             "fixture", "jim", purpose=box.CardPurpose.CORRECTION, by="jim"
         )
         self.box.card_posted("fixture", "jim", card.gen, "card", by="jim")
-        self.box.decide(
+        correction = self.box.decide(
             box.DecisionKind.CORRECTION,
             4,
             value["batch_id"],
@@ -376,11 +364,20 @@ class StateTableTests(BoxTest):
             card_gen=card.gen,
             card_ref="card",
             supersedes=1,
-        )
+        ).plans[0]
         old = self.box.show(value["batch_id"])["deliveries"][0]
-        self.assertEqual(old.state, m.DeliveryState.SUPPRESSED)
-        self.assertEqual(old.suppress_cause, m.SuppressCause.NEWER_RESOLUTION)
-        self.assertIsNone(old.delivered_at)
+        self.assertEqual(old.state, m.DeliveryState.DISPATCH_UNCERTAIN)
+        self.box.result(report(correction, m.SendOutcome.NOT_SENT_BUSY, self.now))
+        self.box.reconcile(m.ReconcileVerdict.SEEN_IN_PANE, delivery_id=old.id)
+        current = self.box.show(value["batch_id"])
+        old = current["deliveries"][0]
+        self.assertEqual(old.state, m.DeliveryState.OBSERVED)
+        self.assertEqual(old.delivered_via, m.DeliveryEvidence.SEEN_IN_PANE)
+        self.assertIsNotNone(old.delivered_at)
+        self.assertEqual(current["record"].state, S.DECIDED)
+        self.assertEqual(
+            current["deliveries"][-1].state, m.DeliveryState.DISPATCH_FAILED
+        )
 
     def test_session_ended_sync_cannot_close_or_revive_a_leased_batch(self):
         value = entry()

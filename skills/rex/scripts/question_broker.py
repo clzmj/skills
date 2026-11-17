@@ -922,8 +922,7 @@ class Broker:
     def sync(
         self, body: m.SyncBody, result: m.Result, *, include_status: bool = True
     ) -> m.SyncPayload:
-        # Keep every listing and its cursor lookup in the same snapshot. Retention
-        # must not remove a listed row before its rowid is read.
+        # Hold the write lock so retention cannot interleave with listing and lookup.
         with self.store.transaction():
             return self._sync(body, result, include_status=include_status)
 
@@ -1342,7 +1341,7 @@ class Broker:
             self.store.resolve(resolution, (outbound,))
             return resolution
 
-    def worker(self, batch_id: str) -> m.QuestionBatch:
+    def worker(self, batch_id: str, *, spool_digest: bool = True) -> m.QuestionBatch:
         """Classify before registration; local answers never cross a committed L3 floor."""
 
         @cache
@@ -1734,8 +1733,13 @@ class Broker:
                         break
                     if level is m.EscalationLevel.L2_NORMAL:
                         escalate(rejection or m.EscalationReason.ANSWER_REJECTED)
+            task = batch.asker.task
             dispatcher.dispatch_batch_locked(batch_id, acquired)
-        # Tick coalesces task siblings; hook-launched workers never wait or spool.
+        if spool_digest:
+            # The detached worker must publish even if no later hook runs (§5.7).
+            # Release the batch lock and transaction before coalescing siblings.
+            time.sleep(DIGEST_COALESCE.total_seconds())
+            self.digest(task)
         return self.store.get_batch(batch_id)
 
     def digest_envelope(
@@ -2013,7 +2017,7 @@ class Broker:
             if os.environ.get(m.FLAG_ENV) == "1":
                 for batch in self.store.batches():
                     if batch.state not in ledger.TERMINAL:
-                        self.worker(str(batch.id))
+                        self.worker(str(batch.id), spool_digest=False)
                 tasks = (
                     {
                         entry["task_id"]

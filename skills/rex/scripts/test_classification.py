@@ -96,7 +96,7 @@ class WorkerLadder(ClassificationAdmission):
         self.data.write_text(json.dumps(payload))
         self.detect()
         (batch,) = self.store.batches()
-        return self.worker.worker(str(batch.id))
+        return self.worker.worker(str(batch.id), spool_digest=False)
 
     def test_validated_l1_can_resolve_before_box_ack(self):
         batch = self.run_worker(self.payload())
@@ -212,7 +212,7 @@ class WorkerLadder(ClassificationAdmission):
             )
         )
         self.assertEqual(dispatched.call_count, 2)
-        digest.assert_not_called()
+        digest.assert_called_once_with(batch.asker.task)
 
     def test_timeout_and_failed_classifier_emit_one_escalation_snapshot(self):
         import question_answerers as a
@@ -228,7 +228,7 @@ class WorkerLadder(ClassificationAdmission):
             m.Model.HAIKU, m.AttemptOutcome.FAILED, m.EscalationReason.TIMEOUT
         )
         with patch.object(self.adapter, "invoke", return_value=failed):
-            result = self.worker.worker(str(batch.id))
+            result = self.worker.worker(str(batch.id), spool_digest=False)
         self.assertEqual(result.state, m.BatchState.BOX_OWNED)
         self.assertEqual(
             self.store.db.execute(
@@ -297,7 +297,7 @@ class WorkerLadder(ClassificationAdmission):
         self.worker.clock = lambda: (
             batch.opened_at + m.CLASSIFY_WAIT + timedelta(seconds=1)
         )
-        result = self.worker.worker(str(batch.id))
+        result = self.worker.worker(str(batch.id), spool_digest=False)
         self.assertEqual(result.state, m.BatchState.BOX_OWNED)
         self.assertGreaterEqual(result.classification.floor, 3)
         (entry,) = self.store.due_registrations()
@@ -364,7 +364,7 @@ class WorkerLadder(ClassificationAdmission):
             return real_invoke(batch, level, prompt, **kwargs)
 
         self.adapter.invoke = invoke
-        result = self.worker.worker(str(batch.id))
+        result = self.worker.worker(str(batch.id), spool_digest=False)
         self.assertEqual(result.state, m.BatchState.RESOLVED_LOCAL)
 
     def test_local_design_answer_includes_its_revert(self):
@@ -404,9 +404,9 @@ class WorkerLadder(ClassificationAdmission):
             self.store, "record_attempt", side_effect=RuntimeError("fixture crash")
         ):
             with self.assertRaises(RuntimeError):
-                self.worker.worker(str(batch.id))
+                self.worker.worker(str(batch.id), spool_digest=False)
         self.assertEqual(self.log.read_text().splitlines(), ["haiku"])
-        result = self.worker.worker(str(batch.id))
+        result = self.worker.worker(str(batch.id), spool_digest=False)
         self.assertEqual(result.state, m.BatchState.BOX_OWNED)
         self.assertEqual(self.log.read_text().splitlines(), ["haiku"])
 
@@ -443,7 +443,7 @@ class WorkerLadder(ClassificationAdmission):
                 ),
             )
             with patch.object(guard, "load_guard", return_value=rules):
-                raised_batch = self.worker.worker(str(result.id))
+                raised_batch = self.worker.worker(str(result.id), spool_digest=False)
             self.assertEqual(raised_batch.state, m.BatchState.BOX_OWNED)
             self.assertEqual(self.log.read_text().splitlines(), ["haiku"])
             (raised,) = self.store.due_progress()
@@ -489,7 +489,7 @@ class WorkerLadder(ClassificationAdmission):
             return result
 
         self.adapter.invoke = racing
-        result = self.worker.worker(str(first.id))
+        result = self.worker.worker(str(first.id), spool_digest=False)
         self.assertEqual(result.rev, 2)
         self.assertEqual(result.state, m.BatchState.BOX_OWNED)
         self.assertEqual(result.classification.floor, 4)
@@ -531,7 +531,7 @@ class WorkerLadder(ClassificationAdmission):
         (batch,) = self.store.batches()
         self.assertEqual(sum(q.retired_rev is not None for q in batch.questions), 1)
 
-    def test_local_dispatch_does_not_coalesce_or_spool_digest(self):
+    def test_local_dispatch_precedes_digest_coalescing(self):
         import json
         import question_broker as broker
         from unittest.mock import patch
@@ -562,8 +562,8 @@ class WorkerLadder(ClassificationAdmission):
         ):
             result = self.worker.worker(str(batch.id))
         self.assertEqual(result.state, m.BatchState.RESOLVED_LOCAL)
-        self.assertEqual(coalesced, [])
-        digest.assert_not_called()
+        self.assertEqual(coalesced, [True])
+        digest.assert_called_once_with(batch.asker.task)
 
     def test_bounded_l2_recommendation_survives_escalation_and_later_progress(self):
         first, second = self.payload(), self.payload()
@@ -632,7 +632,7 @@ class WorkerLadder(ClassificationAdmission):
             }
         )
         (batch,) = self.store.batches()
-        result = self.worker.worker(str(batch.id))
+        result = self.worker.worker(str(batch.id), spool_digest=False)
         (entry,) = self.store.due_registrations()
         (progress,) = self.store.due_progress()
         (advice,) = progress["recommendations"]

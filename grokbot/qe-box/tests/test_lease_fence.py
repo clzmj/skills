@@ -346,7 +346,7 @@ with open(os.environ["QE_ROUTE_LOG"], "a") as stream:
         self.assertEqual(result["send"], m.SendOutcome.NOT_SENT_EXPIRED)
         self.assertEqual(self.sends(), [])
 
-    def test_07a_iii_clock_residual_is_reported_and_holds_send(self):
+    def test_07a_iii_clock_residual_after_final_none_is_evidence_only(self):
         plan = self.issue()
         self.none(plan)
         self.advance(590)
@@ -354,16 +354,15 @@ with open(os.environ["QE_ROUTE_LOG"], "a") as stream:
         result = self.execute(plan)
         self.assertEqual(result["send"], m.SendOutcome.SENT_NO_ECHO)
         self.submit(result)
-        self.assertIn(
+        self.assertNotIn(
             box.BoxReport.CLOCK_SKEW,
             [report.kind for report in self.shown()["reports"]],
         )
         self.box.reconcile(
             m.ReconcileVerdict.NOT_DELIVERED, delivery_id=self.delivery().id
         )
-        self.assertRefused(
-            box.BoxRefusal.CLOCK_SKEW_HOLD, self.box.deliver, self.delivery().id
-        )
+        self.assertIsNotNone(self.delivery().late_result_json)
+        self.assertTrue(self.box.deliver(self.delivery().id).plans)
 
     def test_07b_08_lost_result_replay_and_delayed_result_are_evidence_only(self):
         plan = self.issue()

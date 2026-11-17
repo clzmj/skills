@@ -7,6 +7,7 @@ import copy
 import importlib.util
 import json
 import shlex
+import subprocess
 import tempfile
 import unittest
 from typing import TypedDict
@@ -36,17 +37,18 @@ class HookConfig(TypedDict):
 
 
 class InstallerTests(unittest.TestCase):
-    def test_import_does_not_change_sys_path(self):
-        import sys
-
-        before = sys.path.copy()
-        fresh_spec = importlib.util.spec_from_file_location(
-            "rex_installer_import_check", Path(__file__).with_name("install_hooks.py")
-        )
-        assert fresh_spec is not None and fresh_spec.loader is not None
-        fresh_module = importlib.util.module_from_spec(fresh_spec)
-        fresh_spec.loader.exec_module(fresh_module)
-        self.assertEqual(sys.path, before)
+    def test_script_resolves_agent_types_from_another_cwd(self):
+        script = Path(__file__).with_name("install_hooks.py").resolve()
+        with tempfile.TemporaryDirectory() as folder:
+            result = subprocess.run(
+                ["uv", "run", "--script", str(script), "--help"],
+                cwd=folder,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("usage:", result.stdout)
 
     def test_foreign_hook_invocation_cannot_be_claimed_by_argument_path(self):
         home = Path("/test-home")

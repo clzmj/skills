@@ -93,7 +93,7 @@ class CalibrationGuards(unittest.TestCase):
                 self.assertEqual(
                     security.call_args.args[0][:4],
                     [
-                        "security",
+                        "/usr/bin/security",
                         "find-generic-password",
                         "-s",
                         "grokbot-claude-oauth-token",
