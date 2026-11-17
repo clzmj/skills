@@ -32,11 +32,19 @@ import question_ledger as ledger
 import question_model as m
 from question_redact import redact
 
+# Recorded P5 failure: docs/qe/question-delivery-evidence.md, P5 section.
+# Set false if a later probe passes; an absent failure must not block the route.
+P5_FAILED: Final = True
+
 END_EVENTS: Final = {
     m.HookEvent.STOP: m.LifecycleKind.TURN_ENDED,
     m.HookEvent.SESSION_END: m.LifecycleKind.SESSION_ENDED,
     m.HookEvent.SUBAGENT_STOP: m.LifecycleKind.SESSION_ENDED,
 }
+
+
+class EnqueueError(Exception):
+    """A detached broker command could not be launched."""
 
 
 class PermissionBehavior(StrEnum):
@@ -277,7 +285,10 @@ def handle(
             m.Lifecycle(actor, END_EVENTS[input.event], None, None, None, ledger.now())
         )
         if spawn:
-            launch(broker.Command.TICK)
+            try:
+                launch(broker.Command.TICK)
+            except Exception as exc:
+                raise EnqueueError from exc
         return {}
     if input.event is m.HookEvent.USER_PROMPT_SUBMIT:
         origin = prompt_origin(store, actor, input.session, input.prompt or "")
@@ -478,10 +489,11 @@ def handle(
                 )
             # P5 answer adoption failed. Do not open an unattended parked dialog
             # or impersonate an inline answer; leave the native question visible.
-            elif agent is m.AgentKind.CLAUDE and batch.state in {
-                m.BatchState.OPEN,
-                m.BatchState.ESCALATING,
-            }:
+            elif (
+                P5_FAILED
+                and agent is m.AgentKind.CLAUDE
+                and batch.state in {m.BatchState.OPEN, m.BatchState.ESCALATING}
+            ):
                 store.transition(
                     str(batch.id),
                     m.BatchState.BLOCKED,
@@ -502,8 +514,11 @@ def handle(
                 secret,
             )
     if spawn:
-        launch(broker.Command.TICK)
-        request_worker(str(batch.id))
+        try:
+            launch(broker.Command.TICK)
+            request_worker(str(batch.id))
+        except Exception as exc:
+            raise EnqueueError from exc
     return {}
 
 
@@ -551,9 +566,13 @@ def main() -> int:
                     callback.receipt(callback.Outcome.ENQUEUE_FAILED)
                 except OSError:
                     pass
-    except Exception:  # noqa: BLE001 - a broken hook must leave the native question available.
+    except Exception as exc:  # noqa: BLE001 - a broken hook must leave the native question available.
         try:
-            callback.receipt(callback.Outcome.ENQUEUE_FAILED)
+            callback.receipt(
+                callback.Outcome.ENQUEUE_FAILED
+                if isinstance(exc, EnqueueError)
+                else callback.Outcome.HOOK_ERROR
+            )
         except OSError:
             pass
     print(json.dumps(result))

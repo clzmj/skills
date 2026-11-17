@@ -50,7 +50,7 @@ class HookFixture(unittest.TestCase):
         self.store = ledger.Ledger(self.directory / m.LEDGER_FILE)
         self.addCleanup(self.store.close)
 
-    def detect(self, **changes):
+    def detect(self, *, spawn=False, **changes):
         raw = dict(
             hook_event_name="PreToolUse",
             session_id="fixture",
@@ -80,7 +80,7 @@ class HookFixture(unittest.TestCase):
                 },
             ),
         ):
-            return hooks.handle(raw, m.AgentKind.CODEX, self.store, spawn=False)
+            return hooks.handle(raw, m.AgentKind.CODEX, self.store, spawn=spawn)
 
 
 class QuestionHooks(HookFixture):
@@ -231,6 +231,136 @@ class QuestionHooks(HookFixture):
             self.store.db.execute("SELECT count(*) FROM notice").fetchone()[0], 1
         )
 
+    def test_claude_p5_gate_pass_and_fail(self):
+        raw = {
+            "hook_event_name": "PreToolUse",
+            "session_id": "fixture",
+            "tool_name": "AskUserQuestion",
+            "tool_use_id": "call",
+            "tool_input": {"questions": [{"question": "Choose?"}]},
+            "cwd": str(self.directory),
+        }
+        current = state()
+        current.update(
+            agent=m.AgentKind.CLAUDE, key="claude:fixture", root="claude:fixture"
+        )
+        with (
+            patch.object(callback, "session_state", return_value=current),
+            patch.object(
+                callback,
+                "session_lineage",
+                return_value={
+                    "role": callback.Role.AGENT,
+                    "root_session_id": "fixture",
+                },
+            ),
+        ):
+            for failed in (False, True):
+                with (
+                    self.subTest(failed=failed),
+                    patch.object(hooks, "P5_FAILED", failed),
+                ):
+                    hooks.handle(
+                        {**raw, "tool_use_id": str(failed), "turn_id": str(failed)},
+                        m.AgentKind.CLAUDE,
+                        self.store,
+                        spawn=False,
+                    )
+                    batch = next(
+                        b for b in self.store.batches() if b.asker.turn == str(failed)
+                    )
+                    self.assertEqual(batch.state is m.BatchState.BLOCKED, failed)
+
+    def test_detect_failure_leaves_native_question_visible(self):
+        raw = {
+            "hook_event_name": "PreToolUse",
+            "session_id": "fixture",
+            "tool_name": "request_user_input",
+            "tool_use_id": "crashed-call",
+            "tool_input": {"questions": [{"id": "one", "question": "Choose?"}]},
+        }
+        with (
+            patch.object(callback.rex, "STATE", self.directory),
+            patch.object(
+                hooks.codex_questions, "detect", side_effect=RuntimeError("detect")
+            ),
+            patch.object(callback, "session_state", return_value=state()),
+            patch.object(callback, "receipt") as receipt,
+            patch.object(
+                sys, "argv", ["question_hooks.py", "hook", "--agent", "codex"]
+            ),
+            patch.object(sys, "stdin", io.StringIO(json.dumps(raw))),
+            patch.object(sys, "stdout", io.StringIO()) as stdout,
+        ):
+            self.assertEqual(hooks.main(), 0)
+            self.assertIsNotNone(callback.input_request(raw, m.AgentKind.CODEX))
+        self.assertEqual(stdout.getvalue().strip(), "{}")
+        receipt.assert_called_once_with(callback.Outcome.HOOK_ERROR)
+        self.assertEqual(self.store.batches(), ())
+
+    def test_legacy_notification_suppressed_only_after_registration(self):
+        raw = {
+            "hook_event_name": "PreToolUse",
+            "session_id": "fixture",
+            "turn_id": "turn",
+            "tool_name": "request_user_input",
+            "tool_use_id": "call-1",
+            "tool_input": {
+                "questions": [
+                    {
+                        "id": "one",
+                        "question": "Which indentation?",
+                        "options": [{"label": "Tabs"}, {"label": "Spaces"}],
+                    }
+                ]
+            },
+            "cwd": str(self.directory),
+        }
+        with patch.object(callback.rex, "STATE", self.directory):
+            self.assertIsNotNone(callback.input_request(raw, m.AgentKind.CODEX))
+            with patch.object(hooks, "launch"):
+                self.detect(spawn=True)
+            self.assertIsNone(callback.input_request(raw, m.AgentKind.CODEX))
+            self.assertIsNotNone(
+                callback.input_request(
+                    {**raw, "tool_use_id": "other"}, m.AgentKind.CODEX
+                )
+            )
+
+    def test_launch_failure_reports_enqueue_and_keeps_registration(self):
+        raw = {
+            "hook_event_name": "PreToolUse",
+            "session_id": "fixture",
+            "turn_id": "turn",
+            "tool_name": "request_user_input",
+            "tool_use_id": "call-1",
+            "tool_input": {"questions": [{"id": "one", "question": "Choose?"}]},
+            "cwd": str(self.directory),
+        }
+        with (
+            patch.object(callback.rex, "STATE", self.directory),
+            patch.object(callback, "session_state", return_value=state()),
+            patch.object(
+                callback,
+                "session_lineage",
+                return_value={
+                    "role": callback.Role.AGENT,
+                    "root_session_id": "fixture",
+                },
+            ),
+            patch.object(hooks, "launch", side_effect=OSError("launch")),
+            patch.object(callback, "receipt") as receipt,
+            patch.object(
+                sys, "argv", ["question_hooks.py", "hook", "--agent", "codex"]
+            ),
+            patch.object(sys, "stdin", io.StringIO(json.dumps(raw))),
+            patch.object(sys, "stdout", io.StringIO()) as stdout,
+        ):
+            self.assertEqual(hooks.main(), 0)
+        self.assertEqual(stdout.getvalue().strip(), "{}")
+        receipt.assert_called_once_with(callback.Outcome.ENQUEUE_FAILED)
+        self.assertEqual(len(self.store.due_registrations()), 1)
+
     def test_cli_refuses_overcap_identity_with_safe_local_receipt(self):
         bad = state()
         bad["task_id"] = "x" * (m.TASK_ID_MAX + 1)
@@ -262,13 +392,13 @@ class QuestionHooks(HookFixture):
         ):
             self.assertEqual(hooks.main(), 0)
         self.assertEqual(stdout.getvalue().strip(), "{}")
-        receipt.assert_called_once_with(callback.Outcome.ENQUEUE_FAILED)
+        receipt.assert_called_once_with(callback.Outcome.HOOK_ERROR)
         self.assertEqual(self.store.batches(), ())
 
     def test_detect_registers_unclassified_box_owned_without_dispatch(self):
         self.assertEqual(self.detect(), {})
         (first,) = self.store.batches()
-        result = broker.Broker(self.store).worker(str(first.id), spool_digest=False)
+        result = broker.Broker(self.store).worker(str(first.id))
         self.assertEqual(result.state, m.BatchState.BOX_OWNED)
         (entry,) = self.store.due_registrations()
         self.assertFalse(entry["classified"])
@@ -319,7 +449,7 @@ class QuestionHooks(HookFixture):
     def test_native_answer_closes_ordinary_batch_before_same_turn_reask(self):
         self.detect()
         (first,) = self.store.batches()
-        broker.Broker(self.store).worker(str(first.id), spool_digest=False)
+        broker.Broker(self.store).worker(str(first.id))
         self.detect(
             hook_event_name="PostToolUse",
             tool_response={"answers": {"one": {"answers": ["Tabs"]}}},

@@ -34,6 +34,7 @@ from question_model import (
     DIGEST_UNTRUSTED_FIELDS,
     EVENTS_DIR,
     FLAG_ENV,
+    LEDGER_FILE,
     CodexQuestionField,
     DigestEnvelope,
     DigestMetadata,
@@ -85,6 +86,7 @@ class Outcome(StrEnum):
     DELIVERY_FAILED = "delivery_failed"
     CONFIG_INVALID = "config_invalid"
     ENQUEUE_FAILED = "enqueue_failed"
+    HOOK_ERROR = "hook_error"
     LOCAL_ONLY = "local_only"
     PENDING = "pending"
     SPOOL_INVALID = "spool_invalid"
@@ -391,13 +393,28 @@ def validate_question_input(value: object) -> tuple[ValidatedQuestion, ...] | No
     return tuple(questions) or None
 
 
+def question_registered(data, agent) -> bool:
+    call = data.get("tool_use_id")
+    session = data.get("session_id")
+    path = rex.STATE / LEDGER_FILE
+    if not isinstance(call, str) or not call or not session or not path.exists():
+        return False
+    try:
+        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)) as db:
+            return db.execute(
+                "SELECT 1 FROM native_call n JOIN registration r ON r.batch=n.batch WHERE n.call=? AND n.actor=? AND n.tool=? AND n.failed=0 AND r.entry_json IS NOT NULL LIMIT 1",
+                (call, actor_key(agent, session, data.get("agent_id") or ""), data.get("tool_name")),
+            ).fetchone() is not None
+    except (sqlite3.Error, OSError):
+        return False
+
+
 def input_request(data, agent=AgentKind.CODEX) -> tuple[InputKind, str] | None:
     name = data.get("hook_event_name")
     notification = data.get("notification_type", "")
     tool = data.get("tool_name")
-    question_tool = tool in tuple(QuestionTool)
-    if os.environ.get(FLAG_ENV) == "1" and question_tool:
-        return None  # The question hook owns registration and delivery.
+    if os.environ.get(FLAG_ENV) == "1" and tool in tuple(QuestionTool) and question_registered(data, agent):
+        return None
     if agent == AgentKind.CODEX and name == HookEvent.PRE_TOOL_USE and tool in (QuestionTool.CODEX_BLOCKING, QuestionTool.CODEX_ASYNC):
         questions = validate_question_input(data.get("tool_input"))
         prompt = "\n".join(q.text for q in questions or () if q.text.strip())

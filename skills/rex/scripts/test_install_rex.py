@@ -36,6 +36,31 @@ class HookConfig(TypedDict):
 
 
 class InstallerTests(unittest.TestCase):
+    def test_import_does_not_change_sys_path(self):
+        import sys
+
+        before = sys.path.copy()
+        fresh_spec = importlib.util.spec_from_file_location(
+            "rex_installer_import_check", Path(__file__).with_name("install_hooks.py")
+        )
+        assert fresh_spec is not None and fresh_spec.loader is not None
+        fresh_module = importlib.util.module_from_spec(fresh_spec)
+        fresh_spec.loader.exec_module(fresh_module)
+        self.assertEqual(sys.path, before)
+
+    def test_foreign_hook_invocation_cannot_be_claimed_by_argument_path(self):
+        home = Path("/test-home")
+        root = home / ".local/share/agent-tooling/rex"
+        self.assertFalse(
+            installer.owned_handler(
+                "uv run /x/codex_sessions.py hook", "codex_sessions.py", home, root
+            )
+        )
+        command = shlex.join(
+            ["uv", "run", "--script", "/x/foreign.py", "hook", str(root / "codex_sessions.py")]
+        )
+        self.assertFalse(installer.owned_handler(command, "codex_sessions.py", home, root))
+
     def test_install_is_independent_and_idempotent(self):
         with tempfile.TemporaryDirectory() as folder:
             home = Path(folder)

@@ -17,14 +17,13 @@ import os
 import re
 import sys
 import time
-from pathlib import Path
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import IntEnum, StrEnum
-from typing import Callable, Final, Generator, TypeVar, TypedDict, cast
-from uuid import UUID
-from uuid import uuid4
+from pathlib import Path
+from typing import Callable, Final, Generator, TypedDict, TypeVar, cast
+from uuid import UUID, uuid4
 
 import grokbot_callback as callback
 import question_delivery as delivery
@@ -1067,7 +1066,7 @@ class Broker:
             "cursor": page["cursor"],
         }
 
-    def worker(self, batch_id: str, *, spool_digest: bool = True) -> m.QuestionBatch:
+    def worker(self, batch_id: str) -> m.QuestionBatch:
         """Dispatch durable local intents, then register immediately without a classifier."""
         with self.worker_lock(batch_id, wait=0) as acquired:
             if acquired is None:
@@ -1136,12 +1135,8 @@ class Broker:
                             )
                     if batch.state is not m.BatchState.BLOCKED:
                         self.store.take_ownership(batch_id, classification.floor)
-                task = batch.asker.task
             dispatcher.dispatch_batch_locked(batch_id, acquired)
-        if spool_digest:
-            # Coalesce across task siblings without holding the per-batch SEND lock.
-            time.sleep(DIGEST_COALESCE.total_seconds())
-            self.digest(task)
+        # Tick coalesces task siblings; hook-launched workers never wait or spool.
         return self.store.get_batch(batch_id)
 
     def digest_envelope(
@@ -1288,32 +1283,29 @@ class Broker:
             included_entries: list[m.RegisterEntry] = []
             included_progress: list[m.RegisterProgress] = []
             included_notices: list[m.DigestNotice] = []
-            envelope = self.digest_envelope(
-                identifier,
-                task,
-                included_entries,
-                included_progress,
-                included_notices,
-                created,
-                metadata,
-            )
 
-            def pack(source: list[T], destination: list[T]) -> None:
-                while source:
-                    destination.append(source[0])
-                    envelope = self.digest_envelope(
-                        identifier,
-                        task,
-                        included_entries,
-                        included_progress,
-                        included_notices,
-                        created,
-                        metadata,
-                    )
-                    if len(m.canonical(envelope)) > DIGEST_MAX:
-                        destination.pop()
-                        break
-                    source.pop(0)
+            def fit_and_pack(
+                destination: list[T],
+                item: T,
+                related: list[m.RegisterProgress],
+            ) -> bool:
+                destination.append(item)
+                included_progress.extend(related)
+                candidate = self.digest_envelope(
+                    identifier,
+                    task,
+                    included_entries,
+                    included_progress,
+                    included_notices,
+                    created,
+                    metadata,
+                )
+                if len(m.canonical(candidate)) <= DIGEST_MAX:
+                    return True
+                destination.pop()
+                for progress_item in related:
+                    included_progress.remove(progress_item)
+                return False
 
             while entries:
                 entry = entries[0]
@@ -1323,25 +1315,12 @@ class Broker:
                     if (item["batch_id"], item["batch_rev"])
                     == (entry["batch_id"], entry["batch_rev"])
                 ]
-                included_entries.append(entry)
-                included_progress.extend(related)
-                envelope = self.digest_envelope(
-                    identifier,
-                    task,
-                    included_entries,
-                    included_progress,
-                    included_notices,
-                    created,
-                    metadata,
-                )
-                if len(m.canonical(envelope)) > DIGEST_MAX:
-                    included_entries.pop()
-                    for item in related:
-                        included_progress.remove(item)
+                if not fit_and_pack(included_entries, entry, related):
                     break
                 entries.pop(0)
                 progress = [item for item in progress if item not in related]
-            pack(notices, included_notices)
+            while notices and fit_and_pack(included_notices, notices[0], []):
+                notices.pop(0)
             if not (included_entries or included_progress or included_notices):
                 raise ValueError("digest item exceeds wire limit")
             envelope = self.digest_envelope(
@@ -1434,7 +1413,7 @@ class Broker:
             if os.environ.get(m.FLAG_ENV) == "1":
                 for batch in self.store.batches():
                     if batch.state not in ledger.TERMINAL:
-                        self.worker(str(batch.id), spool_digest=False)
+                        self.worker(str(batch.id))
                 tasks = (
                     {
                         entry["task_id"]
