@@ -355,6 +355,39 @@ class QuestionDeliveryProcesses(unittest.TestCase):
         self.assertFalse(dispatcher.dispatch(str(message.id)))
         self.assertEqual(runner.texts, [])
 
+    def test_expired_waiter_dispatches_late_while_inline_window_is_open(self):
+        batch, message = self.claude_pending()
+        runner = AcceptedRoutes()
+        dispatcher = delivery.Delivery(self.store, runner=runner)
+        dispatcher.wait_inline(
+            str(batch.id), HookEvent.PERMISSION_REQUEST, batch.opened_at
+        )
+        with patch.object(ledger, "now", return_value=batch.opened_at):
+            self.assertEqual(dispatcher.dispatch_batch(str(batch.id)), 1)
+        self.assertEqual(runner.texts, [message.text])
+        self.assertEqual(
+            self.store.get_outbound(str(message.id)).state, m.DeliveryState.DISPATCHED
+        )
+
+    def test_dead_waiter_dispatches_late_while_inline_window_is_open(self):
+        batch, message = self.claude_pending()
+        runner = AcceptedRoutes()
+        dispatcher = delivery.Delivery(self.store, runner=runner)
+        process = subprocess.Popen(["true"])
+        process.wait(timeout=5)
+        dispatcher.wait_inline(
+            str(batch.id),
+            HookEvent.PERMISSION_REQUEST,
+            batch.opened_at + m.INLINE_WAIT,
+            pid=process.pid,
+        )
+        with patch.object(ledger, "now", return_value=batch.opened_at):
+            self.assertEqual(dispatcher.dispatch_batch(str(batch.id)), 1)
+        self.assertEqual(runner.texts, [message.text])
+        self.assertEqual(
+            self.store.get_outbound(str(message.id)).state, m.DeliveryState.DISPATCHED
+        )
+
     def test_expired_inline_window_selects_late_route_without_mutating_intent(self):
         batch, message = self.claude_pending()
         runner = AcceptedRoutes()

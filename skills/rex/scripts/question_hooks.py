@@ -538,6 +538,8 @@ def main() -> int:
             result = handle(value, m.AgentKind(args.agent), store, workers=workers)
             # Every hook recovers durable session intents after recording its
             # own observation. Check for a live worker before enqueueing one.
+            # Launch at most one worker; other pending batches wait for the
+            # 60-second tick.
             try:
                 input = m.parse_hook_input(value, m.AgentKind(args.agent))
                 actor = callback.actor_key(input.agent, input.session, input.child)
