@@ -130,6 +130,7 @@ class BoxRefusal(StrEnum):
 class MetaKey(StrEnum):
     CLOCK_SKEW_HOLD = "clock_skew_hold"
     SYNC_CURSOR = "sync_cursor"
+    HANDOFF_UNACKED = "handoff_unacked"
 
 
 class DeferredStatus(StrEnum):
@@ -169,6 +170,7 @@ FULL_RETENTION: Final = timedelta(days=90)
 TOMBSTONE_RETENTION: Final = timedelta(days=365)
 CORRECTION_RENOTIFY: Final = timedelta(days=7)
 HANDOFF_WAIT: Final = timedelta(hours=1)
+HANDOFF_MAX_SENDS: Final = 4  # Initial send plus three resends per revision.
 REMINDERS: Final = (timedelta(hours=1), timedelta(hours=4), timedelta(hours=24))
 TERMINAL: Final = frozenset(
     {BoxBatchState.CANCELLED, BoxBatchState.CLOSED, BoxBatchState.TOMBSTONED}
@@ -1725,16 +1727,26 @@ class Box:
             )
             for grouped in records:
                 self._unleased(grouped.batch)
-            eligible = [
-                r
-                for r in records
-                if r.state == required
-                or resend
-                and purpose == CardPurpose.ASK
-                and r.state == BoxBatchState.AWAITING_L4
-            ]
+            if resend:
+                previous = self._one(
+                    Handoff,
+                    "SELECT * FROM handoff WHERE task=? AND callback_bot=? AND purpose=? ORDER BY rowid DESC LIMIT 1",
+                    (task, callback_bot, purpose.value),
+                )
+                previous = self._current_handoff(previous) if previous else None
+                eligible = self._handoff_records(previous) if previous else []
+            else:
+                eligible = [r for r in records if r.state == required]
             if not eligible or callback_bot not in self.bots:
                 raise Refused(BoxRefusal.WRONG_STATE)
+            pairs = tuple((r.batch, r.latest_rev) for r in eligible)
+            existing = self._one(
+                Handoff,
+                "SELECT * FROM handoff WHERE task=? AND callback_bot=? AND purpose=? AND batch_revs_json=? ORDER BY rowid DESC LIMIT 1",
+                (task, callback_bot, purpose.value, json_text(pairs)),
+            )
+            if resend and existing and existing.sent_count >= HANDOFF_MAX_SENDS:
+                return Output(notices=self._handoff_unacked(existing))
             for record in eligible:
                 self._unleased(record.batch)
                 self._save_record(
@@ -1750,16 +1762,7 @@ class Box:
                         last_activity_at=self.clock(),
                     )
                 )
-            pairs = tuple((r.batch, r.latest_rev) for r in eligible)
-            existing = self._one(
-                Handoff,
-                "SELECT * FROM handoff WHERE task=? AND callback_bot=? AND purpose=? AND batch_revs_json=? ORDER BY last_sent_at DESC LIMIT 1",
-                (task, callback_bot, purpose.value, json_text(pairs)),
-            )
             if existing:
-                if resend and existing.sent_count >= 3:
-                    self._report(BoxReport.HANDOFF_UNACKED, None, task)
-                    return Output(notices=(BoxReport.HANDOFF_UNACKED.value,))
                 handoff_id = existing.id
                 if resend:
                     self.db.execute(
@@ -1783,6 +1786,72 @@ class Box:
             return Output(
                 handoffs=(self._handoff_payload(handoff_id, task, callback_bot, pairs),)
             )
+
+    def _handoff_records(self, handoff: Handoff) -> list[FloorRecord]:
+        previous = dict(json.loads(handoff.batch_revs_json))
+        records = self._rows(
+            FloorRecord,
+            "SELECT * FROM floor_record WHERE task=? AND callback_bot=? ORDER BY batch",
+            (handoff.task, handoff.callback_bot),
+        )
+        return [
+            record
+            for record in records
+            if record.batch in previous
+            and (
+                handoff.purpose == CardPurpose.ASK
+                and (
+                    record.state == BoxBatchState.AWAITING_L4
+                    or record.state == BoxBatchState.AWAITING_L3
+                )
+                or handoff.purpose == CardPurpose.CORRECTION
+                and record.state == BoxBatchState.CORRECTION_DUE
+            )
+        ]
+
+    def _handoff_unacked(self, handoff: Handoff) -> tuple[str, ...]:
+        key = f"{MetaKey.HANDOFF_UNACKED}:{handoff.id}"
+        if self.db.execute(
+            "SELECT 1 FROM box_meta WHERE key=?",
+            (key,),
+        ).fetchone():
+            return ()
+        self.db.execute("INSERT INTO box_meta VALUES (?,?)", (key, handoff.task))
+        self._report(BoxReport.HANDOFF_UNACKED, None, handoff.task)
+        return (BoxReport.HANDOFF_UNACKED.value,)
+
+    def _current_handoff(self, handoff: Handoff) -> Handoff | None:
+        records = self._handoff_records(handoff)
+        if not records:
+            return None
+        pairs_json = json_text(tuple((r.batch, r.latest_rev) for r in records))
+        if pairs_json == handoff.batch_revs_json:
+            return handoff
+        previous = dict(json.loads(handoff.batch_revs_json))
+        revisions = [
+            revision
+            for record in records
+            if record.latest_rev > previous[record.batch]
+            for revision in self._rows(
+                Revision,
+                "SELECT * FROM revision WHERE batch=? AND rev=?",
+                (record.batch, record.latest_rev),
+            )
+        ]
+        current = replace(
+            handoff,
+            id=str(uuid4()),
+            batch_revs_json=pairs_json,
+            sent_count=1 if revisions else handoff.sent_count,
+            last_sent_at=max(
+                [handoff.last_sent_at] + [r.registered_at for r in revisions]
+            ),
+        )
+        self.db.execute(
+            "INSERT INTO handoff VALUES (?,?,?,?,?,?,?)",
+            tuple(self._sql(getattr(current, f.name)) for f in fields(current)),
+        )
+        return current
 
     def _handoff_payload(
         self,
@@ -2820,6 +2889,18 @@ class Box:
                 "SELECT * FROM card_generation WHERE state=?",
                 (CardGenState.ACTIVE.value,),
             ):
+                applicable = set(
+                    self._pairs(card.task, card.callback_bot, card.purpose)
+                )
+                if card.close_requested or not any(
+                    (batch, rev) in applicable
+                    and not self.db.execute(
+                        "SELECT 1 FROM decision WHERE batch=? AND batch_rev=? AND card_gen=?",
+                        (batch, rev, card.gen),
+                    ).fetchone()
+                    for batch, rev in json.loads(card.pairs_json)
+                ):
+                    continue
                 due = sum(self.clock() - card.at >= delay for delay in REMINDERS)
                 if due > card.reminded:
                     notices.append(
@@ -2833,27 +2914,16 @@ class Box:
                 Handoff,
                 "SELECT h.* FROM handoff h WHERE h.id=(SELECT newer.id FROM handoff newer WHERE newer.task=h.task AND newer.callback_bot=h.callback_bot AND newer.purpose=h.purpose ORDER BY newer.rowid DESC LIMIT 1)",
             ):
+                current = self._current_handoff(handoff)
+                if current is None:
+                    continue
+                handoff = current
                 if self.clock() - handoff.last_sent_at < HANDOFF_WAIT:
                     continue
                 pairs = tuple(
-                    (r.batch, r.latest_rev)
-                    for r in self._rows(
-                        FloorRecord,
-                        "SELECT * FROM floor_record WHERE task=? AND callback_bot=? AND state IN (?,?) ORDER BY batch",
-                        (
-                            handoff.task,
-                            handoff.callback_bot,
-                            BoxBatchState.AWAITING_L4.value
-                            if handoff.purpose == CardPurpose.ASK
-                            else BoxBatchState.CORRECTION_DUE.value,
-                            BoxBatchState.AWAITING_L3.value
-                            if handoff.purpose == CardPurpose.ASK
-                            else BoxBatchState.CORRECTION_DUE.value,
-                        ),
-                    )
+                    (str(batch), int(rev))
+                    for batch, rev in json.loads(handoff.batch_revs_json)
                 )
-                if not pairs:
-                    continue
                 covered = any(
                     all(list(pair) in json.loads(c.pairs_json) for pair in pairs)
                     for c in self._rows(
@@ -2868,11 +2938,8 @@ class Box:
                     )
                 )
                 if not covered:
-                    if handoff.sent_count >= 3 and handoff.batch_revs_json == json_text(
-                        pairs
-                    ):
-                        self._report(BoxReport.HANDOFF_UNACKED, None, handoff.task)
-                        notices.append(BoxReport.HANDOFF_UNACKED.value)
+                    if handoff.sent_count >= HANDOFF_MAX_SENDS:
+                        notices.extend(self._handoff_unacked(handoff))
                     else:
                         handoffs.append(
                             self._handoff_payload(

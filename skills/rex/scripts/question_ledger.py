@@ -1071,7 +1071,6 @@ class Ledger:
                 ),
             )
             if self.get_batch(batch_id).state == m.BatchState.BOX_OWNED:
-                text = m.render_pending(batch.id)
                 target = (
                     batch.asker.root_actor
                     if batch.asker.role == m.ActorRole.NATIVE_SUBAGENT
@@ -1082,6 +1081,7 @@ class Ledger:
                     if batch.asker.role == m.ActorRole.NATIVE_SUBAGENT
                     else None
                 )
+                text = m.render_pending(batch.id, child_actor=child)
                 self.put_outbound(
                     m.OutboundMessage(
                         m.OutboundId(uuid4()),
@@ -1768,6 +1768,27 @@ class Ledger:
                 (actor, m.LifecycleKind.SESSION_ENDED),
             ).fetchone()
         )
+
+    def asker_session_alive(self, asker: m.AskerRef) -> bool:
+        # SubagentStop finishes a child, but late answers still belong to its root.
+        actor = (
+            asker.root_actor
+            if asker.role is m.ActorRole.NATIVE_SUBAGENT
+            else asker.actor
+        )
+        return self.session_alive(actor)
+
+    def late_child_notice(self, batch: m.QuestionBatch) -> None:
+        if not self.db.execute(
+            "SELECT 1 FROM notice WHERE batch=? AND kind=?",
+            (str(batch.id), m.NoticeKind.LATE_DELIVERY),
+        ).fetchone():
+            self.notice(
+                m.NoticeKind.LATE_DELIVERY,
+                batch.asker.task,
+                "Subagent has finished; its root must review any late answer",
+                str(batch.id),
+            )
 
     def answered_in_pane(self, batch_id: str) -> bool:
         return bool(

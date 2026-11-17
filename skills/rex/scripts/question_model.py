@@ -1771,7 +1771,10 @@ def body_digest(text: str) -> TextDigest:
     return file_digest(normalize_prompt(text).encode(UTF8))
 
 
-def render_pending(batch_id: BatchId) -> str:
+def render_pending(batch_id: BatchId, *, child_actor: ActorKey | None = None) -> str:
+    if child_actor is not None:
+        child = parse_identity(str(child_actor), "actor")
+        return f"{MARKER_PENDING.format(batch_id=batch_id)} Your subagent {child} asked a question; it was routed for an answer. Continue your own work. The answer will arrive here for you to relay if the child is still active, or to review if it has finished."
     return f"{MARKER_PENDING.format(batch_id=batch_id)} Your question was routed for an answer. Do not ask it again or reword it. Continue work that does not depend on it; otherwise stop at a safe point and end your turn with a summary. The answer will arrive as a user message."
 
 
@@ -1825,7 +1828,7 @@ def render_answer(
         first = (
             f"Your subagent {child} has finished, so this can't be delivered to it; decide whether its result is still valid."
             if child_finished
-            else f"Your subagent {child} asked a question; here is the answer from {label}. Pass the block below to that subagent unchanged, then run:"
+            else f"Your subagent {child} asked a question; here is the answer from {label}. If it has finished, decide whether its result is still valid. Otherwise pass the block below to that subagent unchanged, then run:"
         )
         return (
             f"{marker} {correction}{first}\n{ack}\n--- for {child} ---\n"

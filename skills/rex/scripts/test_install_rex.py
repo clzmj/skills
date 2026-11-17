@@ -6,7 +6,10 @@
 import copy
 import importlib.util
 import json
+import os
 import shlex
+import subprocess
+import sys
 import tempfile
 import unittest
 from typing import TypedDict
@@ -36,6 +39,50 @@ class HookConfig(TypedDict):
 
 
 class InstallerTests(unittest.TestCase):
+    def test_operator_cli_can_enable_then_disable_both_hosts_without_duplicates(self):
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder)
+            commands_by_host: dict[str, list[str]] = {}
+            for setting in ("on", "off", "off"):
+                result = subprocess.run(
+                    [sys.executable, str(Path(installer.__file__ or "")), "--home", str(home),
+                     "--question-escalation", setting],
+                    text=True, capture_output=True, check=True,
+                )
+                receipt = json.loads(result.stdout)
+                self.assertEqual(receipt["question_escalation"], setting)
+                for config in (home / ".codex/hooks.json", home / ".claude/settings.json"):
+                    data = json.loads(config.read_text())
+                    commands = [handler["command"] for groups in data["hooks"].values()
+                                for group in groups for handler in group["hooks"]]
+                    expected = "GROKBOT_QE=1" if setting == "on" else "GROKBOT_QE=0"
+                    self.assertTrue(commands)
+                    self.assertTrue(all(shlex.split(command)[:2] == ["env", expected]
+                                        for command in commands))
+                    previous = commands_by_host.get(str(config))
+                    if previous is not None:
+                        self.assertEqual(len(commands), len(previous))
+                    commands_by_host[str(config)] = commands
+                if not receipt["changed"]:
+                    self.assertEqual(setting, "off")
+            self.assertEqual(receipt["changed"], [])
+
+    def test_default_hooks_disable_qe_even_when_parent_environment_enables_it(self):
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder)
+            launcher = home / "fake uv"
+            launcher.write_text('#!/usr/bin/env python3\nimport os\nprint(os.environ["GROKBOT_QE"])\n')
+            launcher.chmod(0o755)
+            data: HookConfig = {"hooks": {}}
+            installer.rex_hooks(data, home / "runtime", home, str(launcher), True)
+            for groups in data["hooks"].values():
+                for group in groups:
+                    for handler in group["hooks"]:
+                        result = subprocess.run(shlex.split(handler["command"]),
+                                                env={**os.environ, "GROKBOT_QE": "1"},
+                                                text=True, capture_output=True, check=True)
+                        self.assertEqual(result.stdout.strip(), "0")
+
     def test_install_is_independent_and_idempotent(self):
         with tempfile.TemporaryDirectory() as folder:
             home = Path(folder)
@@ -70,7 +117,7 @@ class InstallerTests(unittest.TestCase):
                         if handler == python_hook:
                             continue
                         words = shlex.split(handler["command"])
-                        self.assertEqual(words[:3], ["/opt/tools/uv", "run", "--script"])
+                        self.assertEqual(words[:5], ["env", "GROKBOT_QE=0", "/opt/tools/uv", "run", "--script"])
                         if "question_hooks.py" in handler["command"]:
                             self.assertEqual(words[-3:], ["hook", "--agent", "codex"])
                         else:
@@ -95,7 +142,7 @@ class InstallerTests(unittest.TestCase):
             relocated = [handler for group in data["hooks"]["SessionEnd"] for handler in group["hooks"]
                          if installer.owned_handler(handler.get("command", ""), "codex_sessions.py", home, root)]
             self.assertEqual(len(relocated), 1)
-            self.assertEqual(shlex.split(relocated[0]["command"]), ["/opt/tools/uv", "run", "--script", str(root / "codex_sessions.py"), "hook"])
+            self.assertEqual(shlex.split(relocated[0]["command"]), ["env", "GROKBOT_QE=0", "/opt/tools/uv", "run", "--script", str(root / "codex_sessions.py"), "hook"])
             self.assertEqual(relocated[0]["timeout"], 3)
 
     def test_post_tool_resume_observer_preserves_unrelated_matchers(self):

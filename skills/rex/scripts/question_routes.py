@@ -17,6 +17,7 @@ from enum import StrEnum
 from typing import Callable, Sequence, TypedDict
 
 import question_model as m
+import grokbot_callback as callback
 
 ROUTE_TIMEOUT = m.ROUTE_TIMEOUT.total_seconds()
 
@@ -42,6 +43,24 @@ class RouteBody(TypedDict):
     rex_session: str
     rex_block: str
     text: str
+
+
+def relay_matches(asker: m.AskerRef, target: str, thread: str | None) -> bool:
+    """Re-resolve the child root; cached or plan-supplied addresses grant nothing."""
+    if asker.role is not m.ActorRole.NATIVE_SUBAGENT:
+        return True
+    state = callback.actor_state(asker.actor)
+    if state is None:
+        return False
+    root = callback.session_lineage(state)["root_session_id"]
+    actor = callback.actor_key(asker.agent, root)
+    root_state = callback.actor_state(actor)
+    return (
+        target == asker.root_actor == actor
+        and (asker.agent is not m.AgentKind.CODEX or thread == root)
+        and root_state is not None
+        and root_state["status"] != callback.Status.ENDED
+    )
 
 
 def rex_target(block: str) -> str:
