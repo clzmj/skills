@@ -68,7 +68,8 @@ CREATE TABLE IF NOT EXISTS tombstone (
 );
 CREATE TABLE IF NOT EXISTS box_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS report (
- id INTEGER PRIMARY KEY, kind TEXT NOT NULL, batch TEXT, detail TEXT NOT NULL, at TEXT NOT NULL
+ id INTEGER PRIMARY KEY, kind TEXT NOT NULL, batch TEXT, detail TEXT NOT NULL, at TEXT NOT NULL,
+ notified_at TEXT
 );
 CREATE TABLE IF NOT EXISTS local_outbound_seen (id TEXT PRIMARY KEY, batch TEXT NOT NULL, state TEXT NOT NULL);
 -- Storage also enforces the write-once evidence contract against future writers.

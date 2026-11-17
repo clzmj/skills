@@ -13,26 +13,56 @@ from unittest.mock import patch
 
 import question_broker as broker
 import question_guard as guard
+import question_ledger as ledger
 import question_model as m
 import test_question_hooks as hook_fixtures
 
 
 class Registration(hook_fixtures.HookFixture):
-    def test_worker_returns_without_waiting_for_digest(self):
-        self.detect()
+    def test_detect_and_worker_spool_digest_without_a_later_hook(self):
+        with patch.object(hook_fixtures.hooks, "launch") as launch:
+            self.detect(spawn=True)
+        self.assertTrue(
+            any(call.args[0] is broker.Command.WORKER for call in launch.call_args_list)
+        )
         (batch,) = self.store.batches()
-        with patch.object(
-            broker.time, "sleep", side_effect=AssertionError("worker must not wait")
+        with (
+            patch.object(broker.time, "sleep") as sleep,
+            patch.object(broker.callback.rex, "STATE", self.directory),
+            patch.object(broker.callback.subprocess, "Popen"),
+            patch.object(
+                broker.callback,
+                "git_metadata",
+                return_value={"repo": "fixture", "branch": "main", "head_sha": ""},
+            ),
+            patch.object(
+                broker.Broker, "tick", side_effect=AssertionError("no later hook")
+            ),
         ):
             result = broker.Broker(self.store).worker(str(batch.id))
+        sleep.assert_called_once_with(30)
         self.assertEqual(result.state, m.BatchState.BOX_OWNED)
-        self.assertEqual(len(self.store.due_registrations()), 1)
+        (path,) = self.directory.glob("grokbot-pending-*")
+        self.assertEqual(
+            json.loads(path.read_text())["body"]["register"][0]["batch_id"],
+            str(batch.id),
+        )
+        self.assertEqual(
+            self.store.db.execute("SELECT count(*) FROM digest").fetchone()[0], 1
+        )
 
-    def test_two_sibling_workers_leave_one_coalesced_digest_to_tick(self):
+    def test_two_sibling_workers_spool_one_coalesced_digest_without_tick(self):
         self.detect()
         self.detect(turn_id="sibling-turn", tool_use_id="sibling-call")
-        worker = broker.Broker(self.store)
-        sent = []
+        barrier, sent = Barrier(2), []
+
+        def coalesce(seconds):
+            self.assertEqual(seconds, 30)
+            barrier.wait(timeout=5)
+
+        def run(batch):
+            with ledger.Ledger(self.store.path) as store:
+                return broker.Broker(store).worker(str(batch.id))
 
         def spool(envelope):
             sent.append(json.loads(m.canonical(envelope)))
@@ -43,20 +73,14 @@ class Registration(hook_fixtures.HookFixture):
             return path
 
         with (
-            patch.object(broker.time, "sleep"),
+            patch.object(broker.time, "sleep", side_effect=coalesce),
             patch.object(broker.callback, "spool", side_effect=spool),
-            patch.object(self.store, "session_alive", return_value=True),
+            patch.object(
+                broker.Broker, "tick", side_effect=AssertionError("no later hook")
+            ),
+            ThreadPoolExecutor(2) as pool,
         ):
-            for batch in self.store.batches():
-                worker.worker(str(batch.id))
-            self.assertEqual(sent, [], "workers must leave coalescing to tick")
-            worker.tick()
-            self.assertEqual(sent, [], "tick must honor DIGEST_COALESCE")
-            with patch.object(
-                worker, "clock", return_value=worker.clock() + timedelta(minutes=1)
-            ):
-                worker.tick()
-                worker.tick()
+            list(pool.map(run, self.store.batches()))
         self.assertEqual(len(sent), 1)
         self.assertEqual(
             {entry["batch_id"] for entry in sent[0]["body"]["register"]},
@@ -67,11 +91,11 @@ class Registration(hook_fixtures.HookFixture):
         self.detect()
         (batch,) = self.store.batches()
         worker = broker.Broker(self.store)
-        worker.worker(str(batch.id))
+        worker.worker(str(batch.id), spool_digest=False)
         initial = self.store.due_progress()
         self.assertEqual(len(initial), 1)
         self.assertIsNone(initial[0]["floor_raise"])
-        worker.worker(str(batch.id))
+        worker.worker(str(batch.id), spool_digest=False)
         self.assertEqual(self.store.due_progress(), initial)
         self.assertEqual(
             self.store.db.execute("SELECT count(*) FROM progress").fetchone()[0], 1
@@ -81,7 +105,7 @@ class Registration(hook_fixtures.HookFixture):
         self.detect()
         (batch,) = self.store.batches()
         worker = broker.Broker(self.store)
-        worker.worker(str(batch.id))
+        worker.worker(str(batch.id), spool_digest=False)
         (entry,) = self.store.due_registrations()
         (progress,) = self.store.due_progress()
         sent = []
@@ -125,7 +149,7 @@ class Registration(hook_fixtures.HookFixture):
         self.detect()
         (batch,) = self.store.batches()
         worker = broker.Broker(self.store)
-        worker.worker(str(batch.id))
+        worker.worker(str(batch.id), spool_digest=False)
         self.store.notice(m.NoticeKind.L0_VIOLATION, "fixture", "ASSUMPTION: guarded")
         sent = []
 
@@ -183,7 +207,7 @@ class Registration(hook_fixtures.HookFixture):
         self.detect()
         (batch,) = self.store.batches()
         worker = broker.Broker(self.store)
-        worker.worker(str(batch.id))
+        worker.worker(str(batch.id), spool_digest=False)
         (entry,) = self.store.due_registrations()
         (progress,) = self.store.due_progress()
         self.store.ack_registration(
@@ -211,7 +235,7 @@ class Registration(hook_fixtures.HookFixture):
     def test_sibling_workers_claim_one_task_digest(self):
         self.detect()
         (batch,) = self.store.batches()
-        broker.Broker(self.store).worker(str(batch.id))
+        broker.Broker(self.store).worker(str(batch.id), spool_digest=False)
         barrier, sent = Barrier(2), []
 
         def spool(envelope):
@@ -258,7 +282,7 @@ class Registration(hook_fixtures.HookFixture):
             )
         worker = broker.Broker(self.store)
         for batch in self.store.batches():
-            worker.worker(str(batch.id))
+            worker.worker(str(batch.id), spool_digest=False)
         sent = []
         with patch.object(
             broker.callback,
@@ -339,7 +363,7 @@ class Registration(hook_fixtures.HookFixture):
             }
         )
         (batch,) = self.store.batches()
-        broker.Broker(self.store).worker(str(batch.id))
+        broker.Broker(self.store).worker(str(batch.id), spool_digest=False)
         self.detect(tool_use_id="overflow")
         self.assertEqual(
             self.store.get_batch(str(batch.id)).state, m.BatchState.BLOCKED
@@ -350,7 +374,7 @@ class Registration(hook_fixtures.HookFixture):
                 m.BatchState.BOX_OWNED, m.BatchState.BLOCKED
             )
         for _ in range(2):
-            broker.Broker(self.store).worker(str(batch.id))
+            broker.Broker(self.store).worker(str(batch.id), spool_digest=False)
         self.assertEqual(
             self.store.db.execute(
                 "SELECT count(*) FROM notice WHERE kind=?", (m.NoticeKind.TOO_LARGE,)
@@ -379,7 +403,7 @@ class Registration(hook_fixtures.HookFixture):
         self.detect()
         (batch,) = self.store.batches()
         worker = broker.Broker(self.store)
-        worker.worker(str(batch.id))
+        worker.worker(str(batch.id), spool_digest=False)
         rules = guard.load_guard() + (
             m.GuardRule(
                 m.RuleId("fixture-new-rule"),
@@ -391,7 +415,7 @@ class Registration(hook_fixtures.HookFixture):
             ),
         )
         with patch.object(guard, "load_guard", return_value=rules):
-            worker.worker(str(batch.id))
+            worker.worker(str(batch.id), spool_digest=False)
         (latest,) = self.store.due_progress()
         assert latest["floor_raise"] is not None
         self.assertEqual(latest["floor_raise"]["floor"], m.EscalationLevel.L4_OWNER)
@@ -406,7 +430,7 @@ class Registration(hook_fixtures.HookFixture):
         self.detect()
         (batch,) = self.store.batches()
         worker = broker.Broker(self.store)
-        worker.worker(str(batch.id))
+        worker.worker(str(batch.id), spool_digest=False)
         sent = []
 
         def spool(envelope):

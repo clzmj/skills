@@ -106,6 +106,8 @@ class BoxReport(StrEnum):
     SEND_FAILED = "send_failed"
     CLOCK_SKEW = "clock_skew"
     SYNC_OVERSIZED = "sync_oversized"
+    REGISTRATION_REFUSED = "registration_refused"
+    RESULT_REFUSED = "result_refused"
 
 
 class BoxRefusal(StrEnum):
@@ -455,6 +457,7 @@ class Report:
     batch: str | None
     detail: str
     at: datetime
+    notified_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -601,6 +604,11 @@ class Box:
         self.db = sqlite3.connect(path, isolation_level=None, timeout=30)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(Path(__file__).with_name("schema.sql").read_text())
+        with self.transaction():
+            if "notified_at" not in {
+                row[1] for row in self.db.execute("PRAGMA table_info(report)")
+            }:
+                self.db.execute("ALTER TABLE report ADD COLUMN notified_at TEXT")
 
     def close(self) -> None:
         self.db.close()
@@ -676,6 +684,18 @@ class Box:
         self._expire(batch)
         if self.db.execute("SELECT 1 FROM lease WHERE batch=?", (batch,)).fetchone():
             raise Refused(BoxRefusal.LEASED)
+
+    def _registration_refused(self, batch: str, error: Refused | ValueError) -> None:
+        reason = error.reason if isinstance(error, Refused) else BoxRefusal.VALIDATION
+        kind = {
+            BoxRefusal.NON_MONOTONE_REGISTRATION: BoxReport.NON_MONOTONE_REGISTRATION,
+            BoxRefusal.CLOSED_BATCH: BoxReport.CLOSED_BATCH,
+        }.get(reason, BoxReport.REGISTRATION_REFUSED)
+        self._report(
+            kind,
+            batch,
+            f"{reason}: {error.detail if isinstance(error, Refused) else error}",
+        )
 
     def _open(self, batch: str) -> FloorRecord:
         self._unleased(batch)
@@ -822,12 +842,6 @@ class Box:
                 correction_notified_at=old.correction_notified_at or self.clock(),
                 owned=True,
             )
-        if (
-            record.state == BoxBatchState.LOCAL
-            and record.floor <= m.EscalationLevel.L2_NORMAL
-            and not record.escalated
-        ):
-            return replace(record, correction_floor=None)
         invalid_decision = (
             raised
             and old.state == BoxBatchState.DECIDED
@@ -1139,6 +1153,20 @@ class Box:
             ),
         )
 
+    def _unresolved_plan_ids(self) -> list[str]:
+        return [
+            row[0]
+            for row in self.db.execute(
+                "SELECT id FROM plan WHERE action=? AND state IN (?,?,?) AND late_result_json IS NULL",
+                (
+                    m.PlanAction.SEND.value,
+                    PlanState.ISSUED.value,
+                    PlanState.FINAL_NONE.value,
+                    PlanState.FINAL_EXPIRED.value,
+                ),
+            )
+        ]
+
     def _plan(
         self,
         action: m.PlanAction,
@@ -1153,6 +1181,18 @@ class Box:
         delivery: Delivery | None = None,
         by: str = DINESH,
     ) -> PlanTicket:
+        if action == m.PlanAction.SYNC:
+            sync = m.parse_record(m.SyncBody, body)
+            outstanding = set(self._unresolved_plan_ids())
+            body = m.SyncBody(
+                tasks=sync["tasks"],
+                cursor=sync["cursor"],
+                plan_ids=[
+                    identifier
+                    for identifier in sync["plan_ids"]
+                    if identifier in outstanding
+                ],
+            )
         raw = dict(
             schema=m.PLAN_SCHEMA,
             plan_id=str(uuid4()),
@@ -1237,7 +1277,7 @@ class Box:
                         (f"ack:{batch}:{value['batch_rev']}", "1"),
                     )
             except (Refused, ValueError) as error:
-                self._report(BoxReport.NON_MONOTONE_REGISTRATION, batch, str(error))
+                self._registration_refused(batch, error)
             self.db.execute("DELETE FROM queued_registration WHERE n=?", (row[0],))
         self._apply_deferred_status(batch)
 
@@ -1435,7 +1475,8 @@ class Box:
                 "SELECT * FROM revision WHERE batch=? AND rev=?",
                 (batch, expected_rev),
             )
-            assert revrow is not None
+            if revrow is None:
+                raise Refused(BoxRefusal.UNKNOWN_ENTRY)
             hits = m.parse_record(tuple[m.GuardHit, ...], json.loads(revrow.hits_json))
             failures = guard.validate_answers(
                 current_questions,
@@ -1507,9 +1548,7 @@ class Box:
                 ),
             )
             if kind == DecisionKind.CORRECTION:
-                self._suppress(
-                    batch, m.SuppressCause.NEWER_RESOLUTION, keep_uncertain=False
-                )
+                self._suppress(batch, m.SuppressCause.NEWER_RESOLUTION)
             self._save_record(
                 replace(
                     record,
@@ -1574,7 +1613,22 @@ class Box:
                     self.clock().isoformat(),
                 ),
             )
-            return Output(plans=(self._deliver(delivery_id, by=by),))
+            pause = self.db.execute(
+                "SELECT takeover_id FROM takeover_seen WHERE batch=? AND cleared=0",
+                (batch,),
+            ).fetchone()
+            if pause:
+                self.db.execute(
+                    "UPDATE delivery SET paused_by=? WHERE id=?",
+                    (pause[0], delivery_id),
+                )
+                return Output(notices=(f"delivery_held:{delivery_id}:paused",))
+            try:
+                return Output(plans=(self._deliver(delivery_id, by=by),))
+            except Refused as error:
+                if error.reason != BoxRefusal.CLOCK_SKEW_HOLD:
+                    raise
+                return Output(notices=(f"delivery_held:{delivery_id}:{error.reason}",))
 
     def _current_resolution(self, record: FloorRecord) -> int | None:
         if record.state == BoxBatchState.CORRECTION_DUE:
@@ -1611,7 +1665,8 @@ class Box:
             "SELECT * FROM decision WHERE batch=? AND resolution_rev=?",
             (delivery.batch, delivery.resolution_rev),
         )
-        assert decision is not None
+        if decision is None:
+            raise Refused(BoxRefusal.UNKNOWN_ENTRY)
         if (
             decision.batch_rev != record.latest_rev
             or delivery.authorized_rev != record.latest_rev
@@ -1797,7 +1852,8 @@ class Box:
             revision = self._one(
                 Revision, "SELECT * FROM revision WHERE batch=? AND rev=?", (batch, rev)
             )
-            assert revision is not None
+            if revision is None:
+                raise Refused(BoxRefusal.UNKNOWN_ENTRY)
             hits = m.parse_record(
                 tuple[m.GuardHit, ...], json.loads(revision.hits_json)
             )
@@ -1846,7 +1902,17 @@ class Box:
                         for q in visible
                         if q.retired_rev is None
                     ],
-                    recommendations=recommendations,
+                    recommendations=[
+                        m.DigestRecommendation(
+                            **{
+                                **recommendation,
+                                "rationale": redaction.redact(
+                                    recommendation["rationale"]
+                                ).text,
+                            }
+                        )
+                        for recommendation in recommendations
+                    ],
                 )
             )
         return m.L4Handoff(
@@ -1858,6 +1924,33 @@ class Box:
         )
 
     def card_intent(
+        self,
+        task: str,
+        callback_bot: str,
+        *,
+        purpose: CardPurpose = CardPurpose.ASK,
+        gen: int | None = None,
+        reconciles: int | None = None,
+        by: str = DINESH,
+    ) -> Card:
+        try:
+            return self._card_intent(
+                task,
+                callback_bot,
+                purpose=purpose,
+                gen=gen,
+                reconciles=reconciles,
+                by=by,
+            )
+        except Refused as error:
+            if error.reason == BoxRefusal.CARD_CAP_REACHED:
+                # The failed intent transaction has rolled back. Keep its alert.
+                with self.transaction():
+                    for batch, _ in self._pairs(task, callback_bot, purpose):
+                        self._report(BoxReport.CARD_CAP_REACHED, batch)
+            raise
+
+    def _card_intent(
         self,
         task: str,
         callback_bot: str,
@@ -2059,6 +2152,19 @@ class Box:
         why: m.NoResultWhy | None = None,
         detail: str = "",
     ) -> Output:
+        return self._result(
+            line, plan_id=plan_id, why=why, detail=detail, historical=False
+        )
+
+    def _result(
+        self,
+        line: str | None = None,
+        *,
+        plan_id: str | None = None,
+        why: m.NoResultWhy | None = None,
+        detail: str = "",
+        historical: bool,
+    ) -> Output:
         result = None
         if line is not None:
             try:
@@ -2098,9 +2204,8 @@ class Box:
                 raise Refused(BoxRefusal.BAD_RESULT)
             self._expire()
             plan = self._one(PlanRow, "SELECT * FROM plan WHERE id=?", (plan_id,))
-            assert plan is not None
-            if result is not None:
-                self._skew(result)
+            if plan is None:
+                raise Refused(BoxRefusal.UNKNOWN_PLAN)
             if plan.state != PlanState.ISSUED:
                 if result is None:
                     return Output()
@@ -2123,6 +2228,8 @@ class Box:
                         (evidence, plan.delivery_id),
                     )
                 return Output()
+            if result is not None and not historical and not result["replayed"]:
+                self._skew(result)
             if result is None:
                 self.db.execute(
                     "UPDATE plan SET state=?,result_json=?,final_at=? WHERE id=?",
@@ -2165,17 +2272,20 @@ class Box:
                 ),
             )
             if plan.action == m.PlanAction.SEND:
-                assert plan.delivery_id is not None
+                if plan.delivery_id is None:
+                    raise Refused(BoxRefusal.UNKNOWN_ENTRY)
                 delivery = self._one(
                     Delivery, "SELECT * FROM delivery WHERE id=?", (plan.delivery_id,)
                 )
-                assert delivery is not None
+                if delivery is None:
+                    raise Refused(BoxRefusal.UNKNOWN_ENTRY)
                 self._send_result(delivery, result)
                 self._release(delivery.batch)
             elif result["ok"]:
                 if plan.action == m.PlanAction.SYNC:
-                    assert result["payload"] is not None
-                    self._sync(result["payload"])
+                    if result["payload"] is None:
+                        raise Refused(BoxRefusal.BAD_RESULT)
+                    output = self._sync(result["payload"])
                     if result["payload"]["more"]:
                         body = m.parse_record(m.SyncBody, json.loads(plan.body_json))
                         self.db.execute(
@@ -2183,7 +2293,8 @@ class Box:
                             (MetaKey.SYNC_CURSOR.value,),
                         )
                         return Output(
-                            plans=(
+                            plans=output.plans
+                            + (
                                 self._plan(
                                     m.PlanAction.SYNC,
                                     m.SyncBody(
@@ -2192,8 +2303,10 @@ class Box:
                                         plan_ids=body["plan_ids"],
                                     ),
                                 ),
-                            )
+                            ),
+                            notices=output.notices,
                         )
+                    return output
                 elif plan.action == m.PlanAction.CLEAR_TAKEOVER:
                     body = m.parse_record(m.ClearBody, json.loads(plan.body_json))
                     self._clear(body["takeover_id"])
@@ -2230,14 +2343,6 @@ class Box:
                 record = replace(
                     record, state=BoxBatchState.DELIVERED, correction_floor=None
                 )
-            elif record.state == BoxBatchState.CORRECTION_DUE:
-                decision = self._one(
-                    Decision,
-                    "SELECT * FROM decision WHERE batch=? AND resolution_rev=?",
-                    (delivery.batch, delivery.resolution_rev),
-                )
-                assert decision is not None
-                record = self._recover_correction(record, delivery, decision)
         elif outcome in (
             m.SendOutcome.SEND_UNKNOWN,
             m.SendOutcome.NOT_SENT_ALREADY_SENT,
@@ -2386,7 +2491,8 @@ class Box:
                 "SELECT * FROM decision WHERE batch=? AND resolution_rev=?",
                 (delivery.batch, delivery.resolution_rev),
             )
-            assert decision is not None
+            if decision is None:
+                raise Refused(BoxRefusal.UNKNOWN_ENTRY)
             below = decision.level < record.floor
             state, cause, pause, resend = (
                 delivery.state,
@@ -2568,7 +2674,9 @@ class Box:
             )
             return Output()
 
-    def _sync(self, payload: m.SyncPayload) -> None:
+    def _sync(self, payload: m.SyncPayload) -> Output:
+        plans: list[PlanTicket] = []
+        notices: list[str] = []
         for value in (*payload["registrations"], *payload["progress"]):
             batch, rev = value["batch_id"], value["batch_rev"]
             try:
@@ -2591,20 +2699,32 @@ class Box:
                         (f"registered:{batch}", "1"),
                     )
             except (Refused, ValueError) as error:
-                self._report(BoxReport.NON_MONOTONE_REGISTRATION, batch, str(error))
+                self._registration_refused(batch, error)
         for identifier in payload["oversized"]:
             self._report(
                 BoxReport.SYNC_OVERSIZED,
                 identifier,
                 "untrusted identifier; item requires operator review",
             )
+            notices.append(f"{BoxReport.SYNC_OVERSIZED}:{identifier}")
         for saved in payload["plan_results"]:
             if saved["result_b64"] is not None:
                 try:
-                    self.result(m.RESULT_PREFIX + saved["result_b64"])
+                    with self._queue_savepoint():
+                        output = self._result(
+                            m.RESULT_PREFIX + saved["result_b64"], historical=True
+                        )
+                    plans.extend(output.plans)
+                    notices.extend(output.notices)
                 except Refused as error:
+                    saved_batch = self.db.execute(
+                        "SELECT coalesce(d.batch,json_extract(p.body_json,'$.batch_id')) FROM plan p LEFT JOIN delivery d ON d.id=p.delivery_id WHERE p.id=?",
+                        (saved["plan_id"],),
+                    ).fetchone()
                     self._report(
-                        BoxReport.SYNC_OVERSIZED, saved["plan_id"], error.reason.value
+                        BoxReport.RESULT_REFUSED,
+                        saved_batch[0] if saved_batch else None,
+                        f"{saved['plan_id']}: {error.reason}: {error.detail}",
                     )
         status = payload["status"]
         for takeover in status["takeovers"]:
@@ -2684,6 +2804,7 @@ class Box:
                 "INSERT OR REPLACE INTO box_meta VALUES (?,?)",
                 (MetaKey.SYNC_CURSOR.value, payload["cursor"] or ""),
             )
+        return Output(plans=tuple(plans), notices=tuple(notices))
 
     def tick(self) -> Output:
         with self.transaction():
@@ -2696,6 +2817,16 @@ class Box:
             plans: list[PlanTicket] = []
             handoffs: list[m.L4Handoff] = []
             notices: list[str] = []
+            for report in self._rows(
+                Report,
+                "SELECT * FROM report WHERE kind IN (?,?) AND notified_at IS NULL ORDER BY id",
+                (BoxReport.SYNC_OVERSIZED.value, BoxReport.CARD_CAP_REACHED.value),
+            ):
+                notices.append(f"{report.kind}:{report.batch}")
+                self.db.execute(
+                    "UPDATE report SET notified_at=? WHERE id=?",
+                    (self.clock().isoformat(), report.id),
+                )
             for key, _ in self.db.execute(
                 "SELECT key,value FROM box_meta WHERE key LIKE 'ack:%' OR key LIKE 'cancel:%' OR key LIKE 'registered:%' OR key LIKE 'stale:%'"
             ).fetchall():
@@ -2707,27 +2838,11 @@ class Box:
                     ).fetchone():
                         plans.append(self._ack(batch, int(rev)))
                         self.db.execute("DELETE FROM box_meta WHERE key=?", (key,))
-                elif kind == DeferredStatus.STALE:
+                elif kind in tuple(DeferredStatus):
                     if not self.db.execute(
                         "SELECT 1 FROM lease WHERE batch=?", (rest,)
                     ).fetchone():
-                        record = self._record(rest)
-                        if record.state not in INACTIVE:
-                            self._save_record(
-                                replace(
-                                    record,
-                                    state=BoxBatchState.STALE,
-                                    correction_floor=None,
-                                )
-                            )
-                        self.db.execute("DELETE FROM box_meta WHERE key=?", (key,))
-                elif kind == DeferredStatus.CANCEL:
-                    if not self.db.execute(
-                        "SELECT 1 FROM lease WHERE batch=?", (rest,)
-                    ).fetchone():
-                        if self._record(rest).state not in TERMINAL:
-                            self._cancel(rest)
-                        self.db.execute("DELETE FROM box_meta WHERE key=?", (key,))
+                        self._apply_deferred_status(rest)
                 else:
                     notices.append(f"watchdog_registration:{rest}")
                     self.db.execute("DELETE FROM box_meta WHERE key=?", (key,))
@@ -2896,22 +3011,14 @@ class Box:
                         tuple(s.value for s in INACTIVE),
                     )
                 ]
-                plan_ids = [
-                    r[0]
-                    for r in self.db.execute(
-                        "SELECT id FROM plan WHERE action=? AND state IN (?,?,?)",
-                        (
-                            m.PlanAction.SEND.value,
-                            PlanState.ISSUED.value,
-                            PlanState.FINAL_NONE.value,
-                            PlanState.FINAL_EXPIRED.value,
-                        ),
-                    )
-                ]
                 plans.append(
                     self._plan(
                         m.PlanAction.SYNC,
-                        m.SyncBody(tasks=tasks, cursor=cursor, plan_ids=plan_ids),
+                        m.SyncBody(
+                            tasks=tasks,
+                            cursor=cursor,
+                            plan_ids=self._unresolved_plan_ids(),
+                        ),
                     )
                 )
             return Output(
@@ -2934,7 +3041,7 @@ class Box:
             (
                 record.batch,
                 record.task,
-                BoxBatchState.CLOSED.value,
+                record.state.value,
                 record.latest_rev,
                 m.digest(record),
                 now.isoformat(),

@@ -61,8 +61,6 @@ def owned_handler(command, script, home, root):
         hook_index = words.index("hook", 2)
     except ValueError:
         return False
-    if hook_index == 0:
-        return False
     path = Path(words[hook_index - 1])
     if path.name != script or not path.is_absolute():
         return False

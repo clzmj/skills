@@ -34,6 +34,8 @@ from question_redact import redact
 
 # Recorded P5 failure: docs/qe/question-delivery-evidence.md, P5 section.
 # Set false if a later probe passes; an absent failure must not block the route.
+# TODO(PR-4): implement deny-plus-pending after resolving the coarse P5 gate;
+# evidence: docs/qe/question-delivery-evidence.md:94-102.
 P5_FAILED: Final = True
 
 END_EVENTS: Final = {
