@@ -22,45 +22,13 @@ from contextlib import closing, contextmanager
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, NotRequired, TypedDict
+from typing import Any, NotRequired, TypedDict, cast
 from urllib.parse import urlsplit
 
+from agent_types import AgentKind, Event, HookEvent, InputKind
 import rex_visible as rex
 
 CONFIG = Path.home() / ".config/agent-tooling/grokbot-callback.env"
-
-
-class Event(StrEnum):
-    RUN_FINISHED = "run_finished"
-    NEEDS_INPUT = "needs_input"
-    HEARTBEAT = "heartbeat"
-    LINEAGE = "lineage"
-    TEST = "test"
-
-
-class HookEvent(StrEnum):
-    SESSION_START = "SessionStart"
-    USER_PROMPT_SUBMIT = "UserPromptSubmit"
-    SUBAGENT_START = "SubagentStart"
-    SUBAGENT_STOP = "SubagentStop"
-    STOP = "Stop"
-    STOP_FAILURE = "StopFailure"
-    SESSION_END = "SessionEnd"
-    PRE_TOOL_USE = "PreToolUse"
-    POST_TOOL_USE = "PostToolUse"
-    PERMISSION_REQUEST = "PermissionRequest"
-    NOTIFICATION = "Notification"
-    POST_MODEL_SWITCH = "PostModelSwitch"
-    TEAMMATE_IDLE = "TeammateIdle"
-    TASK_CREATED = "TaskCreated"
-    TASK_COMPLETED = "TaskCompleted"
-
-
-class InputKind(StrEnum):
-    APPROVAL = "approval"
-    QUESTION = "question"
-    TRUST = "trust"
-    OTHER = "other"
 
 
 class NotificationType(StrEnum):
@@ -94,11 +62,6 @@ class Status(StrEnum):
 class Role(StrEnum):
     AGENT = "agent"
     SUBAGENT = "subagent"
-
-
-class AgentKind(StrEnum):
-    CODEX = "codex"
-    CLAUDE = "claude"
 
 
 class Outcome(StrEnum):
@@ -433,6 +396,75 @@ def lineage(item: SessionState, sessions: dict[str, SessionState]) -> Lineage:
     return Lineage(requester_bot=item["requester"], root_session_id=root["id"],
                    parent_session_id=parent["id"] if parent else "", agent_session_id=item["id"],
                    depth=item["depth"], agent_kind=item["agent"], role=Role.SUBAGENT if item["parent"] else Role.AGENT)
+
+
+def _parse_session_state(record: str) -> SessionState:
+    value = json.loads(record)
+    string_fields = (
+        "key",
+        "id",
+        "parent",
+        "root",
+        "task_id",
+        "requester",
+        "turn",
+        "rex_session",
+        "rex_block",
+    )
+    if not isinstance(value, dict) or any(
+        not isinstance(value.get(key), str) for key in string_fields
+    ):
+        raise ValueError("invalid session record")
+    if type(value.get("depth")) is not int or value["depth"] < 0:
+        raise ValueError("invalid session depth")
+    value["agent"] = AgentKind(value["agent"])
+    value["status"] = Status(value["status"])
+    for key in ("updated_at", "native_turn"):
+        if key in value and not isinstance(value[key], str):
+            raise ValueError("invalid session field")
+    if "retired_turns" in value and (
+        not isinstance(value["retired_turns"], list)
+        or any(not isinstance(turn, str) for turn in value["retired_turns"])
+    ):
+        raise ValueError("invalid retired turns")
+    return cast(SessionState, value)
+
+
+def session_state(
+    agent: AgentKind, session: str, child: str = ""
+) -> SessionState | None:
+    """Read one callback session record without creating or modifying its database."""
+    path = rex.STATE / "grokbot-callback.sqlite3"
+    if not path.exists():
+        return None
+    try:
+        with closing(
+            sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)
+        ) as db:
+            row = db.execute(
+                "SELECT record FROM sessions WHERE key=?",
+                (actor_key(agent, session, child),),
+            ).fetchone()
+        return _parse_session_state(row[0]) if row else None
+    except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
+        return None
+
+
+def session_lineage(state: SessionState) -> Lineage:
+    """Build lineage from the session plus its root and parent records, read-only."""
+    sessions = {state["key"]: state}
+    path = rex.STATE / "grokbot-callback.sqlite3"
+    if path.exists():
+        keys = {key for key in (state["root"], state["parent"]) if key}
+        try:
+            with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)) as db:
+                for key in keys:
+                    row = db.execute("SELECT record FROM sessions WHERE key=?", (key,)).fetchone()
+                    if row:
+                        sessions[key] = _parse_session_state(row[0])
+        except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
+            pass
+    return lineage(state, sessions)
 
 
 def sync_sessions(sessions: dict[str, SessionState], members, current_key=""):

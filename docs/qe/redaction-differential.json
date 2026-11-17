@@ -1,0 +1,1603 @@
+{
+  "unit_test_inputs": 384,
+  "guard_corpus_inputs": 101,
+  "compared_inputs": 922,
+  "baseline_positive_inputs": 661,
+  "spec_positive_inputs": 588,
+  "spec_positive_misses": [],
+  "generated_key_inputs": 448,
+  "generated_key_misses": [],
+  "unit_test_failures": 0,
+  "inputs": [
+    "\"password\": \"hunter2\"",
+    "--API_KEY_PROD=hunter2",
+    "--Database__Password=hunter2",
+    "--GITHUB_TOKEN_PROD=hunter2",
+    "--MAX-TOKEN=hunter2",
+    "--MYSQLPASSWORD=hunter2",
+    "--OPENAI_API_KEY_DEV=hunter2",
+    "--PASSWORD_PRODUCTION=hunter2",
+    "--PGPASSWORD=hunter2",
+    "--Passwd_Development=hunter2",
+    "--Private-Key-Stage=hunter2",
+    "--SECRET_KEY_STAGING=hunter2",
+    "--TOKEN-LIMIT=hunter2",
+    "--TOKEN=hunter2",
+    "--api-key=hunter2",
+    "--apiKey_staging=hunter2",
+    "--apitoken=hunter2",
+    "--auth_token_value=hunter2",
+    "--aws-secret-access-key-test=hunter2",
+    "--db-password-production=hunter2",
+    "--dbpassword=hunter2",
+    "--githubtoken=hunter2",
+    "--max_token=5",
+    "--max_token=hunter2",
+    "--max_token_length=hunter2",
+    "--max_tokens=hunter2",
+    "--my--password=hunter2",
+    "--my__password=hunter2",
+    "--mysecret=hunter2",
+    "--mytoken=hunter2",
+    "--notpassword=hunter2",
+    "--passphrase-dev=hunter2",
+    "--password=hunter2",
+    "--password_min_length=hunter2",
+    "--password_prod_eu=hunter2",
+    "--pwd_test=hunter2",
+    "--secret_key_base_staging=hunter2",
+    "--secret_prod_eu=hunter2",
+    "--secret_santa_count=hunter2",
+    "--service_db_password=hunter2",
+    "--token-value=hunter2",
+    "--token=hunter2",
+    "--token_count=hunter2",
+    "--token_key_prod=hunter2",
+    "--tokenizer=hunter2",
+    "--tokens_per_second=hunter2",
+    "--x-_password=hunter2",
+    "-APIKEY=hunter2",
+    "-API_KEY_PROD=hunter2",
+    "-Database__Password=hunter2",
+    "-GITHUB_TOKEN_PROD=hunter2",
+    "-MAX-TOKEN=hunter2",
+    "-MYSQLPASSWORD=hunter2",
+    "-OPENAI_API_KEY_DEV=hunter2",
+    "-PASSPHRASE=hunter2",
+    "-PASSWD=hunter2",
+    "-PASSWORD=hunter2",
+    "-PASSWORD_PRODUCTION=hunter2",
+    "-PGPASSWORD=hunter2",
+    "-PWD=hunter2",
+    "-Passwd_Development=hunter2",
+    "-Private-Key-Stage=hunter2",
+    "-SECRET=hunter2",
+    "-SECRET_KEY_STAGING=hunter2",
+    "-TOKEN-LIMIT=hunter2",
+    "-TOKEN=hunter2",
+    "-api-key=hunter2",
+    "-apiKey_staging=hunter2",
+    "-apikey=hunter2",
+    "-apitoken=hunter2",
+    "-auth_token_value=hunter2",
+    "-aws-secret-access-key-test=hunter2",
+    "-db-password-production=hunter2",
+    "-dbpassword=hunter2",
+    "-githubtoken=hunter2",
+    "-max_token=hunter2",
+    "-max_token_length=hunter2",
+    "-max_tokens=hunter2",
+    "-my--password=hunter2",
+    "-my__password=hunter2",
+    "-mysecret=hunter2",
+    "-mytoken=hunter2",
+    "-notpassword=hunter2",
+    "-passphrase-dev=hunter2",
+    "-passphrase=hunter2",
+    "-passwd=hunter2",
+    "-password=hunter2",
+    "-password_min_length=hunter2",
+    "-password_prod_eu=hunter2",
+    "-pwd=hunter2",
+    "-pwd_test=hunter2",
+    "-secret=hunter2",
+    "-secret_key_base_staging=hunter2",
+    "-secret_prod_eu=hunter2",
+    "-secret_santa_count=hunter2",
+    "-service_db_password=hunter2",
+    "-token-value=hunter2",
+    "-token=hunter2",
+    "-token_count=hunter2",
+    "-token_key_prod=hunter2",
+    "-tokenizer=hunter2",
+    "-tokens_per_second=hunter2",
+    "-x-_password=hunter2",
+    ".API_KEY_PROD=hunter2",
+    ".Database__Password=hunter2",
+    ".GITHUB_TOKEN_PROD=hunter2",
+    ".MAX-TOKEN=hunter2",
+    ".MYSQLPASSWORD=hunter2",
+    ".OPENAI_API_KEY_DEV=hunter2",
+    ".PASSWORD_PRODUCTION=hunter2",
+    ".PGPASSWORD=hunter2",
+    ".Passwd_Development=hunter2",
+    ".Private-Key-Stage=hunter2",
+    ".SECRET_KEY_STAGING=hunter2",
+    ".TOKEN-LIMIT=hunter2",
+    ".TOKEN=hunter2",
+    ".api-key=hunter2",
+    ".apiKey_staging=hunter2",
+    ".apitoken=hunter2",
+    ".auth_token_value=hunter2",
+    ".aws-secret-access-key-test=hunter2",
+    ".db-password-production=hunter2",
+    ".dbpassword=hunter2",
+    ".githubtoken=hunter2",
+    ".max_token=hunter2",
+    ".max_token_length=hunter2",
+    ".max_tokens=hunter2",
+    ".my--password=hunter2",
+    ".my__password=hunter2",
+    ".mysecret=hunter2",
+    ".mytoken=hunter2",
+    ".notpassword=hunter2",
+    ".passphrase-dev=hunter2",
+    ".password=hunter2",
+    ".password_min_length=hunter2",
+    ".password_prod_eu=hunter2",
+    ".pwd_test=hunter2",
+    ".secret_key_base_staging=hunter2",
+    ".secret_prod_eu=hunter2",
+    ".secret_santa_count=hunter2",
+    ".service_db_password=hunter2",
+    ".token-value=hunter2",
+    ".token=hunter2",
+    ".token_count=hunter2",
+    ".token_key_prod=hunter2",
+    ".tokenizer=hunter2",
+    ".tokens_per_second=hunter2",
+    ".x-_password=hunter2",
+    "A quick rebase would help?",
+    "A token might make this easier?",
+    "A worker can do it quietly?",
+    "API-APIKEY=hunter2",
+    "API-PASSPHRASE=hunter2",
+    "API-PASSWD=hunter2",
+    "API-PASSWORD=hunter2",
+    "API-PWD=hunter2",
+    "API-SECRET=hunter2",
+    "API-TOKEN=hunter2",
+    "APIAPIKEY=hunter2",
+    "APIKEY=hunter2",
+    "APIPASSPHRASE=hunter2",
+    "APIPASSWD=hunter2",
+    "APIPASSWORD=hunter2",
+    "APIPWD=hunter2",
+    "APISECRET=hunter2",
+    "APITOKEN=hunter2",
+    "API_APIKEY=hunter2",
+    "API_KEY_PROD=hunter2",
+    "API_PASSPHRASE=hunter2",
+    "API_PASSWD=hunter2",
+    "API_PASSWORD=hunter2",
+    "API_PWD=hunter2",
+    "API_SECRET=hunter2",
+    "API_TOKEN=hunter2",
+    "API__APIKEY=hunter2",
+    "API__PASSPHRASE=hunter2",
+    "API__PASSWD=hunter2",
+    "API__PASSWORD=hunter2",
+    "API__PWD=hunter2",
+    "API__SECRET=hunter2",
+    "API__TOKEN=hunter2",
+    "AWS_SECRET_ACCESS_KEY=hunter2",
+    "Add a feature?",
+    "Before -----BEGIN RSA PRIVATE KEY-----\nfixture",
+    "Before -----BEGIN RSA PRIVATE KEY-----\nfixture\n-----END RSA PRIVATE KEY----- after",
+    "Before AKIAAAAAAAAAAAAAAAAA after",
+    "Before Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op8Qr9St0Uv after",
+    "Before Bearer zzzzzzzzzzzzzzz after",
+    "Before eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.fixtureSignature after",
+    "Before ghp_bbbbbbbbbbbbbbbbbbbbbbbb after",
+    "Before github_pat_cccccccccccccccccccccccc after",
+    "Before glpat-fixture-value after",
+    "Before password=fixture after",
+    "Before sk-aaaaaaaaaaaaaaaaaaaaaaaa after",
+    "Before xoxb-fixture-value after",
+    "Before \u00e91!\u00f82@\u00f13#\u00e54$\u00e75%\u00df6^\u4e2d7&\u65878*\u5b579(\u8a9e0)\u306b\u3042\u3044\u3046\u3048\u304a after",
+    "Buy a subscription?",
+    "Call this a release candidate?",
+    "Can I skip signature verification for now?",
+    "Can we reissue service tokens?",
+    "Can we tag the snapshot?",
+    "Change DNS?",
+    "Change the password?",
+    "Change the permission boundary?",
+    "Change the scope?",
+    "Charge the card?",
+    "Choose a descriptive test name?",
+    "Choose a fixture name aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "Choose an example title?",
+    "Choose blue or green?",
+    "Cloudflare settings would simplify this?",
+    "Could the sandbox be less restrictive?",
+    "Could we increase the quota?",
+    "Could we relax the extra login gate?",
+    "DB-APIKEY=hunter2",
+    "DB-PASSPHRASE=hunter2",
+    "DB-PASSWD=hunter2",
+    "DB-PASSWORD=hunter2",
+    "DB-PWD=hunter2",
+    "DB-SECRET=hunter2",
+    "DB-TOKEN=hunter2",
+    "DBAPIKEY=hunter2",
+    "DBPASSPHRASE=hunter2",
+    "DBPASSWD=hunter2",
+    "DBPASSWORD=hunter2",
+    "DBPWD=hunter2",
+    "DBSECRET=hunter2",
+    "DBTOKEN=hunter2",
+    "DB_APIKEY=hunter2",
+    "DB_PASSPHRASE=hunter2",
+    "DB_PASSWD=hunter2",
+    "DB_PASSWORD=hunter2",
+    "DB_PWD=hunter2",
+    "DB_SECRET=hunter2",
+    "DB_TOKEN=hunter2",
+    "DB__APIKEY=hunter2",
+    "DB__PASSPHRASE=hunter2",
+    "DB__PASSWD=hunter2",
+    "DB__PASSWORD=hunter2",
+    "DB__PWD=hunter2",
+    "DB__SECRET=hunter2",
+    "DB__TOKEN=hunter2",
+    "Database__Password=hunter2",
+    "Database__Password=x",
+    "Delete the database?",
+    "Deploy to production?",
+    "Disable auth?",
+    "Disable the extra sandbox layer?",
+    "Downgrade encryption for compatibility?",
+    "Drop table customers?",
+    "Drop the unused records?",
+    "Fetch https://alice:example-password@example.test/repo",
+    "Fetch https://u:p@ss@host.test/repo",
+    "Fold this work into the shared branch?",
+    "Force-push this branch?",
+    "GIT+HTTPS://user%40name:p%40ss@host.test/repo",
+    "GITHUB-APIKEY=hunter2",
+    "GITHUB-PASSPHRASE=hunter2",
+    "GITHUB-PASSWD=hunter2",
+    "GITHUB-PASSWORD=hunter2",
+    "GITHUB-PWD=hunter2",
+    "GITHUB-SECRET=hunter2",
+    "GITHUB-TOKEN=hunter2",
+    "GITHUBAPIKEY=hunter2",
+    "GITHUBPASSPHRASE=hunter2",
+    "GITHUBPASSWD=hunter2",
+    "GITHUBPASSWORD=hunter2",
+    "GITHUBPWD=hunter2",
+    "GITHUBSECRET=hunter2",
+    "GITHUBTOKEN=hunter2",
+    "GITHUB_APIKEY=hunter2",
+    "GITHUB_PASSPHRASE=hunter2",
+    "GITHUB_PASSWD=hunter2",
+    "GITHUB_PASSWORD=hunter2",
+    "GITHUB_PWD=hunter2",
+    "GITHUB_SECRET=hunter2",
+    "GITHUB_TOKEN: fixture",
+    "GITHUB_TOKEN=hunter2",
+    "GITHUB_TOKEN_PROD=hunter2",
+    "GITHUB__APIKEY=hunter2",
+    "GITHUB__PASSPHRASE=hunter2",
+    "GITHUB__PASSWD=hunter2",
+    "GITHUB__PASSWORD=hunter2",
+    "GITHUB__PWD=hunter2",
+    "GITHUB__SECRET=hunter2",
+    "GITHUB__TOKEN=hunter2",
+    "Is a new budget needed?",
+    "Is this function synchronous?",
+    "Is this path relative?",
+    "Just push this small adjustment?",
+    "Keep the existing spacing?",
+    "Keep this comment?",
+    "Land this on trunk?",
+    "Let everyone use the new build?",
+    "Loosen access control while testing?",
+    "MAX-TOKEN=5",
+    "MAX-TOKEN=hunter2",
+    "MAX_-APIKEY=hunter2",
+    "MAX_-PASSPHRASE=hunter2",
+    "MAX_-PASSWD=hunter2",
+    "MAX_-PASSWORD=hunter2",
+    "MAX_-PWD=hunter2",
+    "MAX_-SECRET=hunter2",
+    "MAX_-TOKEN=hunter2",
+    "MAX_APIKEY=hunter2",
+    "MAX_PASSPHRASE=hunter2",
+    "MAX_PASSWD=hunter2",
+    "MAX_PASSWORD=hunter2",
+    "MAX_PWD=hunter2",
+    "MAX_SECRET=hunter2",
+    "MAX_TOKEN=hunter2",
+    "MAX__APIKEY=hunter2",
+    "MAX__PASSPHRASE=hunter2",
+    "MAX__PASSWD=hunter2",
+    "MAX__PASSWORD=hunter2",
+    "MAX__PWD=hunter2",
+    "MAX__SECRET=hunter2",
+    "MAX__TOKEN=hunter2",
+    "MAX___APIKEY=hunter2",
+    "MAX___PASSPHRASE=hunter2",
+    "MAX___PASSWD=hunter2",
+    "MAX___PASSWORD=hunter2",
+    "MAX___PWD=hunter2",
+    "MAX___SECRET=hunter2",
+    "MAX___TOKEN=hunter2",
+    "MY-APIKEY=hunter2",
+    "MY-PASSPHRASE=hunter2",
+    "MY-PASSWD=hunter2",
+    "MY-PASSWORD=hunter2",
+    "MY-PWD=hunter2",
+    "MY-SECRET=hunter2",
+    "MY-TOKEN=hunter2",
+    "MYAPIKEY=hunter2",
+    "MYPASSPHRASE=hunter2",
+    "MYPASSWD=hunter2",
+    "MYPASSWORD=hunter2",
+    "MYPWD=hunter2",
+    "MYSECRET=hunter2",
+    "MYSQLPASSWORD=hunter2",
+    "MYTOKEN=hunter2",
+    "MY_APIKEY=hunter2",
+    "MY_PASSPHRASE=hunter2",
+    "MY_PASSWD=hunter2",
+    "MY_PASSWORD=hunter2",
+    "MY_PWD=hunter2",
+    "MY_SECRET=hunter2",
+    "MY_TOKEN=hunter2",
+    "MY__APIKEY=hunter2",
+    "MY__PASSPHRASE=hunter2",
+    "MY__PASSWD=hunter2",
+    "MY__PASSWORD=hunter2",
+    "MY__PWD=hunter2",
+    "MY__SECRET=hunter2",
+    "MY__TOKEN=hunter2",
+    "Make the change live?",
+    "Maybe alter the login screen?",
+    "Merge the PR?",
+    "Migrate the stored data?",
+    "NOT-APIKEY=hunter2",
+    "NOT-PASSPHRASE=hunter2",
+    "NOT-PASSWD=hunter2",
+    "NOT-PASSWORD=hunter2",
+    "NOT-PWD=hunter2",
+    "NOT-SECRET=hunter2",
+    "NOT-TOKEN=hunter2",
+    "NOTAPIKEY=hunter2",
+    "NOTPASSPHRASE=hunter2",
+    "NOTPASSWD=hunter2",
+    "NOTPASSWORD=hunter2",
+    "NOTPWD=hunter2",
+    "NOTSECRET=hunter2",
+    "NOTTOKEN=hunter2",
+    "NOT_APIKEY=hunter2",
+    "NOT_PASSPHRASE=hunter2",
+    "NOT_PASSWD=hunter2",
+    "NOT_PASSWORD=hunter2",
+    "NOT_PWD=hunter2",
+    "NOT_SECRET=hunter2",
+    "NOT_TOKEN=hunter2",
+    "NOT__APIKEY=hunter2",
+    "NOT__PASSPHRASE=hunter2",
+    "NOT__PASSWD=hunter2",
+    "NOT__PASSWORD=hunter2",
+    "NOT__PWD=hunter2",
+    "NOT__SECRET=hunter2",
+    "NOT__TOKEN=hunter2",
+    "OPENAI_API_KEY=fixture",
+    "OPENAI_API_KEY_DEV=hunter2",
+    "Overwrite the existing copy?",
+    "PASSPHRASE=hunter2",
+    "PASSWD=hunter2",
+    "PASSWORD=hunter2",
+    "PASSWORD_PROD=x",
+    "PASSWORD_PRODUCTION=hunter2",
+    "PG-APIKEY=hunter2",
+    "PG-PASSPHRASE=hunter2",
+    "PG-PASSWD=hunter2",
+    "PG-PASSWORD=hunter2",
+    "PG-PWD=hunter2",
+    "PG-SECRET=hunter2",
+    "PG-TOKEN=hunter2",
+    "PGAPIKEY=hunter2",
+    "PGPASSPHRASE=hunter2",
+    "PGPASSWD=hunter2",
+    "PGPASSWORD=hunter2",
+    "PGPWD=hunter2",
+    "PGSECRET=hunter2",
+    "PGTOKEN=hunter2",
+    "PG_APIKEY=hunter2",
+    "PG_PASSPHRASE=hunter2",
+    "PG_PASSWD=hunter2",
+    "PG_PASSWORD=hunter2",
+    "PG_PWD=hunter2",
+    "PG_SECRET=hunter2",
+    "PG_TOKEN=hunter2",
+    "PG__APIKEY=hunter2",
+    "PG__PASSPHRASE=hunter2",
+    "PG__PASSWD=hunter2",
+    "PG__PASSWORD=hunter2",
+    "PG__PWD=hunter2",
+    "PG__SECRET=hunter2",
+    "PG__TOKEN=hunter2",
+    "PWD=hunter2",
+    "Passwd_Development=hunter2",
+    "Perhaps merge after lunch?",
+    "Private-Key-Stage=hunter2",
+    "Publish this article?",
+    "Put the latest bits on the public server?",
+    "Read skills/rex/scripts/question_ledger.py?",
+    "Read src/components/UserProfileCard.tsx?",
+    "Rebase onto main?",
+    "Refund this invoice?",
+    "Regenerate certificates?",
+    "Remove that old dataset?",
+    "Remove the TLS requirement for today?",
+    "Rename the local variable?",
+    "Reset the environment quietly?",
+    "Revoke tokens?",
+    "Rotate the signing key?",
+    "Run chmod 777?",
+    "Run git push?",
+    "Run terraform destroy?",
+    "Run wrangler deploy?",
+    "SECRET=hunter2",
+    "SECRET_KEY_STAGING=hunter2",
+    "Send an email?",
+    "Ship it to origin/main?",
+    "Should I include an empty list case?",
+    "Should the caption use sentence case?",
+    "Should the heading be shorter?",
+    "Should the table be sorted?",
+    "Should this sentence be shorter?",
+    "Should this string end in a newline?",
+    "Should we turn off MFA?",
+    "Skip the review?",
+    "Skip the server verification step?",
+    "Sort examples alphabetically?",
+    "TOKEN-LIMIT=hunter2",
+    "TOKEN=hunter2",
+    "Temporarily bypass signature checks?",
+    "Token:\nThe answer",
+    "Token:\r\nThe answer",
+    "Token:\rThe answer",
+    "Try regeneration later; regenerate keys now?",
+    "Turning off the old MFA step seems easier?",
+    "Upgrade the plan?",
+    "Use UTF-8 for this fixture?",
+    "Use a dataclass here?",
+    "Use a helper for this assertion?",
+    "Use a tuple or list?",
+    "Use a two column layout?",
+    "Use an API key?",
+    "Use an integer for this counter?",
+    "Use spaces for indentation?",
+    "Use the existing fixture?",
+    "Use token=sk-aaaaaaaaaaaaaaaaaaaaaaaa safely",
+    "What does this enum mean?",
+    "What price is acceptable?",
+    "Where is the naming convention documented?",
+    "Which date format does this example use?",
+    "Which fixture filename fits?",
+    "Which key should this use?",
+    "Which separator matches the examples?",
+    "Which test command covers this helper?",
+    "Which test folder is conventional?",
+    "Which workflow should run?",
+    "Wipe the disk?",
+    "_APIKEY=hunter2",
+    "_API_KEY_PROD=hunter2",
+    "_Database__Password=hunter2",
+    "_GITHUB_TOKEN_PROD=hunter2",
+    "_MAX-TOKEN=hunter2",
+    "_MYSQLPASSWORD=hunter2",
+    "_OPENAI_API_KEY_DEV=hunter2",
+    "_PASSPHRASE=hunter2",
+    "_PASSWD=hunter2",
+    "_PASSWORD=hunter2",
+    "_PASSWORD_PRODUCTION=hunter2",
+    "_PGPASSWORD=hunter2",
+    "_PWD=hunter2",
+    "_Passwd_Development=hunter2",
+    "_Private-Key-Stage=hunter2",
+    "_SECRET=hunter2",
+    "_SECRET_KEY_STAGING=hunter2",
+    "_TOKEN-LIMIT=hunter2",
+    "_TOKEN=hunter2",
+    "__APIKEY=hunter2",
+    "__API_KEY_PROD=hunter2",
+    "__Database__Password=hunter2",
+    "__GITHUB_TOKEN_PROD=hunter2",
+    "__MAX-TOKEN=hunter2",
+    "__MYSQLPASSWORD=hunter2",
+    "__OPENAI_API_KEY_DEV=hunter2",
+    "__PASSPHRASE=hunter2",
+    "__PASSWD=hunter2",
+    "__PASSWORD=hunter2",
+    "__PASSWORD_PRODUCTION=hunter2",
+    "__PGPASSWORD=hunter2",
+    "__PWD=hunter2",
+    "__Passwd_Development=hunter2",
+    "__Private-Key-Stage=hunter2",
+    "__SECRET=hunter2",
+    "__SECRET_KEY_STAGING=hunter2",
+    "__TOKEN-LIMIT=hunter2",
+    "__TOKEN=hunter2",
+    "__api-key=hunter2",
+    "__apiKey_staging=hunter2",
+    "__apikey=hunter2",
+    "__apitoken=hunter2",
+    "__auth_token_value=hunter2",
+    "__aws-secret-access-key-test=hunter2",
+    "__db-password-production=hunter2",
+    "__dbpassword=hunter2",
+    "__githubtoken=hunter2",
+    "__max_token=hunter2",
+    "__max_token_length=hunter2",
+    "__max_tokens=hunter2",
+    "__my--password=hunter2",
+    "__my__password=hunter2",
+    "__mysecret=hunter2",
+    "__mytoken=hunter2",
+    "__notpassword=hunter2",
+    "__passphrase-dev=hunter2",
+    "__passphrase=hunter2",
+    "__passwd=hunter2",
+    "__password=hunter2",
+    "__password_min_length=hunter2",
+    "__password_prod_eu=hunter2",
+    "__pwd=hunter2",
+    "__pwd_test=hunter2",
+    "__secret=hunter2",
+    "__secret_key_base_staging=hunter2",
+    "__secret_prod_eu=hunter2",
+    "__secret_santa_count=hunter2",
+    "__service_db_password=hunter2",
+    "__token-value=hunter2",
+    "__token=hunter2",
+    "__token_count=hunter2",
+    "__token_key_prod=hunter2",
+    "__tokenizer=hunter2",
+    "__tokens_per_second=hunter2",
+    "__x-_password=hunter2",
+    "_api-key=hunter2",
+    "_apiKey_staging=hunter2",
+    "_apikey=hunter2",
+    "_apitoken=hunter2",
+    "_auth_token_value=hunter2",
+    "_aws-secret-access-key-test=hunter2",
+    "_db-password-production=hunter2",
+    "_dbpassword=hunter2",
+    "_githubtoken=hunter2",
+    "_max_token=hunter2",
+    "_max_token_length=hunter2",
+    "_max_tokens=hunter2",
+    "_my--password=hunter2",
+    "_my__password=hunter2",
+    "_mysecret=hunter2",
+    "_mytoken=hunter2",
+    "_notpassword=hunter2",
+    "_passphrase-dev=hunter2",
+    "_passphrase=hunter2",
+    "_passwd=hunter2",
+    "_password=hunter2",
+    "_password_min_length=hunter2",
+    "_password_prod_eu=hunter2",
+    "_pwd=hunter2",
+    "_pwd_test=hunter2",
+    "_secret=hunter2",
+    "_secret_key_base_staging=hunter2",
+    "_secret_prod_eu=hunter2",
+    "_secret_santa_count=hunter2",
+    "_service_db_password=hunter2",
+    "_token-value=hunter2",
+    "_token=hunter2",
+    "_token_count=hunter2",
+    "_token_key_prod=hunter2",
+    "_tokenizer=hunter2",
+    "_tokens_per_second=hunter2",
+    "_x-_password=hunter2",
+    "a.b.c",
+    "a.b.eyJa.b.c",
+    "a.b.eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.fixtureSignature",
+    "a.b.x-eyJa.b.c",
+    "a.b.x-eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.fixtureSignature",
+    "api-apikey=hunter2",
+    "api-key=hunter2",
+    "api-passphrase=hunter2",
+    "api-passwd=hunter2",
+    "api-password=hunter2",
+    "api-pwd=hunter2",
+    "api-secret=hunter2",
+    "api-token=hunter2",
+    "apiKey_staging=hunter2",
+    "api__apikey=hunter2",
+    "api__passphrase=hunter2",
+    "api__passwd=hunter2",
+    "api__password=hunter2",
+    "api__pwd=hunter2",
+    "api__secret=hunter2",
+    "api__token=hunter2",
+    "api_apikey=hunter2",
+    "api_key: abc",
+    "api_passphrase=hunter2",
+    "api_passwd=hunter2",
+    "api_password=hunter2",
+    "api_pwd=hunter2",
+    "api_secret=hunter2",
+    "api_token=hunter2",
+    "apiapikey=hunter2",
+    "apikey=hunter2",
+    "apipassphrase=hunter2",
+    "apipasswd=hunter2",
+    "apipassword=hunter2",
+    "apipwd=hunter2",
+    "apisecret=hunter2",
+    "apitoken=hunter2",
+    "auth-eyJa.b.c",
+    "auth-eyJaaaaaaaaaaaaaaaaaaaa.b.c",
+    "auth-eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.fixtureSignature",
+    "auth_token_value=hunter2",
+    "aws-secret-access-key-test=hunter2",
+    "db-apikey=hunter2",
+    "db-passphrase=hunter2",
+    "db-passwd=hunter2",
+    "db-password-production=hunter2",
+    "db-password=hunter2",
+    "db-pwd=hunter2",
+    "db-secret=hunter2",
+    "db-token=hunter2",
+    "db__apikey=hunter2",
+    "db__passphrase=hunter2",
+    "db__passwd=hunter2",
+    "db__password=hunter2",
+    "db__pwd=hunter2",
+    "db__secret=hunter2",
+    "db__token=hunter2",
+    "db_apikey=hunter2",
+    "db_passphrase=hunter2",
+    "db_passwd=hunter2",
+    "db_password=hunter2",
+    "db_pwd=hunter2",
+    "db_secret=hunter2",
+    "db_token=hunter2",
+    "dbapikey=hunter2",
+    "dbpassphrase=hunter2",
+    "dbpasswd=hunter2",
+    "dbpassword=hunter2",
+    "dbpwd=hunter2",
+    "dbsecret=hunter2",
+    "dbtoken=hunter2",
+    "export API_KEY_PROD=hunter2",
+    "export Database__Password=hunter2",
+    "export GITHUB_TOKEN_PROD=hunter2",
+    "export MAX-TOKEN=hunter2",
+    "export MYSQLPASSWORD=hunter2",
+    "export OPENAI_API_KEY_DEV=hunter2",
+    "export PASSWORD_PRODUCTION=hunter2",
+    "export PGPASSWORD=hunter2",
+    "export Passwd_Development=hunter2",
+    "export Private-Key-Stage=hunter2",
+    "export SECRET_KEY_STAGING=hunter2",
+    "export TOKEN-LIMIT=hunter2",
+    "export TOKEN=hunter2",
+    "export api-key=hunter2",
+    "export apiKey_staging=hunter2",
+    "export apitoken=hunter2",
+    "export auth_token_value=hunter2",
+    "export aws-secret-access-key-test=hunter2",
+    "export db-password-production=hunter2",
+    "export dbpassword=hunter2",
+    "export githubtoken=hunter2",
+    "export max_token=hunter2",
+    "export max_token_length=hunter2",
+    "export max_tokens=hunter2",
+    "export my--password=hunter2",
+    "export my__password=hunter2",
+    "export mysecret=hunter2",
+    "export mytoken=hunter2",
+    "export notpassword=hunter2",
+    "export passphrase-dev=hunter2",
+    "export password=hunter2",
+    "export password_min_length=hunter2",
+    "export password_prod_eu=hunter2",
+    "export pwd_test=hunter2",
+    "export secret_key_base_staging=hunter2",
+    "export secret_prod_eu=hunter2",
+    "export secret_santa_count=hunter2",
+    "export service_db_password=hunter2",
+    "export token-value=hunter2",
+    "export token=hunter2",
+    "export token_count=hunter2",
+    "export token_key_prod=hunter2",
+    "export tokenizer=hunter2",
+    "export tokens_per_second=hunter2",
+    "export x-_password=hunter2",
+    "eyJa.b.c",
+    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.fixtureSignature",
+    "git pu\u200bsh to main?",
+    "github-apikey=hunter2",
+    "github-passphrase=hunter2",
+    "github-passwd=hunter2",
+    "github-password=hunter2",
+    "github-pwd=hunter2",
+    "github-secret=hunter2",
+    "github-token=hunter2",
+    "github__apikey=hunter2",
+    "github__passphrase=hunter2",
+    "github__passwd=hunter2",
+    "github__password=hunter2",
+    "github__pwd=hunter2",
+    "github__secret=hunter2",
+    "github__token=hunter2",
+    "github_apikey=hunter2",
+    "github_passphrase=hunter2",
+    "github_passwd=hunter2",
+    "github_password=hunter2",
+    "github_pwd=hunter2",
+    "github_secret=hunter2",
+    "github_token=hunter2",
+    "githubapikey=hunter2",
+    "githubpassphrase=hunter2",
+    "githubpasswd=hunter2",
+    "githubpassword=hunter2",
+    "githubpwd=hunter2",
+    "githubsecret=hunter2",
+    "githubtoken=hunter2",
+    "https://example.com#to=a@b.c",
+    "https://example.com?to=a@b.c",
+    "max_-apikey=hunter2",
+    "max_-passphrase=hunter2",
+    "max_-passwd=hunter2",
+    "max_-password=hunter2",
+    "max_-pwd=hunter2",
+    "max_-secret=hunter2",
+    "max_-token=hunter2",
+    "max___apikey=hunter2",
+    "max___passphrase=hunter2",
+    "max___passwd=hunter2",
+    "max___password=hunter2",
+    "max___pwd=hunter2",
+    "max___secret=hunter2",
+    "max___token=hunter2",
+    "max__apikey=hunter2",
+    "max__passphrase=hunter2",
+    "max__passwd=hunter2",
+    "max__password=hunter2",
+    "max__pwd=hunter2",
+    "max__secret=hunter2",
+    "max__token=hunter2",
+    "max_apikey=hunter2",
+    "max_passphrase=hunter2",
+    "max_passwd=hunter2",
+    "max_password=hunter2",
+    "max_pwd=hunter2",
+    "max_secret=hunter2",
+    "max_token=5",
+    "max_token=hunter2",
+    "max_token_length=512",
+    "max_token_length=hunter2",
+    "max_tokens=1000",
+    "max_tokens=hunter2",
+    "my--password=hunter2",
+    "my--password=x",
+    "my-apikey=hunter2",
+    "my-passphrase=hunter2",
+    "my-passwd=hunter2",
+    "my-password=hunter2",
+    "my-pwd=hunter2",
+    "my-secret=hunter2",
+    "my-token=hunter2",
+    "my__apikey=hunter2",
+    "my__passphrase=hunter2",
+    "my__passwd=hunter2",
+    "my__password=hunter2",
+    "my__password=x",
+    "my__pwd=hunter2",
+    "my__secret=hunter2",
+    "my__token=hunter2",
+    "my_apikey=hunter2",
+    "my_passphrase=hunter2",
+    "my_passwd=hunter2",
+    "my_password=hunter2",
+    "my_pwd=hunter2",
+    "my_secret=hunter2",
+    "my_token=hunter2",
+    "myapikey=hunter2",
+    "mypassphrase=hunter2",
+    "mypasswd=hunter2",
+    "mypassword=hunter2",
+    "mypwd=hunter2",
+    "mysecret=hunter2",
+    "mytoken=hunter2",
+    "mytoken=x",
+    "not-apikey=hunter2",
+    "not-passphrase=hunter2",
+    "not-passwd=hunter2",
+    "not-password=hunter2",
+    "not-pwd=hunter2",
+    "not-secret=hunter2",
+    "not-token=hunter2",
+    "not__apikey=hunter2",
+    "not__passphrase=hunter2",
+    "not__passwd=hunter2",
+    "not__password=hunter2",
+    "not__pwd=hunter2",
+    "not__secret=hunter2",
+    "not__token=hunter2",
+    "not_apikey=hunter2",
+    "not_passphrase=hunter2",
+    "not_passwd=hunter2",
+    "not_password=hunter2",
+    "not_pwd=hunter2",
+    "not_secret=hunter2",
+    "not_token=hunter2",
+    "notapikey=hunter2",
+    "notpassphrase=hunter2",
+    "notpasswd=hunter2",
+    "notpassword=hunter2",
+    "notpassword=x",
+    "notpwd=hunter2",
+    "notsecret=hunter2",
+    "nottoken=hunter2",
+    "passphrase-dev=hunter2",
+    "passphrase=hunter2",
+    "passwd=hunter2",
+    "password\t=\tfixture",
+    "password\n=hunter2",
+    "password\r\n=hunter2",
+    "password\r=hunter2",
+    "password = \"first line\nsecond line\"",
+    "password = \"first line\rsecond line\"",
+    "password = \"hunter two\"",
+    "password = 'first line\nsecond line'",
+    "password = 'first line\rsecond line'",
+    "password = 'hunter two'",
+    "password=fixture",
+    "password=hunter2",
+    "password_min_length=8",
+    "password_min_length=hunter2",
+    "password_prod_eu=hunter2",
+    "pg-apikey=hunter2",
+    "pg-passphrase=hunter2",
+    "pg-passwd=hunter2",
+    "pg-password=hunter2",
+    "pg-pwd=hunter2",
+    "pg-secret=hunter2",
+    "pg-token=hunter2",
+    "pg__apikey=hunter2",
+    "pg__passphrase=hunter2",
+    "pg__passwd=hunter2",
+    "pg__password=hunter2",
+    "pg__pwd=hunter2",
+    "pg__secret=hunter2",
+    "pg__token=hunter2",
+    "pg_apikey=hunter2",
+    "pg_passphrase=hunter2",
+    "pg_passwd=hunter2",
+    "pg_password=hunter2",
+    "pg_pwd=hunter2",
+    "pg_secret=hunter2",
+    "pg_token=hunter2",
+    "pgapikey=hunter2",
+    "pgpassphrase=hunter2",
+    "pgpasswd=hunter2",
+    "pgpassword=hunter2",
+    "pgpwd=hunter2",
+    "pgsecret=hunter2",
+    "pgtoken=hunter2",
+    "private_key: abc",
+    "pwd=hunter2",
+    "pwd_test=hunter2",
+    "secret=hunter2",
+    "secret_key_base: abc",
+    "secret_key_base_staging=hunter2",
+    "secret_prod_eu=hunter2",
+    "secret_santa_count=3",
+    "secret_santa_count=hunter2",
+    "service_db_password=hunter2",
+    "skills/rex/scripts/question_ledger.py",
+    "src/components/UserProfileCard.tsx",
+    "tok-eyJa.b.c",
+    "tok-eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.fixtureSignature",
+    "token-value=hunter2",
+    "token=hunter2",
+    "token_count=5",
+    "token_count=hunter2",
+    "token_key_prod=hunter2",
+    "token_limit: 4096",
+    "tokenizer=fast",
+    "tokenizer=hunter2",
+    "tokens_per_second: 50",
+    "tokens_per_second=hunter2",
+    "turn off M\u00adFA?",
+    "x-_password=hunter2",
+    "x-_password=x",
+    "x-eyJ.b.c",
+    "x-eyJa.b.c",
+    "x-eyJaaaaaaaaaaaaaaaaaaaa.b.c",
+    "x-eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.fixtureSignature",
+    "x_eyJa.b.c",
+    "xeyJa.b.c",
+    "\u0440ush to main?"
+  ],
+  "unit_test_methods": [
+    "test_assignment_separator_matches_spec_whitespace",
+    "test_at_in_query_or_fragment_is_not_url_userinfo",
+    "test_case_and_url_protocol_variants",
+    "test_compound_secret_keys_are_redacted_without_matching_token_limits",
+    "test_every_secret_shape_and_entropy_is_removed",
+    "test_jwt_starts_after_hyphens_and_overlapping_dotted_segments",
+    "test_normal_text_and_low_entropy_strings_survive",
+    "test_overlapping_matches_redact_once_and_preserve_context",
+    "test_path_text_is_entropy_scanned_under_spec",
+    "test_quoted_password_with_spaces_is_fully_redacted",
+    "test_quoted_values_do_not_cross_newlines",
+    "test_secret_and_nonsecret_key_variants",
+    "test_secret_assignments_in_environment_and_json_are_removed",
+    "test_truncated_private_key_is_removed",
+    "test_untrusted_factory_redacts_text_and_preserves_source",
+    "test_url_userinfo_is_removed_without_changing_destination",
+    "test_url_userinfo_with_at_in_password_is_removed"
+  ],
+  "guard_corpus_arrays": [
+    "adversarial",
+    "benign",
+    "known_adversarial_misses",
+    "known_benign_quarantines",
+    "sensitive"
+  ],
+  "baseline_positive_losses": [],
+  "rule_losses": [],
+  "detection_gains": [
+    {
+      "input": "--API_KEY_PROD=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "--GITHUB_TOKEN_PROD=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "--OPENAI_API_KEY_DEV=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "--Private-Key-Stage=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "--SECRET_KEY_STAGING=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "--apiKey_staging=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "--auth_token_value=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "--aws-secret-access-key-test=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "--password_prod_eu=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "--secret_key_base_staging=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "--secret_prod_eu=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "--token-value=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "--token_key_prod=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "-API_KEY_PROD=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "-GITHUB_TOKEN_PROD=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "-OPENAI_API_KEY_DEV=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "-Private-Key-Stage=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "-SECRET_KEY_STAGING=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "-apiKey_staging=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "-auth_token_value=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "-aws-secret-access-key-test=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "-password_prod_eu=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "-secret_key_base_staging=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "-secret_prod_eu=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "-token-value=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "-token_key_prod=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": ".API_KEY_PROD=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": ".GITHUB_TOKEN_PROD=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": ".OPENAI_API_KEY_DEV=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": ".Private-Key-Stage=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": ".SECRET_KEY_STAGING=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": ".apiKey_staging=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": ".auth_token_value=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": ".aws-secret-access-key-test=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": ".password_prod_eu=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": ".secret_key_base_staging=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": ".secret_prod_eu=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": ".token-value=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": ".token_key_prod=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "API_KEY_PROD=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "GITHUB_TOKEN_PROD=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "OPENAI_API_KEY_DEV=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "Private-Key-Stage=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "SECRET_KEY_STAGING=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "_API_KEY_PROD=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "_GITHUB_TOKEN_PROD=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "_OPENAI_API_KEY_DEV=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "_Private-Key-Stage=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "_SECRET_KEY_STAGING=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "__API_KEY_PROD=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "__GITHUB_TOKEN_PROD=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "__OPENAI_API_KEY_DEV=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "__Private-Key-Stage=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "__SECRET_KEY_STAGING=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "__apiKey_staging=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "__auth_token_value=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "__aws-secret-access-key-test=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "__password_prod_eu=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "__secret_key_base_staging=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "__secret_prod_eu=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "__token-value=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "__token_key_prod=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "_apiKey_staging=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "_auth_token_value=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "_aws-secret-access-key-test=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "_password_prod_eu=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "_secret_key_base_staging=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "_secret_prod_eu=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "_token-value=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "_token_key_prod=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "apiKey_staging=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "auth_token_value=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "aws-secret-access-key-test=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "export API_KEY_PROD=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "export GITHUB_TOKEN_PROD=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "export OPENAI_API_KEY_DEV=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "export Private-Key-Stage=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "export SECRET_KEY_STAGING=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "export apiKey_staging=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "export auth_token_value=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "export aws-secret-access-key-test=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "export password_prod_eu=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "export secret_key_base_staging=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "export secret_prod_eu=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "export token-value=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "export token_key_prod=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "password_prod_eu=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "secret_key_base_staging=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "secret_prod_eu=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "token-value=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    },
+    {
+      "input": "token_key_prod=hunter2",
+      "added_rules": [
+        "assignment"
+      ],
+      "classification": "keyword_suffix"
+    }
+  ],
+  "unclassified_gains": []
+}

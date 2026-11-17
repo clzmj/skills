@@ -1,0 +1,119 @@
+[[rules]]
+id = 'merge_or_push.strong'
+trigger = 'merge_or_push'
+strength = 'strong'
+pattern = '\b(git\s+push|push(ed|ing)?\s+(to|the|this|my|origin|main|master|branch|remote)|force[- ]?push|--force(-with-lease)?|merge(d|s)?\s+(the\s+)?(pr|pull\s+request|mr|branch|into|to\s+main)|gh\s+pr\s+merge|rebase\s+(onto\s+)?main|skip\s+(the\s+)?review)\b'
+examples_hit = ['Run git push?', 'Merge the PR?']
+examples_miss = ['Choose a list layout?']
+
+[[rules]]
+id = 'security.strong'
+trigger = 'security'
+strength = 'strong'
+pattern = '\b(credential|signing[\s_-]?key|password|passphrase|api[\s_-]?key|secret[\s_-]?key|private[\s_-]?key|ssh[\s_-]?key|access[\s_-]?token|auth(entication|orization)?\s+(bypass|change|disable)|disable\s+(auth|tls|ssl|2fa|mfa|sandbox)|chmod\s+777|permissions?\s+(policy|boundary)|cve-\d{4}-\d+)\b'
+examples_hit = ['Rotate the signing key?', 'Change credential handling?']
+examples_miss = ['Choose a list layout?']
+
+[[rules]]
+id = 'security.weaken'
+trigger = 'security'
+strength = 'strong'
+pattern = '\b(turn(ing)?\s+off|disabl(e|ing)|bypass(ing)?|weaken(ing)?|skip(ping)?|remov(e|ing)|relax(ing)?|loosen(ing)?|downgrad(e|ing))\s+(the\s+)?([\w-]+\s+){0,2}(auth\w*|login|tls|ssl|https|2fa|mfa|otp|sandbox|verification|signature|csrf|cors|firewall|encryption|permissions?|access\s+control|rate\s+limit\w*)\b'
+examples_hit = ['Should we turn off MFA?', 'Can I skip signature verification for now?']
+examples_miss = ['Choose a list layout?']
+
+[[rules]]
+id = 'security.rotate'
+trigger = 'security'
+strength = 'strong'
+pattern = '\b(rotat(e|ing|ion)|revoke|regenerate|reissue)\s+(the\s+)?([\w-]+\s+){0,2}(keys?|secrets?|tokens?|credentials?|certs?|certificates?)\b'
+examples_hit = ['Regenerate the signing keys?', 'Revoke tokens?']
+examples_miss = ['Choose a list layout?']
+
+[[rules]]
+id = 'money.strong'
+trigger = 'money'
+strength = 'strong'
+pattern = '\b(payment|pay\s+for|purchase|buy|billing|invoice|subscription|paid\s+plan|upgrade\s+(the\s+)?plan|charge(d)?\s+(the\s+)?card|credit\s+card|refund|pricing\s+tier)\b|[$€£]\s?\d'
+examples_hit = ['Buy a subscription?', 'Pay $5?']
+examples_miss = ['Choose a list layout?']
+
+[[rules]]
+id = 'data_loss.strong'
+trigger = 'data_loss'
+strength = 'strong'
+pattern = '\b(rm\s+-rf|drop\s+(table|database|schema|column)|truncate\s+table|delete\s+(the\s+)?(database|table|bucket|branch|repo(sitory)?|production|prod|all)|wipe|purge|destroy|terraform\s+destroy|irreversible)\b'
+examples_hit = ['Delete the database?', 'Run rm -rf?']
+examples_miss = ['Choose a list layout?']
+
+[[rules]]
+id = 'deploy_or_infra.strong'
+trigger = 'deploy_or_infra'
+strength = 'strong'
+pattern = '\b(deploy(ing|ment)?\s+(to\s+)?(prod|production|live)|prod(uction)?\s+(db|database|deploy|env)|dns|terraform\s+apply|wrangler\s+deploy|release\s+to)\b'
+examples_hit = ['Deploy to production?', 'Change DNS?']
+examples_miss = ['Choose a list layout?']
+
+[[rules]]
+id = 'external_side_effect.strong'
+trigger = 'external_side_effect'
+strength = 'strong'
+pattern = '\b(send\s+(an?\s+)?(email|message|slack|dm)|post\s+(to|on)\s+(x|twitter|slack|linkedin)|publish|open\s+an?\s+issue|create\s+(a\s+)?ticket|notify\s+(the\s+)?(user|customer)s?)\b'
+examples_hit = ['Send an email?', 'Publish the package?']
+examples_miss = ['Choose a list layout?']
+
+[[rules]]
+id = 'scope.strong'
+trigger = 'scope'
+strength = 'strong'
+pattern = '\b(out\s+of\s+scope|scope\s+change|change\s+(the\s+)?scope|new\s+feature|add\s+(a\s+)?feature|drop\s+(the\s+)?requirement|requirements?\s+change|instead\s+of\s+what\s+the\s+brief)\b'
+examples_hit = ['Add a feature?', 'Change the scope?']
+examples_miss = ['Choose a list layout?']
+
+[[rules]]
+id = 'la_cana.strong'
+trigger = 'la_cana'
+strength = 'strong'
+pattern = '\bla[\s_-]?ca(n|ñ)a\b'
+examples_hit = ['La Caña question?', '/work/la_cana']
+examples_miss = ['Choose a list layout?']
+
+[[rules]]
+id = 'merge_or_push.weak'
+trigger = 'merge_or_push'
+strength = 'weak'
+pattern = '\b(push|merge|rebase|tag|release)\b'
+examples_hit = ['Choose a release name?']
+examples_miss = ['Choose a list layout?']
+
+[[rules]]
+id = 'data_loss.weak'
+trigger = 'data_loss'
+strength = 'weak'
+pattern = '\b(delete|remove|drop|migrat(e|ion)|overwrite|reset)\b'
+examples_hit = ['Remove this helper?']
+examples_miss = ['Choose a list layout?']
+
+[[rules]]
+id = 'security.weak'
+trigger = 'security'
+strength = 'weak'
+pattern = '\b(token|secret|key|auth\w*|login|permission|sandbox|cors|csp|mfa|2fa|otp|tls|ssl|encrypt\w*)\b'
+examples_hit = ['Use a dict key?']
+examples_miss = ['Choose a list layout?']
+
+[[rules]]
+id = 'money.weak'
+trigger = 'money'
+strength = 'weak'
+pattern = '\b(price|cost|budget|quota|plan)\b'
+examples_hit = ['Choose a plan title?']
+examples_miss = ['Choose a list layout?']
+
+[[rules]]
+id = 'deploy_or_infra.weak'
+trigger = 'deploy_or_infra'
+strength = 'weak'
+pattern = '\b(deploy|prod|infra|cloudflare|worker|bucket|ci\b|workflow)'
+examples_hit = ['Name the worker?']
+examples_miss = ['Choose a list layout?']
