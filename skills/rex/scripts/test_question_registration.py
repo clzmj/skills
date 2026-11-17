@@ -9,7 +9,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, BrokenBarrierError
 from datetime import timedelta
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import question_broker as broker
 import question_guard as guard
@@ -19,6 +19,31 @@ import test_question_hooks as hook_fixtures
 
 
 class Registration(hook_fixtures.HookFixture):
+    def test_tick_recovers_all_nonterminal_batches_without_sleeping(self):
+        for index in range(4):
+            self.detect(turn_id=f"turn-{index}", tool_use_id=f"call-{index}")
+        batches = self.store.batches()
+        self.store.transition(str(batches[1].id), m.BatchState.BOX_OWNED)
+        self.store.transition(str(batches[2].id), m.BatchState.ESCALATING)
+        self.store.transition(str(batches[2].id), m.BatchState.RESOLVED_LOCAL)
+        self.store.transition(str(batches[3].id), m.BatchState.STALE)
+        worker = broker.Broker(
+            self.store, clock=lambda: ledger.now() + timedelta(minutes=1)
+        )
+        with (
+            patch.object(worker, "worker", wraps=worker.worker) as recover,
+            patch.object(broker.time, "sleep") as sleep,
+            patch.object(
+                broker.callback, "spool", return_value=self.directory / "fixture-spool"
+            ),
+        ):
+            self.assertTrue(worker.tick())
+        self.assertEqual(
+            recover.call_args_list,
+            [call(str(batch.id), spool_digest=False) for batch in batches[:3]],
+        )
+        sleep.assert_not_called()
+
     def test_detect_and_worker_spool_digest_without_a_later_hook(self):
         with patch.object(hook_fixtures.hooks, "launch") as launch:
             self.detect(spawn=True)
@@ -30,6 +55,13 @@ class Registration(hook_fixtures.HookFixture):
             patch.object(broker.time, "sleep") as sleep,
             patch.object(broker.callback.rex, "STATE", self.directory),
             patch.object(broker.callback.subprocess, "Popen"),
+            patch.object(
+                broker.routes.RouteRunner,
+                "send",
+                return_value=broker.routes.RouteResult(
+                    broker.routes.RouteOutcome.ACCEPTED, None, m.Route.CODEX_QUEUE
+                ),
+            ),
             patch.object(
                 broker.callback,
                 "git_metadata",
