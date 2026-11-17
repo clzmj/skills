@@ -48,10 +48,41 @@ class RedactionTests(unittest.TestCase):
                 self.assertNotIn("hunter2", result.text)
                 self.assertNotIn("fixture", result.text)
 
+    def test_compound_secret_keys_are_redacted_without_matching_token_limits(self):
+        for value in (
+            "AWS_SECRET_ACCESS_KEY=hunter2",
+            "secret_key_base: abc",
+            "private_key: abc",
+            "PASSWORD_PROD=x",
+        ):
+            with self.subTest(value=value):
+                result = redact.redact(value)
+                self.assertTrue(result.secret_present)
+                self.assertNotIn(value.split()[-1].split("=")[-1], result.text)
+        for value in ("max_tokens=1000", "tokenizer=fast", "tokens_per_second: 50"):
+            with self.subTest(value=value):
+                self.assertEqual(redact.redact(value).text, value)
+                self.assertFalse(redact.redact(value).secret_present)
+
     def test_url_userinfo_is_removed_without_changing_destination(self):
         result = redact.redact("Fetch https://alice:example-password@example.test/repo")
         self.assertEqual(result.text, "Fetch https://example.test/repo")
         self.assertTrue(result.secret_present)
+
+    def test_at_in_query_or_fragment_is_not_url_userinfo(self):
+        for value in (
+            "https://example.com?to=a@b.c",
+            "https://example.com#to=a@b.c",
+        ):
+            with self.subTest(value=value):
+                result = redact.redact(value)
+                self.assertEqual(result.text, value)
+                self.assertFalse(result.secret_present)
+
+    def test_quoted_password_with_spaces_is_fully_redacted(self):
+        for value in ('password = "hunter two"', "password = 'hunter two'"):
+            with self.subTest(value=value):
+                self.assertEqual(redact.redact(value).text, "[REDACTED]")
 
     def test_every_secret_shape_and_entropy_is_removed(self):
         samples = (

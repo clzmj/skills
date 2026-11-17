@@ -46,12 +46,12 @@ adversarial = [
   'git pu​sh to main?', 'turn off M­FA?', 'рush to main?',
 ]
 
-# Frozen §5.2.2 patterns and normalization do not detect these sensitive requests.
+# Frozen §5.2.2 patterns do not detect these euphemisms or homoglyphs.
 known_adversarial_misses = [
   'Ship it to origin/main?', 'Make the change live?', 'Land this on trunk?',
   'Let everyone use the new build?', 'Fold this work into the shared branch?',
   'Put the latest bits on the public server?',
-  'git pu​sh to main?', 'turn off M­FA?', 'рush to main?',
+  'рush to main?',
 ]
 # Frozen §8.4 entropy rule also quarantines these ordinary path questions.
 known_benign_quarantines = [

@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import fcntl
 import json
+import logging
 import os
 import secrets
 import sqlite3
@@ -199,7 +200,7 @@ def redacted_audit_detail(detail: str) -> str:
         record = json.loads(detail)
     except ValueError:
         return redact(detail).text[:500]
-    return encoded(clean(record))
+    return encoded(clean(record))[:500]
 
 
 @dataclass(frozen=True, slots=True)
@@ -388,12 +389,26 @@ class Ledger:
             raise
         pending, self._pending_audits = self._pending_audits, []
         for kind, task, detail, batch in pending:
-            self.audit(kind, task, detail, batch)
+            try:
+                self.audit(kind, task, detail, batch)
+            except OSError:
+                logging.getLogger(__name__).exception(
+                    "could not write post-commit audit event (%s)", kind
+                )
 
     def get_batch(self, batch_id: str) -> m.QuestionBatch:
         row = self.db.execute("SELECT * FROM batch WHERE id=?", (batch_id,)).fetchone()
         if row is None:
             raise KeyError(batch_id)
+        classification = json.loads(row["classification_json"])
+        classified = classification.get("classified", False)
+        classification["classified"] = classified
+        classification["floor"] = max(
+            classification["floor"],
+            row["mac_floor"],
+            row["box_floor"] or 0,
+            m.EscalationLevel.L3_PRINCIPAL if not classified else 0,
+        )
         return m.parse_batch(
             {
                 "id": row["id"],
@@ -415,14 +430,7 @@ class Ledger:
                 ],
                 "urgency": row["urgency"],
                 "state": row["state"],
-                "classification": {
-                    **json.loads(row["classification_json"]),
-                    "floor": max(
-                        json.loads(row["classification_json"])["floor"],
-                        row["mac_floor"],
-                        row["box_floor"] or 0,
-                    ),
-                },
+                "classification": classification,
                 "context": row["context"],
                 "level": row["level"],
                 "opened_at": row["opened_at"],
