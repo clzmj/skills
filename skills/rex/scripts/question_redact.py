@@ -16,6 +16,8 @@ import math
 import re
 from typing import Final
 
+from question_model import Untrusted, UntrustedSource
+
 
 class RedactionRule(StrEnum):
     URL_USERINFO = "url_userinfo"
@@ -32,13 +34,13 @@ class RedactionRule(StrEnum):
 
 
 REDACTED: Final = "[REDACTED]"
-URL_USERINFO: Final = re.compile(r"([a-z][a-z0-9+.-]*://)[^/@\s]+@", re.I)
+URL_USERINFO: Final = re.compile(r"([a-z][a-z0-9+.-]*://)[^/\s]+@", re.I)
 TOKEN: Final = re.compile(r"\S{32,}")
 PATTERNS: Final = (
     (
         RedactionRule.PRIVATE_KEY,
         re.compile(
-            r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----.*?-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----",
+            r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----.*?(?:-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----|\Z)",
             re.S,
         ),
     ),
@@ -54,7 +56,7 @@ PATTERNS: Final = (
     (
         RedactionRule.ASSIGNMENT,
         re.compile(
-            r"\b(?:password|passwd|pwd|passphrase|secret|token|api[_-]?key)\s*[:=]\s*\S+",
+            r"(?:password|passwd|pwd|passphrase|secret|token|api[_-]?key)[\"']?\s*[:=]\s*\S+",
             re.I,
         ),
     ),
@@ -113,3 +115,7 @@ def redact(text: str) -> RedactionResult:
     for start, end in reversed(merged):
         text = text[:start] + REDACTED + text[end:]
     return RedactionResult(text, tuple(hits))
+
+
+def untrusted(text: str, source: UntrustedSource) -> Untrusted:
+    return Untrusted(redact(text).text, source)
