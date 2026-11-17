@@ -111,12 +111,14 @@ live in `.clzmj-skills/install.json`; invoke
 
 Global installs run from the user home directory and ignore saved `projectDir`.
 Project scope requires an existing directory; a missing directory error names
-the path. `--core-only` keeps saved favorites and individual pack selections
-when the final favorite selection is empty. Combining it with `--favorites`
-is rejected. Successful runs save selections after launcher registration.
+the path. Unattended `--core-only` keeps saved favorites and pack selections;
+confirmed interactive choices, including clearing favorites, are saved instead.
+Combining `--core-only` with `--favorites` or `--all-favorites` is rejected.
+Successful runs save selections after launcher registration.
 Failed or cancelled runs keep all prior selections and only record owned paths
-written during the run. A first failed install records ownership with empty
-selections, so later uninstall can identify partially installed skills.
+created during the run or already owned; pre-existing unowned paths stay unowned.
+A first failure records empty selections; updates ignore those empty choices,
+and the printed retry command supplies the attempted selections explicitly.
 
 ```sh
 clzmj-skills install --yes --agents codex --core-only

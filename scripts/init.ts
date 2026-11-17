@@ -47,7 +47,8 @@ export const settingsPath = (options: Pick<Options, "scope" | "projectDir">) => 
   ? resolve(options.projectDir, ".clzmj-skills/install.json") : resolve(homedir(), ".config/clzmj-skills/install.json");
 
 export function parseOptions(args: string[], detected: Agent[] = [], cwd = process.cwd()): Options {
-  if (args.includes("--core-only") && args.includes("--favorites")) throw new Error("--core-only cannot be combined with --favorites");
+  const conflicting = ["--favorites", "--all-favorites"].find(flag => args.includes(flag));
+  if (args.includes("--core-only") && conflicting) throw new Error(`--core-only cannot be combined with ${conflicting}`);
   const options: Options = { agents: [...detected], dryRun: false, hooks: false, scope: InstallScope.Global, projectDir: cwd, method: "symlink", core: coreSkills.map(s => s.name), favorites: [], packSkills: {}, yes: false, update: false, help: false, provided: [...args] };
   const list = (index: number): [string[], number] => {
     const values: string[] = [];
@@ -288,23 +289,16 @@ export function buildPlan(favorites: Favorite[], options: Options, states: Parti
   }
   return { steps, skipped };
 }
-export function planCommands(favorites: Favorite[], options: Options, states: Partial<Record<Agent, State>>, coreSource = CORE_SOURCE): Command[] { return buildPlan(favorites, options, states, coreSource).steps.filter(step => !step.link).map(step => step.command); }
+export function planCommands(favorites: Favorite[], options: Options, states: Partial<Record<Agent, State>>, _directory?: string, coreSource = CORE_SOURCE): Command[] { return buildPlan(favorites, options, states, coreSource).steps.filter(step => !step.link).map(step => step.command); }
 
-export async function initialize(manifest: unknown, initial: Options, runtime: Runtime, coreSource = CORE_SOURCE): Promise<void> {
+export async function initialize(manifest: unknown, initial: Options, runtime: Runtime, _directory?: string, coreSource = CORE_SOURCE): Promise<void> {
   const favorites = parseManifest(manifest);
   let options = { ...initial, packSkills: { ...initial.packSkills } };
   const saved = runtime.load?.(settingsPath(options));
-  if (options.update && saved) {
+  if (options.update && saved?.options.agents.length) {
     options = { ...saved.options, packSkills: { ...saved.options.packSkills }, dryRun: initial.dryRun, yes: initial.yes, update: true, help: initial.help, provided: initial.provided };
-    const provided = (...flags: string[]) => flags.some(flag => initial.provided?.includes(flag));
-    if (provided("--agents")) options.agents = initial.agents;
-    if (provided("--core")) options.core = initial.core;
-    if (provided("--core-only", "--all-favorites", "--favorites")) options.favorites = initial.favorites;
-    if (provided("--skills")) options.packSkills = { ...saved.options.packSkills, ...initial.packSkills };
-    if (provided("--hooks", "--no-hooks")) options.hooks = initial.hooks;
-    if (provided("--scope")) options.scope = initial.scope;
-    if (provided("--project-dir")) options.projectDir = initial.projectDir;
-    if (provided("--method")) options.method = initial.method;
+    const flags: [string[], keyof Options][] = [[["--agents"], "agents"], [["--core"], "core"], [["--core-only", "--all-favorites", "--favorites"], "favorites"], [["--skills"], "packSkills"], [["--hooks", "--no-hooks"], "hooks"], [["--scope"], "scope"], [["--project-dir"], "projectDir"], [["--method"], "method"]];
+    for (const [names, key] of flags) if (names.some(flag => initial.provided?.includes(flag))) (options as any)[key] = key === "packSkills" ? { ...saved.options.packSkills, ...initial.packSkills } : initial[key];
   }
   const exists = runtime.exists ?? pathExists;
   let plan: ReturnType<typeof buildPlan>;
@@ -384,40 +378,43 @@ export async function initialize(manifest: unknown, initial: Options, runtime: R
   if (runtime.prepare) { coreSource = await activity(runtime, "Preparing verified release", () => runtime.prepare!(options, coreSource)); plan = buildPlan(selected!, options, states!, coreSource, exists); }
   const scopedSaved = runtime.load?.(settingsPath(options));
   const record: InstallRecord = { version: 1, options, ownedPaths: { ...(scopedSaved?.ownedPaths ?? {}) } };
-  const saveOwnership = () => runtime.save?.(settingsPath(options), { ...record, options: scopedSaved?.options ?? { ...parseOptions([], [], ""), core: [] } });
+  const empty: Options = { agents: [], core: [], favorites: [], packSkills: {}, projectDir: "", scope: InstallScope.Global, method: "symlink", hooks: false, dryRun: false, yes: false, update: false, help: false };
+  const saveOwnership = () => runtime.save?.(settingsPath(options), { ...record, options: scopedSaved?.options ?? empty });
   let completed = 0, failed = 0;
   const changed = new Set<string>(), errors: string[] = [];
-  try {
-    for (const step of plan!.steps) {
-      const before = new Map(step.paths.filter(path => exists(path) && !record.ownedPaths[path]).map(path => [path, runtime.fingerprint?.(path)]));
-      if (!runtime.ui) runtime.log(step.label);
-      try {
-        await activity(runtime, step.label, async () => {
-          if (step.link) { if (!runtime.link) throw new Error("Native symlink operation unavailable"); runtime.link(step.link.source, step.link.destination); }
-          else await runtime.run(step.command, false, options.scope === InstallScope.Global ? homedir() : options.projectDir);
-        }, { completed, total: plan!.steps.length, failed });
-        completed++;
-        for (const path of step.paths) if (exists(path)) changed.add(path);
-      } catch (error) {
-        if (error instanceof TerminalCancelled) throw error;
-        failed++;
-        const details = [`Failed ${step.label}: ${error instanceof Error ? error.message : String(error)}`];
-        if (!step.link) details.push(`Retry from ${options.scope === InstallScope.Global ? homedir() : options.projectDir}: ${displayCommand(step.command)}`);
-        details.push(`Installer retry (explicitly updates all saved ordinary selections): ${displayCommand(["bun", resolve(coreSource === CORE_SOURCE ? root : coreSource, "scripts/init.ts"), "--update", "--yes", "--scope", options.scope, ...(options.scope === InstallScope.Project ? ["--project-dir", options.projectDir] : [])])}`);
-        errors.push(...details); if (!runtime.ui) details.forEach(runtime.log);
-      } finally {
-        for (const path of step.paths) if (exists(path) && runtime.fingerprint) {
-          const hash = runtime.fingerprint(path);
-          if (!before.has(path) || before.get(path) !== hash) record.ownedPaths[path] = hash;
-        }
-      }
-      runtime.ui?.progress({ completed, total: plan!.steps.length, failed, label: completed + failed === plan!.steps.length ? "Finished" : "Preparing next operation", elapsedMs: 0 });
+  const installStep = async (step: Step) => {
+    const owned = step.paths.filter(path => !exists(path) || record.ownedPaths[path]);
+    if (!runtime.ui) runtime.log(step.label);
+    try {
+      await activity(runtime, step.label, async () => {
+        if (step.link) { if (!runtime.link) throw new Error("Native symlink operation unavailable"); runtime.link(step.link.source, step.link.destination); }
+        else await runtime.run(step.command, false, options.scope === InstallScope.Global ? homedir() : options.projectDir);
+      }, { completed, total: plan!.steps.length, failed });
+      completed++;
+      for (const path of step.paths) if (exists(path)) changed.add(path);
+    } catch (error) {
+      if (error instanceof TerminalCancelled) throw error;
+      failed++;
+      const details = [`Failed ${step.label}: ${error instanceof Error ? error.message : String(error)}`];
+      if (!step.link) details.push(`Retry from ${options.scope === InstallScope.Global ? homedir() : options.projectDir}: ${displayCommand(step.command)}`);
+      const retry = ["bun", resolve(coreSource === CORE_SOURCE ? root : coreSource, "scripts/init.ts"), "--update", "--yes", "--scope", options.scope, ...(options.scope === InstallScope.Project ? ["--project-dir", options.projectDir] : []), "--agents", ...options.agents, "--core", ...(options.core.length ? options.core : ["none"]), "--method", options.method, options.hooks ? "--hooks" : "--no-hooks"];
+      const packs = selected!.filter(favorite => favorite.type === "plugin" || favorite.skills.length);
+      retry.push(...(packs.length ? ["--favorites", ...packs.map(favorite => favorite.source)] : ["--core-only"]));
+      for (const favorite of packs) if (favorite.type === "skills") retry.push("--skills", `${favorite.source}:${favorite.skills.join(",")}`);
+      details.push(`Installer retry: ${displayCommand(retry)}`);
+      errors.push(...details); if (!runtime.ui) details.forEach(runtime.log);
+    } finally {
+      for (const path of owned) if (exists(path) && runtime.fingerprint) record.ownedPaths[path] = runtime.fingerprint(path);
     }
+    runtime.ui?.progress({ completed, total: plan!.steps.length, failed, label: completed + failed === plan!.steps.length ? "Finished" : "Preparing next operation", elapsedMs: 0 });
+  };
+  try {
+    for (const step of plan!.steps) await installStep(step);
     if (!failed) await runtime.finish?.(options, coreSource);
   } catch (error) { saveOwnership(); throw error; }
   if (failed) saveOwnership();
   else {
-    if (initial.provided?.includes("--core-only") && !options.favorites?.length && scopedSaved)
+    if (initial.provided?.includes("--core-only") && options.yes && !options.favorites?.length && scopedSaved)
       record.options = { ...options, favorites: scopedSaved.options.favorites, packSkills: { ...scopedSaved.options.packSkills } };
     runtime.save?.(settingsPath(options), record);
   }
@@ -509,7 +506,7 @@ if (import.meta.main) {
           const pending = runSubprocess(command, capture, cwd, current => { child = current; }); work = pending;
           try { return await pending; } finally { if (work === pending) work = undefined; }
         },
-      }, resolveCoreSource(process.env.CLZMJ_SKILLS_SOURCE));
+      }, undefined, resolveCoreSource(process.env.CLZMJ_SKILLS_SOURCE));
     }
   } catch (error) {
     if (interrupted) { await cancellation; process.exitCode = interrupted === "SIGINT" ? 130 : interrupted === "SIGTERM" ? 143 : 129; }

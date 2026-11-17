@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { TerminalBack, TerminalCancelled } from "../scripts/terminal-ui";
 import { readFileSync, mkdtempSync, rmSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { initialize, parseManifest, parseOptions, parseState, buildPlan, resolveCoreSource, detectAgents, skillDirectory, settingsPath, runSubprocess, type PageUI, type Runtime, type Options, type InstallRecord } from "../scripts/init";
 
@@ -161,7 +161,7 @@ describe("safe installer execution", () => {
     const { runtime, logs } = mock();
     runtime.prepare = () => "/durable/release";
     runtime.run = () => { throw new Error("failed install"); };
-    await expect(initialize(manifest, options(), runtime, "/temporary/extraction")).rejects.toThrow("installation command(s) failed");
+    await expect(initialize(manifest, options(), runtime, undefined, "/temporary/extraction")).rejects.toThrow("installation command(s) failed");
     expect(logs.some(line => line.startsWith("Installer retry") && line.includes("/durable/release/scripts/init.ts"))).toBe(true);
     expect(logs.some(line => line.startsWith("Installer retry") && line.includes("/temporary/extraction"))).toBe(false);
   });
@@ -194,11 +194,39 @@ describe("safe installer execution", () => {
     expect(calls.every(c => c.command.includes("claude-code") && c.command.includes("--copy"))).toBe(true);
     expect(calls.some(c => c.command.includes("adhd"))).toBe(true);
   });
+  test("update ignores ownership-only saved choices and honors explicit flags", async () => {
+    const fixture = mock();
+    const empty: Options = { agents: [], core: [], favorites: [], packSkills: {}, projectDir: "", scope: "global", method: "symlink", hooks: false, dryRun: false, yes: false, update: false, help: false };
+    fixture.runtime.load = () => ({ version: 1, options: empty, ownedPaths: {} });
+    await initialize(manifest, parseOptions(["--yes", "--update", "--method", "copy"], ["codex"]), fixture.runtime);
+    expect(fixture.calls).toHaveLength(1);
+    expect(fixture.calls[0].command).toContain("python-tooling");
+    expect(fixture.calls[0].command).toContain("--copy");
+  });
+  test("global plugin checks use home rather than the project directory", async () => {
+    const fixture = mock();
+    await initialize(manifest, options(["--all-favorites"]), fixture.runtime);
+    const inventories = fixture.calls.filter(call => call.capture);
+    expect(inventories).toHaveLength(4);
+    expect(inventories.every(call => call.cwd === homedir())).toBe(true);
+  });
+  test("core-only honors clearing favorites in the interactive pages", async () => {
+    const fixture = mock();
+    const previous = options(["--favorites", "UditAkhourii/adhd"]);
+    fixture.runtime.load = () => ({ version: 1, options: previous, ownedPaths: {} });
+    fixture.runtime.ui = pages({ review: () => true, multiselect: (title, _rows, defaults) => title === "Favorite packs" ? [] : defaults });
+    await initialize(manifest, parseOptions(["--core-only"], ["codex"]), fixture.runtime);
+    expect(fixture.saved.at(-1)!.record.options.favorites).toEqual([]);
+    expect(fixture.saved.at(-1)!.record.options.packSkills).toEqual({});
+  });
   test("finish failure keeps selections and records written ownership", async () => {
     const fixture = mock(), previous = options(["--favorites", "UditAkhourii/adhd"]);
     fixture.runtime.load = () => ({ version: 1, options: previous, ownedPaths: { previous: "old" } });
     const chosen = options(["--agents", "codex", "--core", "rex", "--core-only"]), path = resolve(skillDirectory("codex", chosen), "rex");
-    fixture.runtime.run = () => { fixture.existing.add(path); return ""; };
+    fixture.runtime.run = () => {
+      fixture.existing.add(path);
+      return "";
+    };
     fixture.runtime.finish = () => { throw new Error("launcher failed"); };
     await expect(initialize(manifest, chosen, fixture.runtime)).rejects.toThrow("launcher failed");
     expect(fixture.saved.at(-1)!.record.options).toEqual(previous);
