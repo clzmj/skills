@@ -27,11 +27,11 @@ from uuid import UUID
 from uuid import uuid4
 
 import grokbot_callback as callback
-import question_ledger as ledger
 import question_delivery as delivery
+import question_guard as guard
+import question_ledger as ledger
 import question_model as m
 import question_routes as routes
-import question_guard as guard
 from question_redact import redact
 
 # An ordinary Stop is idle, not proof that the session ended. WAITING can
@@ -465,26 +465,11 @@ class Broker:
     def _file_lock(
         self, name: str, *, wait: float | None = None
     ) -> Generator[int | None, None, None]:
-        fd = os.open(
+        with delivery.file_lock(
             self.store.path.parent / name,
-            os.O_CREAT | os.O_RDWR,
-            0o600,
-        )
-        acquired = False
-        deadline = time.monotonic() + (self.lock_wait if wait is None else wait)
-        try:
-            while True:
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    acquired = True
-                    break
-                except BlockingIOError:
-                    if time.monotonic() >= deadline:
-                        break
-                    time.sleep(min(0.05, max(0, deadline - time.monotonic())))
-            yield fd if acquired else None
-        finally:
-            os.close(fd)
+            wait=self.lock_wait if wait is None else wait,
+        ) as acquired:
+            yield acquired
 
     @contextmanager
     def worker_lock(
@@ -519,7 +504,7 @@ class Broker:
         if result["send"] is not None:
             return
         with self.worker_lock(body["batch_id"]) as acquired:
-            if not acquired:
+            if acquired is None:
                 result["send"] = m.SendOutcome.NOT_SENT_BUSY
                 return
             batch = self.store.get_batch(body["batch_id"])
@@ -717,7 +702,7 @@ class Broker:
         if note is None:
             raise ValueError("unknown box delivery")
         with self.worker_lock(str(note.batch)) as acquired:
-            if not acquired:
+            if acquired is None:
                 raise BlockingIOError("batch busy")
             self.store.finish_box_note(
                 identifier,
@@ -804,7 +789,7 @@ class Broker:
         body = cast(m.SendBody, request["body"])
         try:
             with self.worker_lock(body["batch_id"]) as acquired:
-                if acquired:
+                if acquired is not None:
                     self.store.finish_box_note(
                         body["delivery_id"],
                         body["attempt"],
@@ -1085,7 +1070,7 @@ class Broker:
     def worker(self, batch_id: str, *, spool_digest: bool = True) -> m.QuestionBatch:
         """Dispatch durable local intents, then register immediately without a classifier."""
         with self.worker_lock(batch_id, wait=0) as acquired:
-            if not acquired:
+            if acquired is None:
                 return self.store.get_batch(batch_id)
             dispatcher = delivery.Delivery(self.store, runner=self.runner)
             dispatcher.dispatch_batch_locked(batch_id, acquired)

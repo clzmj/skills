@@ -1072,11 +1072,13 @@ class Ledger:
                     continue
                 matched = True
                 self.db.execute(
-                    "UPDATE outbound SET state=?,updated_at=? WHERE id=? AND state IN (?,?,?)",
+                    "UPDATE outbound SET state=?,updated_at=? WHERE id=? AND state IN (?,?,?,?,?)",
                     (
                         m.DeliveryState.OBSERVED,
                         now().isoformat(),
                         row["id"],
+                        m.DeliveryState.PENDING,
+                        m.DeliveryState.DISPATCH_FAILED,
                         m.DeliveryState.CLAIMED,
                         m.DeliveryState.DISPATCHED,
                         m.DeliveryState.DISPATCH_UNCERTAIN,
@@ -1259,6 +1261,8 @@ class Ledger:
                 owner = row["claim_owner"] or ""
                 pid = owner.partition(":")[0]
                 gone = False
+                # PID reuse can defer recovery until CLAIM_STALE_AFTER; the
+                # bounded stale cutoff still makes the claim uncertain.
                 if pid.isdecimal():
                     try:
                         os.kill(int(pid), 0)
