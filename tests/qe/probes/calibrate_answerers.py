@@ -100,9 +100,7 @@ def main() -> int:
         )
     if os.environ.get("GROKBOT_QE") == "1":
         parser.error("GROKBOT_QE must remain off during calibration")
-    if os.environ.get("ANTHROPIC_API_KEY") or not os.environ.get(
-        "CLAUDE_CODE_OAUTH_TOKEN"
-    ):
+    if os.environ.get("ANTHROPIC_API_KEY"):
         parser.error("Calibration requires subscription OAuth only")
     os.umask(0o077)
     scripts = args.repo.resolve() / "skills/rex/scripts"
@@ -112,6 +110,12 @@ def main() -> int:
     import question_guard as g
     import question_ledger as l
     import question_model as m
+
+    env = a.answerer_environment(m.AnswererKind.CLAUDE_PRINT)
+    if env is None:
+        parser.error(
+            f"Calibration answerer unavailable: {m.EscalationReason.NO_ANSWERER.value} (OAuth unavailable)"
+        )
 
     source_files = {
         "answerer_schema_sha256": scripts / "answerer_output.v1.json",
@@ -252,7 +256,6 @@ def main() -> int:
         assert not a.redact(prompt).secret_present
         assert marker not in prompt
         (private / "prompt.txt").write_text(prompt)
-        env = a.answerer_environment(m.AnswererKind.CLAUDE_PRINT)
         version = subprocess.run(
             ["claude", "--version"],
             cwd=fixture,
@@ -460,7 +463,7 @@ def main() -> int:
         "repository_head": repo_head,
         "source_sha256": source_hashes,
         "max_turns": 4,
-        "auth_method": "Configured subscription OAuth via CLAUDE_CODE_OAUTH_TOKEN; ANTHROPIC_API_KEY absent; no --bare; envelope auth source recorded separately when present",
+        "auth_method": "Parent-sourced subscription OAuth via macOS Keychain (explicit CLAUDE_CODE_OAUTH_TOKEN takes precedence); no API-key or token-file fallback; envelope auth source recorded separately when present",
         "prompt_bytes": prompt_bytes,
         "p95_method": "empirical nearest rank; n=20 per actual model family; rank 19; no headroom",
         "samples": samples,

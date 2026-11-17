@@ -14,6 +14,9 @@ from pathlib import Path
 import tempfile
 import tomllib
 import re
+import subprocess
+import sys
+import pwd
 from unittest.mock import patch
 import question_model as m
 from test_question_ledger import asker, question
@@ -210,6 +213,9 @@ class Store:
 
 class InvocationTests(unittest.TestCase):
     def setUp(self):
+        auth = patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "stub-oauth"})
+        auth.start()
+        self.addCleanup(auth.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
@@ -225,6 +231,112 @@ class InvocationTests(unittest.TestCase):
             slots_dir=self.root / "slots",
             executable=str(self.script),
         )
+
+    def test_keychain_token_only_reaches_answerer_environment(self):
+        payload = {
+            "subtype": "success",
+            "modelUsage": {"claude-haiku-5-5": {}},
+            "structured_output": output(),
+        }
+        self.stub(
+            'import os\nassert os.environ["CLAUDE_CODE_OAUTH_TOKEN"] == "keychain-value"\n'
+            'assert "ANTHROPIC_API_KEY" not in os.environ\nprint('
+            + repr(json.dumps(payload))
+            + ")\n"
+        )
+        with (
+            patch.dict(os.environ, {"ANTHROPIC_API_KEY": "unused-api-key"}, clear=True),
+            patch.object(sys, "platform", "darwin"),
+            patch.object(pwd, "getpwuid") as account,
+            patch.object(a.subprocess, "run") as security,
+        ):
+            account.return_value.pw_name = "local-user"
+            security.return_value = subprocess.CompletedProcess(
+                [], 0, "keychain-value\n", ""
+            )
+            result = self.runner.invoke(
+                batch(self.root), m.EscalationLevel.L1_CHEAP, "Choose tabs."
+            )
+            self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", os.environ)
+        self.assertEqual(result.outcome, m.AttemptOutcome.ANSWERED)
+        self.assertEqual(len(result.attempts), 1)
+        security.assert_called_once_with(
+            [
+                "security",
+                "find-generic-password",
+                "-s",
+                a.CLAUDE_OAUTH_KEYCHAIN_SERVICE,
+                "-a",
+                "local-user",
+                "-w",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            env={},
+        )
+
+    def test_keychain_failures_are_unavailable_without_api_key_fallback(self):
+        secret = "private-token-never-report"
+        failures = (
+            subprocess.CompletedProcess([], 44, "", secret),
+            subprocess.CompletedProcess([], 1, secret, secret),
+            subprocess.CompletedProcess([], 0, "\n", ""),
+            FileNotFoundError(secret),
+            subprocess.TimeoutExpired("security", 5, output=secret),
+        )
+        for failure in failures:
+            with (
+                self.subTest(failure=type(failure)),
+                patch.dict(
+                    os.environ, {"ANTHROPIC_API_KEY": "unused-api-key"}, clear=True
+                ),
+                patch.object(sys, "platform", "darwin"),
+                patch.object(a.subprocess, "run") as security,
+                patch.object(a.subprocess, "Popen") as launch,
+            ):
+                if isinstance(failure, Exception):
+                    security.side_effect = failure
+                else:
+                    security.return_value = failure
+                result = self.runner.invoke(
+                    batch(self.root), m.EscalationLevel.L1_CHEAP, "Choose tabs."
+                )
+            self.assertEqual(result.reason, m.EscalationReason.NO_ANSWERER)
+            self.assertEqual(result.outcome, m.AttemptOutcome.FAILED)
+            self.assertEqual(result.attempts, ())
+            self.assertNotIn(secret, repr(result))
+            launch.assert_not_called()
+        self.assertFalse(self.store.reservations)
+
+    def test_non_macos_without_explicit_oauth_is_unavailable(self):
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(sys, "platform", "linux"),
+            patch.object(a.subprocess, "run") as security,
+        ):
+            result = self.runner.invoke(
+                batch(self.root), m.EscalationLevel.L1_CHEAP, "Choose tabs."
+            )
+        self.assertEqual(result.reason, m.EscalationReason.NO_ANSWERER)
+        security.assert_not_called()
+
+    def test_explicit_oauth_precedes_keychain_and_never_forwards_api_key(self):
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "CLAUDE_CODE_OAUTH_TOKEN": "explicit-oauth",
+                    "ANTHROPIC_API_KEY": "unused-api-key",
+                    "GROKBOT_CALLBACK": "private",
+                },
+                clear=True,
+            ),
+            patch.object(a.subprocess, "run") as security,
+        ):
+            env = a.answerer_environment(m.AnswererKind.CLAUDE_PRINT)
+        self.assertEqual(env, {"CLAUDE_CODE_OAUTH_TOKEN": "explicit-oauth"})
+        security.assert_not_called()
 
     def stub(self, body):
         self.script.write_text("#!/usr/bin/env python3\n" + body)

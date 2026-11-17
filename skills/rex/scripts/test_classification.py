@@ -1,5 +1,10 @@
 """Classification admission through public hook, guard and worker boundaries."""
 
+import os
+import subprocess
+import sys
+from unittest.mock import patch
+
 import question_guard as guard
 import question_model as m
 from test_question_hooks import HookFixture
@@ -28,6 +33,9 @@ class ClassificationAdmission(HookFixture):
 class WorkerLadder(ClassificationAdmission):
     def setUp(self):
         super().setUp()
+        auth = patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "stub-oauth"})
+        auth.start()
+        self.addCleanup(auth.stop)
         import sys
         from datetime import timedelta
         from decimal import Decimal
@@ -101,6 +109,29 @@ class WorkerLadder(ClassificationAdmission):
         self.assertEqual(self.log.read_text().splitlines(), ["haiku"])
         (progress,) = self.store.due_progress()
         self.assertEqual(progress["local_resolution"], 1)
+
+    def test_missing_keychain_escalates_without_launching_answerers(self):
+        with (
+            patch.dict(os.environ, {m.FLAG_ENV: "1"}, clear=True),
+            patch.object(sys, "platform", "darwin"),
+            patch(
+                "question_answerers.subprocess.run",
+                return_value=subprocess.CompletedProcess(
+                    [], 44, "", "private-diagnostic"
+                ),
+            ) as security,
+        ):
+            result = self.run_worker(self.payload())
+        self.assertEqual(result.state, m.BatchState.BOX_OWNED)
+        self.assertFalse(self.log.exists())
+        self.assertTrue(self.store.due_registrations())
+        self.assertGreaterEqual(security.call_count, 1)
+        self.assertEqual(
+            self.store.db.execute("SELECT count(*) FROM budget_reservation").fetchone()[
+                0
+            ],
+            0,
+        )
 
     def test_box_ack_between_eligibility_and_resolution_finishes_worker(self):
         import json

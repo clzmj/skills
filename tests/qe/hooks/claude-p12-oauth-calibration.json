@@ -19,7 +19,7 @@
     "model_sha256": "1f302a63c3429887630555f530fcb38ba62443d5d2c019e411cc4df59e39a5fa"
   },
   "max_turns": 4,
-  "auth_method": "Configured subscription OAuth via CLAUDE_CODE_OAUTH_TOKEN; ANTHROPIC_API_KEY absent; no --bare; apiKeySource absent from all 40 envelopes",
+  "auth_method": "Historical 40-call run used subscription OAuth supplied from a token file; future runs source it in the parent from the macOS Keychain generic password service grokbot-claude-oauth-token with account macOS username; explicit parent CLAUDE_CODE_OAUTH_TOKEN takes precedence; no API-key or token-file fallback; ANTHROPIC_API_KEY absent and no --bare in historical run; apiKeySource absent from all 40 envelopes",
   "prompt_bytes": 24512,
   "p95_method": "empirical nearest rank; n=20 per actual model family; rank 19; no headroom",
   "samples": [

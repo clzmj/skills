@@ -15,10 +15,12 @@ import fcntl
 import json
 import math
 import os
+import pwd
 import re
 from pathlib import Path
 import signal
 import subprocess
+import sys
 import time
 import tempfile
 import tomllib
@@ -40,10 +42,9 @@ CLAUDE_MAX_BUDGET_USD = {
 }
 ROOT = Path(__file__).parent
 ESSENTIAL_ENV = frozenset(("PATH", "HOME", "LANG", "TMPDIR"))
+CLAUDE_OAUTH_KEYCHAIN_SERVICE = "grokbot-claude-oauth-token"
 VENDOR_AUTH = {
-    m.AnswererKind.CLAUDE_PRINT: frozenset(
-        ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
-    ),
+    m.AnswererKind.CLAUDE_PRINT: frozenset(("CLAUDE_CODE_OAUTH_TOKEN",)),
     m.AnswererKind.CODEX_EXEC: frozenset(("OPENAI_API_KEY",)),
 }
 
@@ -440,11 +441,43 @@ def model_family_matches(raw: object, model: m.Model) -> bool:
     )
 
 
-def answerer_environment(kind: m.AnswererKind) -> dict[str, str]:
-    """Return only the frozen spec allowlist and approved vendor auth values."""
-    return {
+def answerer_environment(kind: m.AnswererKind) -> dict[str, str] | None:
+    """Resolve auth in the parent; return None when Claude OAuth is unavailable.
+
+    Explicit parent OAuth takes precedence over the macOS user's Keychain item.
+    No API-key or token-file fallback. Never copy the token into os.environ.
+    """
+    env = {
         k: v for k, v in os.environ.items() if k in ESSENTIAL_ENV | VENDOR_AUTH[kind]
     }
+    if kind != m.AnswererKind.CLAUDE_PRINT or env.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        return env
+    if sys.platform != "darwin":
+        return None
+    try:
+        result = subprocess.run(
+            [
+                "security",
+                "find-generic-password",
+                "-s",
+                CLAUDE_OAUTH_KEYCHAIN_SERVICE,
+                "-a",
+                pwd.getpwuid(os.getuid()).pw_name,
+                "-w",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            env={k: v for k, v in env.items() if k in ESSENTIAL_ENV},
+        )
+    except (OSError, KeyError, subprocess.SubprocessError, UnicodeError):
+        # Subprocess diagnostics may contain secrets; expose no error text.
+        return None
+    token = result.stdout.rstrip("\r\n")
+    if result.returncode != 0 or not token:
+        return None
+    env["CLAUDE_CODE_OAUTH_TOKEN"] = token
+    return env
 
 
 class Answerers:
@@ -570,6 +603,10 @@ class Answerers:
         # ponytail: CLAUDE_PRINT is hard-coded until Codex has validated bounds.
         kind = m.AnswererKind.CLAUDE_PRINT
         env = answerer_environment(kind)
+        if env is None:
+            return AnswerAttempt(
+                config.model, m.AttemptOutcome.FAILED, m.EscalationReason.NO_ANSWERER
+            )
         argv = build_command(config, executable=self.executable)
         deadline_s = min(bounds.wall_clock.total_seconds(), 90 if level == 1 else 240)
         for ordinal in (1, 2):
