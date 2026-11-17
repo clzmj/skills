@@ -268,11 +268,11 @@ class RegexScalingTests(unittest.TestCase):
     ) -> None:
         timings = []
         for size in (200_000, 800_000):
-            # Generate outside timing. Keep two large trials for noise control;
-            # one small trial preserves the same ratio and absolute bounds.
+            # Generate outside timing. Minimize two small trials so scheduler
+            # noise cannot inflate the denominator and ease the ratio check.
             values = tuple(inputs(size))
             trials = []
-            for _ in range(1 if size == 200_000 else 2):
+            for _ in range(2 if size == 200_000 else 1):
                 started = time.perf_counter()
                 for value in values:
                     operation(value)

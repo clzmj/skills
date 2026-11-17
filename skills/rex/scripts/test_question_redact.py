@@ -40,6 +40,8 @@ class RedactionTests(unittest.TestCase):
             "DB_PASSWORD=hunter2",
             "OPENAI_API_KEY=fixture",
             "GITHUB_TOKEN: fixture",
+            "PGPASSWORD=hunter2",
+            "dbpassword=hunter2",
             '"password": "hunter2"',
         ):
             with self.subTest(text=text):
@@ -103,6 +105,12 @@ class RedactionTests(unittest.TestCase):
             ("x-_password", True),
             ("Database__Password", True),
             ("TOKEN", True),
+            ("PGPASSWORD", True),
+            ("MYSQLPASSWORD", True),
+            ("dbpassword", True),
+            ("githubtoken", True),
+            ("apitoken", True),
+            ("mysecret", True),
             ("token_count", False),
             ("TOKEN-LIMIT", False),
             ("password_min_length", False),
@@ -110,11 +118,11 @@ class RedactionTests(unittest.TestCase):
             ("secret_santa_count", False),
             ("max_tokens", False),
             ("tokenizer", False),
-            ("max_token", False),
-            ("MAX-TOKEN", False),
+            ("max_token", True),
+            ("MAX-TOKEN", True),
             ("tokens_per_second", False),
-            ("mytoken", False),
-            ("notpassword", False),
+            ("mytoken", True),
+            ("notpassword", True),
         )
         for prefix in ("", "--", "-", "_", "__", ".", "export "):
             for key, secret in cases:
@@ -124,11 +132,13 @@ class RedactionTests(unittest.TestCase):
                     self.assertEqual(result.secret_present, secret)
                     self.assertEqual("hunter2" not in result.text, secret)
 
-    def test_assignment_separator_does_not_cross_newlines(self):
+    def test_assignment_separator_matches_spec_whitespace(self):
         for newline in ("\n", "\r", "\r\n"):
             for value in (f"Token:{newline}The answer", f"password{newline}=hunter2"):
                 with self.subTest(value=value):
-                    self.assertEqual(redact.redact(value).text, value)
+                    result = redact.redact(value)
+                    self.assertIn(redact.RedactionRule.ASSIGNMENT, result.hits)
+                    self.assertNotIn("hunter2", result.text)
         self.assertEqual(redact.redact("password\t=\tfixture").text, "[REDACTED]")
 
     def test_url_userinfo_is_removed_without_changing_destination(self):

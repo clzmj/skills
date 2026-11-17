@@ -9,30 +9,49 @@ from __future__ import annotations
 
 import importlib.util
 import argparse
-import ast
 import json
+import re
 import subprocess
 import sys
 import tomllib
 import unittest
 from pathlib import Path
 from types import ModuleType
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 ROOT = Path(__file__).resolve().parents[2]
 TESTS = ROOT / "skills/rex/scripts/test_question_redact.py"
 WORKING = ROOT / "skills/rex/scripts/question_redact.py"
 CORPUS = ROOT / "tests/qe/guard_corpus.toml"
-BENIGN = ("max_token=5", "--max_token=5", "mytoken=x", "notpassword=x")
+KEYWORDS = ("password", "passwd", "pwd", "passphrase", "secret", "token", "apikey")
+PREFIXES = ("", "pg", "db", "my", "github", "api", "max_", "not")
+SEPARATORS = ("", "_", "-", "__")
+SPEC_PATTERN = re.compile(
+    r"(password|passwd|pwd|passphrase|secret|token|api[_-]?key)\s*[:=]\s*\S+",
+    re.IGNORECASE,
+)
+KEYWORD_SUFFIX_PATTERN = re.compile(
+    r"(?:password|passwd|pwd|passphrase|secret|token|api[_-]?key|private[_-]?key)[A-Za-z0-9_-]+(?=\s*[:=])",
+    re.IGNORECASE,
+)
 sys.path.insert(0, str(TESTS.parent))
 
 
-class BenignCorrection(TypedDict):
+class DetectionLoss(TypedDict):
     input: str
-    baseline_hits: list[str]
-    baseline_text: str
-    current_hits: list[str]
-    current_text: str
+    baseline_rules: list[str]
+    current_rules: list[str]
+
+
+class DetectionGain(TypedDict):
+    input: str
+    added_rules: list[str]
+    classification: Literal["keyword_suffix"] | None
+
+
+class GeneratedKeyMiss(TypedDict):
+    input: str
+    implementation: str
 
 
 class DifferentialReport(TypedDict):
@@ -40,13 +59,18 @@ class DifferentialReport(TypedDict):
     guard_corpus_inputs: int
     compared_inputs: int
     baseline_positive_inputs: int
+    spec_positive_inputs: int
+    spec_positive_misses: list[str]
+    generated_key_inputs: int
+    generated_key_misses: list[GeneratedKeyMiss]
+    unit_test_failures: int
     inputs: list[str]
-    test_methods: tuple[str, ...]
-    classified_methods_not_recorded_wholesale: tuple[str, ...]
+    unit_test_methods: tuple[str, ...]
     guard_corpus_arrays: tuple[str, ...]
     baseline_positive_losses: list[str]
-    jwt_rule_losses: list[str]
-    benign_corrections: list[BenignCorrection]
+    rule_losses: list[DetectionLoss]
+    detection_gains: list[DetectionGain]
+    unclassified_gains: list[str]
 
 
 def load_module(name: str, source: str) -> ModuleType:
@@ -58,8 +82,8 @@ def load_module(name: str, source: str) -> ModuleType:
     return module
 
 
-def record_test_inputs() -> tuple[set[str], tuple[str, ...], tuple[str, ...]]:
-    """Record secret-positive cases; benign-only tests are explicitly inventoried."""
+def record_test_inputs() -> tuple[set[str], tuple[str, ...], int]:
+    """Record inputs from every test, including negative key-table rows."""
     spec = importlib.util.spec_from_file_location("test_question_redact", TESTS)
     assert spec is not None and spec.loader is not None
     test_module = importlib.util.module_from_spec(spec)
@@ -71,31 +95,6 @@ def record_test_inputs() -> tuple[set[str], tuple[str, ...], tuple[str, ...]]:
             if name.startswith("test_")
         )
     )
-    positive_methods = (
-        "test_untrusted_factory_redacts_text_and_preserves_source",
-        "test_path_text_is_entropy_scanned_under_spec",
-        "test_quoted_values_do_not_cross_newlines",
-        "test_truncated_private_key_is_removed",
-        "test_url_userinfo_with_at_in_password_is_removed",
-        "test_secret_assignments_in_environment_and_json_are_removed",
-        "test_url_userinfo_is_removed_without_changing_destination",
-        "test_quoted_password_with_spaces_is_fully_redacted",
-        "test_every_secret_shape_and_entropy_is_removed",
-        "test_overlapping_matches_redact_once_and_preserve_context",
-        "test_case_and_url_protocol_variants",
-    )
-    skipped_methods = (
-        "test_compound_secret_keys_are_redacted_without_matching_token_limits",
-        "test_secret_and_nonsecret_key_variants",
-        "test_assignment_separator_does_not_cross_newlines",
-        "test_at_in_query_or_fragment_is_not_url_userinfo",
-        "test_jwt_starts_after_hyphens_and_overlapping_dotted_segments",
-        "test_normal_text_and_low_entropy_strings_survive",
-    )
-    if set(all_methods) != set(positive_methods) | set(skipped_methods):
-        raise RuntimeError(
-            f"Unclassified redaction tests: {sorted(set(all_methods) - set(positive_methods) - set(skipped_methods))}"
-        )
     seen: set[str] = set()
     original = test_module.redact.redact
 
@@ -106,63 +105,19 @@ def record_test_inputs() -> tuple[set[str], tuple[str, ...], tuple[str, ...]]:
     test_module.redact.redact = recording_redact
     try:
         result = unittest.TextTestRunner(stream=sys.stderr, verbosity=0).run(
-            unittest.TestSuite(
-                test_module.RedactionTests(name) for name in positive_methods
-            )
+            unittest.TestSuite(test_module.RedactionTests(name) for name in all_methods)
         )
     finally:
         test_module.redact.redact = original
-    if not result.wasSuccessful():
-        raise RuntimeError(
-            "Existing redaction tests failed; refusing incomplete corpus"
-        )
-    tree = ast.parse(TESTS.read_text())
-    # Explicit table positives, every configured prefix; evaluate literals only.
-    for node in ast.walk(tree):
-        if (
-            not isinstance(node, ast.FunctionDef)
-            or node.name != "test_secret_and_nonsecret_key_variants"
-        ):
-            continue
-        prefix_loop = next(item for item in node.body if isinstance(item, ast.For))
-        prefixes = ast.literal_eval(prefix_loop.iter)
-        for assignment in ast.walk(node):
-            if not isinstance(assignment, ast.Assign) or not any(
-                isinstance(t, ast.Name) and t.id == "cases" for t in assignment.targets
-            ):
-                continue
-            cases = ast.literal_eval(assignment.value)
-            for key, expected in cases:
-                if expected:
-                    seen.update(f"{prefix}{key}=hunter2" for prefix in prefixes)
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.FunctionDef)
-            and node.name
-            == "test_compound_secret_keys_are_redacted_without_matching_token_limits"
-        ):
-            loop = next(item for item in node.body if isinstance(item, ast.For))
-            seen.update(ast.literal_eval(loop.iter))
-        if (
-            isinstance(node, ast.FunctionDef)
-            and node.name == "test_assignment_separator_does_not_cross_newlines"
-        ):
-            seen.add("password\t=\tfixture")
-    # Capture positive loop inputs from the JWT test, excluding its explicitly listed negative tuple.
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.FunctionDef)
-            and node.name
-            == "test_jwt_starts_after_hyphens_and_overlapping_dotted_segments"
-        ):
-            token_loop = next(item for item in node.body if isinstance(item, ast.For))
-            prefix_loop = next(
-                item for item in token_loop.body if isinstance(item, ast.For)
-            )
-            for token in ast.literal_eval(token_loop.iter):
-                for prefix in ast.literal_eval(prefix_loop.iter):
-                    seen.add(prefix + token)
-    return seen, positive_methods, skipped_methods
+    return seen, all_methods, len(result.failures) + len(result.errors)
+
+
+def gain_classification(
+    value: str, added_rules: list[str]
+) -> Literal["keyword_suffix"] | None:
+    if added_rules == ["assignment"] and KEYWORD_SUFFIX_PATTERN.search(value):
+        return "keyword_suffix"
+    return None
 
 
 def main() -> int:
@@ -180,7 +135,8 @@ def main() -> int:
     ).stdout
     baseline = load_module("baseline_question_redact", baseline_source)
     working = load_module("working_question_redact", WORKING.read_text())
-    inputs, methods, skipped_methods = record_test_inputs()
+    inputs, methods, unit_test_failures = record_test_inputs()
+    unit_test_inputs = len(inputs)
     corpus = tomllib.loads(CORPUS.read_text())
     prompt_arrays = tuple(
         sorted(key for key, value in corpus.items() if isinstance(value, list))
@@ -197,70 +153,145 @@ def main() -> int:
             "x-eyJa.b.c",
             "x-eyJ" + "a" * 20 + ".b.c",
             "auth-eyJ" + "a" * 20 + ".b.c",
+            "Token:\nThe answer",
+            "password\n=hunter2",
+            "PGPASSWORD=hunter2",
+            "dbpassword=hunter2",
+            "githubtoken=hunter2",
+            "apitoken=hunter2",
+            "mysecret=hunter2",
+            "mytoken=x",
+            "notpassword=x",
+            "max_token=5",
+            "--max_token=5",
+            "MAX-TOKEN=5",
+            "MAX-TOKEN=hunter2",
             "my__password=x",
             "my--password=x",
             "x-_password=x",
             "Database__Password=x",
+            "API_KEY_PROD=hunter2",
+            "GITHUB_TOKEN_PROD=hunter2",
+            "password_prod_eu=hunter2",
+            "password\t=\tfixture",
         )
     )
+    generated_keys = {
+        f"{(prefix + separator + keyword).lower()}=hunter2"
+        for keyword in KEYWORDS
+        for prefix in PREFIXES
+        for separator in SEPARATORS
+    }
+    generated_keys |= {
+        value.partition("=")[0].upper() + "=hunter2" for value in generated_keys
+    }
+    inputs.update(generated_keys)
+    inputs.update(("PGPASSWORD=hunter2", "dbpassword=hunter2"))
     baseline_positive = sum(baseline.redact(value).secret_present for value in inputs)
-    lost = sorted(
-        value
-        for value in inputs
-        if baseline.redact(value).secret_present
-        and not working.redact(value).secret_present
+    boolean_losses: list[str] = []
+    rule_losses: list[DetectionLoss] = []
+    gains: list[DetectionGain] = []
+    for value in sorted(inputs):
+        old, new = baseline.redact(value), working.redact(value)
+        old_rules = sorted({hit.value for hit in old.hits})
+        new_rules = sorted({hit.value for hit in new.hits})
+        if old.secret_present and not new.secret_present:
+            boolean_losses.append(value)
+        lost_rules = sorted(set(old_rules) - set(new_rules))
+        if lost_rules:
+            rule_losses.append(
+                {
+                    "input": value,
+                    "baseline_rules": old_rules,
+                    "current_rules": new_rules,
+                }
+            )
+        added_rules = sorted(set(new_rules) - set(old_rules))
+        if added_rules:
+            gains.append(
+                {
+                    "input": value,
+                    "added_rules": added_rules,
+                    "classification": gain_classification(value, added_rules),
+                }
+            )
+    spec_positive = {value for value in inputs if SPEC_PATTERN.search(value)}
+    spec_misses = sorted(
+        value for value in spec_positive if not working.redact(value).secret_present
     )
-    jwt_lost = sorted(
-        value
-        for value in inputs
-        if "jwt" in {hit.value for hit in baseline.redact(value).hits}
-        and "jwt" not in {hit.value for hit in working.redact(value).hits}
-    )
+    generated_misses = [
+        GeneratedKeyMiss(input=value, implementation=label)
+        for value in sorted(generated_keys)
+        for label, module in (("baseline", baseline), ("current", working))
+        if not module.redact(value).secret_present
+    ]
     print(
-        f"Recorded unit-test inputs: {len(inputs) - len(corpus_inputs)}; guard-corpus inputs: {len(corpus_inputs)}"
+        f"Recorded unit-test inputs: {unit_test_inputs}; guard-corpus inputs: {len(corpus_inputs)}"
     )
     print(f"Test methods exercised ({len(methods)}): {', '.join(methods)}")
-    print(
-        f"Explicitly classified benign/mixed methods not recorded wholesale ({len(skipped_methods)}): {', '.join(skipped_methods)}"
-    )
+    print(f"Unit test assertion failures/errors: {unit_test_failures}")
     print(f"Guard corpus arrays included: {', '.join(prompt_arrays)}")
     print(
         f"Compared {len(inputs)} unique inputs, {baseline_positive} baseline-positive"
     )
-    print(f"Baseline-positive losses: {len(lost)}; JWT rule losses: {len(jwt_lost)}")
-    for value in lost:
-        print(f"LOST {value!r}")
-    for value in jwt_lost:
-        print(f"JWT LOST {value!r}")
-    print("\nBenign corrections (baseline => current):")
-    for value in BENIGN:
-        old, new = baseline.redact(value), working.redact(value)
-        print(f"{value!r}: {old.hits!r} {old.text!r} => {new.hits!r} {new.text!r}")
+    print(
+        f"Baseline-positive boolean losses: {len(boolean_losses)}; rule losses: {len(rule_losses)}"
+    )
+    print(
+        f"Detection gains: {len(gains)}; unclassified gains: {sum(gain['classification'] is None for gain in gains)}"
+    )
+    print(
+        f"Spec-positive inputs: {len(spec_positive)}; current misses: {len(spec_misses)}"
+    )
+    print(
+        f"Generated key inputs: {len(generated_keys)}; baseline/current misses: {len(generated_misses)}"
+    )
+    for value in boolean_losses:
+        print(f"BASELINE POSITIVE LOSS {value!r}")
+    for loss in rule_losses:
+        print(
+            f"RULE LOSS {loss['input']!r}: {loss['baseline_rules']} => {loss['current_rules']}"
+        )
+    for gain in gains:
+        print(
+            f"GAIN ({gain['classification'] or 'unclassified'}): {gain['input']!r} +{gain['added_rules']}"
+        )
+    for value in spec_misses:
+        print(f"SPEC FLOOR MISS {value!r}")
+    for miss in generated_misses:
+        print(f"GENERATED KEY MISS ({miss['implementation']}): {miss['input']!r}")
     if args.output:
         report: DifferentialReport = {
-            "unit_test_inputs": len(inputs - corpus_inputs),
+            "unit_test_inputs": unit_test_inputs,
             "guard_corpus_inputs": len(corpus_inputs),
             "compared_inputs": len(inputs),
             "baseline_positive_inputs": baseline_positive,
+            "spec_positive_inputs": len(spec_positive),
+            "spec_positive_misses": spec_misses,
+            "generated_key_inputs": len(generated_keys),
+            "generated_key_misses": generated_misses,
+            "unit_test_failures": unit_test_failures,
             "inputs": sorted(inputs),
-            "test_methods": methods,
-            "classified_methods_not_recorded_wholesale": skipped_methods,
+            "unit_test_methods": methods,
             "guard_corpus_arrays": prompt_arrays,
-            "baseline_positive_losses": lost,
-            "jwt_rule_losses": jwt_lost,
-            "benign_corrections": [
-                {
-                    "input": value,
-                    "baseline_hits": [hit.value for hit in baseline.redact(value).hits],
-                    "baseline_text": baseline.redact(value).text,
-                    "current_hits": [hit.value for hit in working.redact(value).hits],
-                    "current_text": working.redact(value).text,
-                }
-                for value in BENIGN
+            "baseline_positive_losses": boolean_losses,
+            "rule_losses": rule_losses,
+            "detection_gains": gains,
+            "unclassified_gains": [
+                gain["input"] for gain in gains if gain["classification"] is None
             ],
         }
         args.output.write_text(json.dumps(report, indent=2) + "\n")
-    return 1 if lost or jwt_lost else 0
+    return (
+        1
+        if boolean_losses
+        or rule_losses
+        or spec_misses
+        or generated_misses
+        or any(gain["classification"] is None for gain in gains)
+        or unit_test_failures
+        else 0
+    )
 
 
 if __name__ == "__main__":

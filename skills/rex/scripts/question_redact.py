@@ -60,13 +60,13 @@ PATTERNS: Final = (
     (RedactionRule.BEARER, re.compile(r"Bearer\s+\S{12,}", re.I)),
     (
         RedactionRule.ASSIGNMENT,
-        # Start once per key run, including leading CLI/environment separators.
-        # Apply the max_token/max-token exemption after leading separators only.
+        # Start once per key run; backtrack over its prefix once to find a
+        # secret suffix, including glued names. No key names are exempt.
         re.compile(
-            r"(?<![\w-])(?![_-]*max[_-]token\b)[_-]*(?:[a-z0-9]+[_-]+)*"
+            r"(?<![\w-])[\w-]*"
             r"(?:password|passwd|pwd|passphrase|secret(?:[_-](?:access[_-]key|key(?:[_-]base)?))?|token(?:[_-]key)?|api[_-]?key|private[_-]?key)"
             r"(?:[_-](?:prod|production|staging|stage|dev|development|test|eu|value))*"
-            r"[\"']?[ \t]*[:=][ \t]*(?:\"[^\"\r\n]*(?:\"|(?=[\r\n]|\Z))|'[^'\r\n]*(?:'|(?=[\r\n]|\Z))|\S+)",
+            r"[\"']?\s*[:=]\s*(?:\"[^\"\r\n]*(?:\"|(?=[\r\n]|\Z))|'[^'\r\n]*(?:'|(?=[\r\n]|\Z))|\S+)",
             re.I,
         ),
     ),
@@ -74,6 +74,8 @@ PATTERNS: Final = (
         RedactionRule.JWT,
         # Consume only the first run so dotted candidates can overlap. Each
         # run is scanned at most three times; redact() locates eyJ or -eyJ.
+        # The final word boundary may backtrack over trailing hyphens, still
+        # costing only one pass over that run.
         re.compile(
             r"(?<![A-Za-z0-9_-])([A-Za-z0-9_-]+)"
             r"(?=\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)\b)"
