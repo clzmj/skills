@@ -7,8 +7,10 @@ import copy
 import importlib.util
 import json
 import shlex
+import subprocess
 import tempfile
 import unittest
+from typing import TypedDict
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,7 +20,49 @@ installer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(installer)
 
 
+class Handler(TypedDict, total=False):
+    type: str
+    command: str
+    timeout: int
+
+
+class HookGroup(TypedDict, total=False):
+    matcher: str
+    hooks: list[Handler]
+    custom: str
+
+
+class HookConfig(TypedDict):
+    hooks: dict[str, list[HookGroup]]
+
+
 class InstallerTests(unittest.TestCase):
+    def test_script_resolves_agent_types_from_another_cwd(self):
+        script = Path(__file__).with_name("install_hooks.py").resolve()
+        with tempfile.TemporaryDirectory() as folder:
+            result = subprocess.run(
+                ["uv", "run", "--script", str(script), "--help"],
+                cwd=folder,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("usage:", result.stdout)
+
+    def test_foreign_hook_invocation_cannot_be_claimed_by_argument_path(self):
+        home = Path("/test-home")
+        root = home / ".local/share/agent-tooling/rex"
+        self.assertFalse(
+            installer.owned_handler(
+                "uv run /x/codex_sessions.py hook", "codex_sessions.py", home, root
+            )
+        )
+        command = shlex.join(
+            ["uv", "run", "--script", "/x/foreign.py", "hook", str(root / "codex_sessions.py")]
+        )
+        self.assertFalse(installer.owned_handler(command, "codex_sessions.py", home, root))
+
     def test_install_is_independent_and_idempotent(self):
         with tempfile.TemporaryDirectory() as folder:
             home = Path(folder)
@@ -54,9 +98,12 @@ class InstallerTests(unittest.TestCase):
                             continue
                         words = shlex.split(handler["command"])
                         self.assertEqual(words[:3], ["/opt/tools/uv", "run", "--script"])
-                        self.assertEqual(words[-1], "hook")
+                        if "question_hooks.py" in handler["command"]:
+                            self.assertEqual(words[-3:], ["hook", "--agent", "codex"])
+                        else:
+                            self.assertEqual(words[-1], "hook")
                         if event == "SessionEnd":
-                            self.assertEqual(handler["timeout"], 3)
+                            self.assertEqual(handler["timeout"], 5 if "question_hooks.py" in handler["command"] else 3)
             instructions = (home / ".codex/AGENTS.md").read_text()
             self.assertTrue(instructions.startswith("Personal instructions\n"))
             self.assertEqual(instructions.count("<!-- rex-visible:start -->"), 1)
@@ -66,27 +113,32 @@ class InstallerTests(unittest.TestCase):
         home = Path("/test-home")
         root = home / ".local/share/agent-tooling/rex"
         for old in (root, home / "Developer/tools/rex-visible", home / "repo/skills/python-tooling/scripts/rex", home / "repo/skills/rex/scripts"):
-            owned = {"type": "command", "command": shlex.join(["/usr/bin/python3", str(old / "codex_sessions.py"), "hook"]), "timeout": 80}
-            unrelated = {"type": "command", "command": "/usr/bin/python3 /custom/codex_sessions.py hook", "timeout": 7}
-            data = {"hooks": {"SessionEnd": [{"hooks": [owned, copy.deepcopy(unrelated)], "matcher": "keep"}]}}
+            owned: Handler = {"type": "command", "command": shlex.join(["/usr/bin/python3", str(old / "codex_sessions.py"), "hook"]), "timeout": 80}
+            unrelated: Handler = {"type": "command", "command": "/usr/bin/python3 /custom/codex_sessions.py hook", "timeout": 7}
+            data: HookConfig = {"hooks": {"SessionEnd": [{"hooks": [owned, copy.deepcopy(unrelated)], "matcher": "keep"}]}}
             installer.rex_hooks(data, root, home, "/opt/tools/uv", True)
-            self.assertEqual(shlex.split(owned["command"]), ["/opt/tools/uv", "run", "--script", str(root / "codex_sessions.py"), "hook"])
-            self.assertEqual(owned["timeout"], 3)
-            self.assertEqual(data["hooks"]["SessionEnd"][0]["hooks"][1], unrelated)
+            self.assertEqual(data["hooks"]["SessionEnd"][0]["hooks"], [unrelated])
             self.assertEqual(data["hooks"]["SessionEnd"][0]["matcher"], "keep")
+            relocated = [handler for group in data["hooks"]["SessionEnd"] for handler in group["hooks"]
+                         if installer.owned_handler(handler.get("command", ""), "codex_sessions.py", home, root)]
+            self.assertEqual(len(relocated), 1)
+            self.assertEqual(shlex.split(relocated[0]["command"]), ["/opt/tools/uv", "run", "--script", str(root / "codex_sessions.py"), "hook"])
+            self.assertEqual(relocated[0]["timeout"], 3)
 
     def test_post_tool_resume_observer_preserves_unrelated_matchers(self):
         home = Path("/test-home")
         root = home / ".local/share/agent-tooling/rex"
         for codex, script in ((True, "codex_sessions.py"), (False, "claude_sessions.py")):
-            owned = {"type": "command", "command": shlex.join(["uv", "run", "--script", str(root / script), "hook"])}
-            unrelated = {"type": "command", "command": "/custom/observer", "timeout": 7}
-            mixed = {"matcher": "Bash", "hooks": [copy.deepcopy(owned), unrelated], "custom": "preserved"}
-            data = {"hooks": {"PostToolUse": [mixed, {"matcher": "SendMessage", "hooks": [copy.deepcopy(owned)]}]}}
+            owned: Handler = {"type": "command", "command": shlex.join(["uv", "run", "--script", str(root / script), "hook"])}
+            unrelated: Handler = {"type": "command", "command": "/custom/observer", "timeout": 7}
+            mixed: HookGroup = {"matcher": "Bash", "hooks": [copy.deepcopy(owned), unrelated], "custom": "preserved"}
+            data: HookConfig = {"hooks": {"PostToolUse": [mixed, {"matcher": "SendMessage", "hooks": [copy.deepcopy(owned)]}]}}
             installer.rex_hooks(data, root, home, "/opt/tools/uv", codex)
             self.assertEqual(mixed, {"matcher": "Bash", "hooks": [unrelated], "custom": "preserved"})
-            observers = [group for group in data["hooks"]["PostToolUse"] if group is not mixed]
-            self.assertEqual(len(observers), 2)
+            observers = [group for group in data["hooks"]["PostToolUse"]
+                         if group is not mixed and any(installer.owned_handler(handler.get("command", ""), script, home, root)
+                                                       for handler in group.get("hooks", []))]
+            self.assertEqual(len(observers), 1)
             self.assertTrue(all("matcher" not in group for group in observers))
             before = copy.deepcopy(data)
             installer.rex_hooks(data, root, home, "/opt/tools/uv", codex)

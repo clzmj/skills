@@ -21,13 +21,16 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import IntEnum, StrEnum
-from typing import Callable, Final, Generator, TypeVar, TypedDict, cast
-from uuid import UUID
+from pathlib import Path
+from typing import Callable, Final, Generator, TypedDict, TypeVar, cast
+from uuid import UUID, uuid4
 
 import grokbot_callback as callback
+import question_guard as guard
 import question_ledger as ledger
 import question_model as m
 import question_routes as routes
+from question_redact import redact
 
 # An ordinary Stop is idle, not proof that the session ended. WAITING can
 # contain background work and therefore uses the running Codex queue route.
@@ -59,6 +62,160 @@ class Command(StrEnum):
     ACK = "ack"
     AUDIT = "audit"
     TICK = "tick"
+    WORKER = "worker"
+
+
+DIGEST_MAX: Final = 64 * 1024
+DIGEST_COALESCE: Final = timedelta(seconds=30)
+
+
+def cap_text(value: str | None, cap: int) -> str | None:
+    if value is None:
+        return None
+    clean = "".join(c for c in value if ord(c) >= 32 or c in "\n\t")
+    return clean.encode(m.UTF8)[:cap].decode(m.UTF8, errors="ignore")
+
+
+def register_question(question: m.Question, cap: int) -> m.RegisterQuestion:
+    text = cap_text(question.text.text, min(cap, m.QUESTION_TEXT_MAX)) or ""
+    header = cap_text(
+        question.header.text if question.header else None, min(cap, m.HEADER_MAX)
+    )
+    options: list[m.DigestOption] = [
+        m.DigestOption(
+            index=o.index,
+            label=cap_text(o.label.text, min(cap, m.OPTION_LABEL_MAX)) or "",
+            description=cap_text(
+                o.description.text if o.description else None,
+                min(cap, m.OPTION_DESCRIPTION_MAX),
+            ),
+        )
+        for o in question.options
+    ]
+    truncated = (
+        text != question.text.text
+        or header != (question.header.text if question.header else None)
+        or any(
+            o["label"] != native.label.text
+            or o["description"]
+            != (native.description.text if native.description else None)
+            for o, native in zip(options, question.options)
+        )
+    )
+    wire = m.RegisterQuestion(
+        id=str(question.id),
+        text=text,
+        header=header,
+        options=options,
+        multi_select=question.multi_select,
+        allows_free_text=question.allows_free_text,
+        retired_rev=question.retired_rev,
+        truncated=truncated,
+        digest="",
+    )
+    wire["digest"] = m.digest(
+        {
+            key: value
+            for key, value in wire.items()
+            if key not in ("digest", "retired_rev", "truncated")
+        }
+    )
+    return wire
+
+
+def block_oversized(store: ledger.Ledger, batch: m.QuestionBatch, detail: str) -> None:
+    if batch.state is not m.BatchState.BLOCKED:
+        store.transition(
+            str(batch.id), m.BatchState.BLOCKED, block_cause=m.BlockCause.TOO_LARGE
+        )
+    if not store.db.execute(
+        "SELECT 1 FROM notice WHERE batch=? AND kind=?",
+        (str(batch.id), m.NoticeKind.TOO_LARGE),
+    ).fetchone():
+        store.notice(m.NoticeKind.TOO_LARGE, batch.asker.task, detail, str(batch.id))
+
+
+def prepare_registration(
+    store: ledger.Ledger,
+    batch: m.QuestionBatch,
+    remote: str = "",
+    brief: m.BriefEscalation | None = None,
+    root_session: str | None = None,
+    secret_present: bool = False,
+) -> m.RegisterEntry | None:
+    """Freeze bounded redacted content once; identities and policy are never cut."""
+    existing = store.db.execute(
+        "SELECT entry_json FROM registration WHERE batch=? AND batch_rev=?",
+        (str(batch.id), batch.rev),
+    ).fetchone()
+    if existing and existing[0]:
+        return m.parse_register_entry(json.loads(existing[0]))
+    if len(batch.questions) > m.MAX_QUESTIONS or any(
+        len(q.options) > m.MAX_OPTIONS for q in batch.questions
+    ):
+        block_oversized(
+            store,
+            batch,
+            "Question or option count exceeds registration limits; answer in the pane",
+        )
+        return None
+    a = batch.asker
+    origin = redact(remote).text
+    cap = 1024
+    while True:
+        questions = [register_question(question, cap) for question in batch.questions]
+        entry = m.RegisterEntry(
+            schema=m.REGISTER_SCHEMA,
+            batch_id=str(batch.id),
+            batch_rev=batch.rev,
+            task_id=a.task,
+            actor=a.actor,
+            agent=a.agent,
+            role=a.role,
+            session=a.session,
+            rex_session=a.rex_session,
+            rex_block=a.rex_block,
+            cwd=a.cwd if len(a.cwd.encode(m.UTF8)) <= m.CWD_MAX else "",
+            remote=origin if len(origin.encode(m.UTF8)) <= m.REMOTE_MAX else "",
+            head_sha=a.head_sha,
+            callback_bot=a.callback_bot,
+            root_actor=a.root_actor,
+            root_session=root_session or a.session,
+            questions=questions,
+            secret_present=secret_present
+            or any(
+                hit.trigger is m.GuardTrigger.SECRET_PRESENT
+                for hit in batch.classification.hits
+            ),
+            mac_floor=max(batch.classification.floor, m.EscalationLevel.L3_PRINCIPAL),
+            mac_hits=[
+                m.DigestHit(rule_id=h.rule_id, trigger=h.trigger, strength=h.strength)
+                for h in batch.classification.hits[: m.MAC_HITS_MAX]
+            ],
+            brief_digest=a.brief_digest,
+            brief_ask_carlos=list(brief.ask_carlos) if brief else [],
+            brief_project=brief.project if brief else None,
+            classified=False,
+            category=None,
+            delegable=None,
+            sensitive_topics=[],
+            classification_floor=None,
+            content_digest="",
+        )
+        entry["content_digest"] = m.digest(
+            {key: value for key, value in entry.items() if key != "content_digest"}
+        )
+        if len(m.canonical(entry)) <= m.REGISTER_ENTRY_MAX:
+            store.put_registration(entry)
+            return entry
+        if cap <= 32:
+            block_oversized(
+                store,
+                batch,
+                "Registration exceeds wire limit; answer in the pane",
+            )
+            return None
+        cap //= 2
 
 
 class RegistrationsPage(TypedDict):
@@ -330,10 +487,10 @@ class Broker:
     @contextmanager
     def worker_lock(
         self, batch: str, *, wait: float | None = None
-    ) -> Generator[bool, None, None]:
+    ) -> Generator[int | None, None, None]:
         UUID(batch)
         with self._file_lock(m.WORKER_LOCK.format(batch=batch), wait=wait) as acquired:
-            yield acquired is not None
+            yield acquired
 
     def fence(self, request: m.Plan, body: m.SendBody) -> m.SendOutcome | None:
         if self.clock() > datetime.fromisoformat(body["issued_at"]) + timedelta(
@@ -360,7 +517,7 @@ class Broker:
         if result["send"] is not None:
             return
         with self.worker_lock(body["batch_id"]) as acquired:
-            if not acquired:
+            if acquired is None:
                 result["send"] = m.SendOutcome.NOT_SENT_BUSY
                 return
             batch = self.store.get_batch(body["batch_id"])
@@ -553,7 +710,7 @@ class Broker:
         if note is None:
             raise ValueError("unknown box delivery")
         with self.worker_lock(str(note.batch)) as acquired:
-            if not acquired:
+            if acquired is None:
                 raise BlockingIOError("batch busy")
             self.store.finish_box_note(
                 identifier,
@@ -640,7 +797,7 @@ class Broker:
         body = cast(m.SendBody, request["body"])
         try:
             with self.worker_lock(body["batch_id"]) as acquired:
-                if acquired:
+                if acquired is not None:
                     self.store.finish_box_note(
                         body["delivery_id"],
                         body["attempt"],
@@ -917,6 +1074,327 @@ class Broker:
             "cursor": page["cursor"],
         }
 
+    def worker(self, batch_id: str, *, spool_digest: bool = True) -> m.QuestionBatch:
+        """Phase 3 has no classifier or local dispatcher. Register immediately."""
+        with self.worker_lock(batch_id, wait=0) as acquired:
+            if acquired is None:
+                return self.store.get_batch(batch_id)
+            with self.store.transaction():
+                batch = self.store.get_batch(batch_id)
+                if batch.state in ledger.TERMINAL:
+                    return batch
+                entry = prepare_registration(self.store, batch)
+                if entry is not None:
+                    # MAC_GUARD is produced by rechecking immutable content against
+                    # the current guard table on recovery/retry of the same revision.
+                    policy = m.BriefEscalation(
+                        entry["brief_project"] or m.BriefProject.PERSONAL,
+                        (),
+                        tuple(entry["brief_ask_carlos"]),
+                    )
+                    classification = guard.derive_floor(
+                        batch.questions,
+                        classification=batch.classification,
+                        brief=policy,
+                        cwd=entry["cwd"],
+                        remote=entry["remote"],
+                        previous_floor=batch.classification.floor,
+                        secret_present=entry["secret_present"],
+                    )
+                    raised = classification.floor > batch.classification.floor
+                    previous = self.store.db.execute(
+                        "SELECT escalated FROM batch WHERE id=?", (batch_id,)
+                    ).fetchone()[0]
+                    if raised or previous is None:
+                        with self.store.transaction():
+                            self.store.db.execute(
+                                "UPDATE batch SET mac_floor=max(mac_floor,?),classification_json=?,escalated=? WHERE id=?",
+                                (
+                                    classification.floor,
+                                    ledger.encoded(classification),
+                                    m.EscalationReason.NO_ANSWERER,
+                                    batch_id,
+                                ),
+                            )
+                            seq = self.store.db.execute(
+                                "SELECT coalesce(max(seq),0)+1 FROM progress WHERE batch=?",
+                                (batch_id,),
+                            ).fetchone()[0]
+                            self.store.progress(
+                                m.RegisterProgress(
+                                    schema=m.PROGRESS_SCHEMA,
+                                    batch_id=batch_id,
+                                    batch_rev=batch.rev,
+                                    seq=seq,
+                                    escalated=m.EscalationReason.NO_ANSWERER,
+                                    recommendations=[],
+                                    local_resolution=None,
+                                    local_level=None,
+                                    floor_raise=m.FloorRaise(
+                                        floor=classification.floor,
+                                        cause=m.FloorRaiseCause.MAC_GUARD,
+                                        classification=None,
+                                    )
+                                    if raised
+                                    else None,
+                                )
+                            )
+                    if batch.state is not m.BatchState.BLOCKED:
+                        self.store.take_ownership(batch_id, classification.floor)
+                task = batch.asker.task
+        if spool_digest:
+            # The detached worker must publish even if no later hook runs (§5.7).
+            # Release the batch lock and transaction before coalescing siblings.
+            time.sleep(DIGEST_COALESCE.total_seconds())
+            self.digest(task)
+        return self.store.get_batch(batch_id)
+
+    def digest_envelope(
+        self,
+        identifier: str,
+        task: str,
+        entries: list[m.RegisterEntry],
+        progress: list[m.RegisterProgress],
+        notices: list[m.DigestNotice],
+        created: str,
+        metadata: m.DigestMetadata | None = None,
+    ) -> m.DigestEnvelope:
+        cached = metadata or m.DigestMetadata(
+            requester=entries[0]["callback_bot"] if entries else "",
+            repo=entries[0]["cwd"] if entries else "",
+            branch="",
+        )
+        body = m.DigestPayload(
+            schema=m.DIGEST_SCHEMA,
+            event=m.Event.NEEDS_INPUT,
+            kind=m.InputKind.QUESTION_DIGEST,
+            digest_id=identifier,
+            task_id=task,
+            requester=cached["requester"],
+            repo=cached["repo"],
+            branch=cached["branch"],
+            register=entries,
+            progress=progress,
+            notices=notices,
+            untrusted=list(m.DIGEST_UNTRUSTED_FIELDS),
+            delivery_key=m.digest([m.DIGEST_SCHEMA, identifier]),
+        )
+        return m.DigestEnvelope(
+            event=m.Event.NEEDS_INPUT,
+            kind=m.InputKind.QUESTION_DIGEST,
+            digest_id=identifier,
+            task_id=task,
+            requester=body["requester"],
+            agent="",
+            turn="",
+            rex_session="",
+            rex_block="",
+            finished_at=created,
+            body=body,
+        )
+
+    def digest_metadata(
+        self, entries: list[m.RegisterEntry], notices: list[m.DigestNotice]
+    ) -> m.DigestMetadata:
+        if entries:
+            entry = entries[0]
+            metadata = callback.git_metadata(
+                self.store.get_batch(entry["batch_id"]).asker.cwd
+            )
+            return m.DigestMetadata(
+                requester=entry["callback_bot"],
+                repo=metadata["repo"],
+                branch=metadata["branch"],
+            )
+        for notice in notices:
+            row = self.store.db.execute(
+                "SELECT metadata_json FROM notice WHERE id=?", (notice["id"],)
+            ).fetchone()
+            if row and row[0]:
+                return m.parse_record(m.DigestMetadata, json.loads(row[0]))
+        for notice in notices:
+            if notice["batch_id"]:
+                batch = self.store.get_batch(notice["batch_id"])
+                metadata = callback.git_metadata(batch.asker.cwd)
+                return m.DigestMetadata(
+                    requester=batch.asker.callback_bot,
+                    repo=metadata["repo"],
+                    branch=metadata["branch"],
+                )
+        # Legacy notices lack source metadata. Unknown is evidence, never a
+        # reason to borrow another session's callback identity.
+        return m.DigestMetadata(requester="", repo="", branch="")
+
+    def digest(self, task: str) -> tuple[Path, ...]:
+        """Durable IDs, bounded frames, retry timing and once-spooled notices."""
+        with self._file_lock("qe-digest-" + m.digest(task), wait=0) as acquired:
+            return self._digest_locked(task) if acquired is not None else ()
+
+    def _digest_locked(self, task: str) -> tuple[Path, ...]:
+        paths: list[Path] = []
+        # Digest rows are committed before spooling. Rebuild a lost spool using
+        # exactly the frozen row, including its key and timestamp.
+        for row in self.store.db.execute("SELECT * FROM digest WHERE task=?", (task,)):
+            envelope = self.digest_envelope(
+                row["id"],
+                task,
+                json.loads(row["register_json"]),
+                json.loads(row["progress_json"]),
+                json.loads(row["notices_json"]),
+                row["spooled_at"],
+                m.parse_record(m.DigestMetadata, json.loads(row["metadata_json"]))
+                if row["metadata_json"]
+                else None,
+            )
+            key = envelope["body"]["delivery_key"]
+            sent_marker = self.store.path.parent / ("grokbot-sent-" + key)
+            if (
+                not (self.store.path.parent / ("grokbot-pending-" + key)).exists()
+                and not sent_marker.exists()
+            ):
+                path = callback.spool(envelope)
+                if path is not None:
+                    paths.append(path)
+            self.account_digest(
+                envelope["body"]["register"],
+                envelope["body"]["notices"],
+                row["spooled_at"],
+            )
+            if sent_marker.exists():
+                with self.store.transaction():
+                    self.store.db.execute("DELETE FROM digest WHERE id=?", (row["id"],))
+        entries = [
+            entry
+            for entry in self.store.due_registrations()
+            if entry["task_id"] == task and self.registration_retry_due(entry)
+        ]
+        keys = {(entry["batch_id"], entry["batch_rev"]) for entry in entries}
+        progress = [
+            item
+            for item in self.store.due_progress()
+            if (item["batch_id"], item["batch_rev"]) in keys
+        ]
+        notices = [
+            m.DigestNotice(
+                id=row["id"],
+                kind=m.NoticeKind(row["kind"]),
+                batch_id=row["batch"],
+                detail=row["detail"],
+                created_at=row["created_at"],
+            )
+            for row in self.store.db.execute(
+                "SELECT * FROM notice WHERE task=? AND spooled=0 ORDER BY rowid",
+                (task,),
+            )
+        ]
+        while entries or progress or notices:
+            identifier, created = str(uuid4()), self.clock().isoformat()
+            metadata = self.digest_metadata(entries, notices)
+            included_entries: list[m.RegisterEntry] = []
+            included_progress: list[m.RegisterProgress] = []
+            included_notices: list[m.DigestNotice] = []
+
+            def fit_and_pack(
+                destination: list[T],
+                item: T,
+                related: list[m.RegisterProgress],
+            ) -> bool:
+                destination.append(item)
+                included_progress.extend(related)
+                candidate = self.digest_envelope(
+                    identifier,
+                    task,
+                    included_entries,
+                    included_progress,
+                    included_notices,
+                    created,
+                    metadata,
+                )
+                if len(m.canonical(candidate)) <= DIGEST_MAX:
+                    return True
+                destination.pop()
+                for progress_item in related:
+                    included_progress.remove(progress_item)
+                return False
+
+            while entries:
+                entry = entries[0]
+                related = [
+                    item
+                    for item in progress
+                    if (item["batch_id"], item["batch_rev"])
+                    == (entry["batch_id"], entry["batch_rev"])
+                ]
+                if not fit_and_pack(included_entries, entry, related):
+                    break
+                entries.pop(0)
+                progress = [item for item in progress if item not in related]
+            while notices and fit_and_pack(included_notices, notices[0], []):
+                notices.pop(0)
+            if not (included_entries or included_progress or included_notices):
+                raise ValueError("digest item exceeds wire limit")
+            envelope = self.digest_envelope(
+                identifier,
+                task,
+                included_entries,
+                included_progress,
+                included_notices,
+                created,
+                metadata,
+            )
+            with self.store.transaction():
+                self.store.db.execute(
+                    "INSERT INTO digest(id,task,register_json,progress_json,notices_json,spooled_at,metadata_json) VALUES(?,?,?,?,?,?,?)",
+                    (
+                        identifier,
+                        task,
+                        ledger.encoded(included_entries),
+                        ledger.encoded(included_progress),
+                        ledger.encoded(included_notices),
+                        created,
+                        ledger.encoded(metadata),
+                    ),
+                )
+            path = callback.spool(envelope)
+            self.account_digest(included_entries, included_notices, created)
+            if path is not None:
+                paths.append(path)
+        return tuple(paths)
+
+    def account_digest(
+        self,
+        entries: list[m.RegisterEntry],
+        notices: list[m.DigestNotice],
+        created: str,
+    ) -> None:
+        """Complete the saved frame's accounting once, including crash recovery."""
+        at = datetime.fromisoformat(created)
+        with self.store.transaction():
+            for entry in entries:
+                row = self.store.db.execute(
+                    "SELECT last_sent_at FROM registration WHERE batch=? AND batch_rev=?",
+                    (entry["batch_id"], entry["batch_rev"]),
+                ).fetchone()
+                if row and (row[0] is None or datetime.fromisoformat(row[0]) < at):
+                    self.store.registration_sent(
+                        entry["batch_id"], entry["batch_rev"], at=at
+                    )
+            for notice in notices:
+                self.store.db.execute(
+                    "UPDATE notice SET spooled=1 WHERE id=?", (notice["id"],)
+                )
+
+    def registration_retry_due(self, entry: m.RegisterEntry) -> bool:
+        row = self.store.db.execute(
+            "SELECT last_sent_at,overdue FROM registration WHERE batch=? AND batch_rev=?",
+            (entry["batch_id"], entry["batch_rev"]),
+        ).fetchone()
+        interval = timedelta(hours=1) if row["overdue"] else m.REGISTER_RETRY
+        return (
+            row["last_sent_at"] is None
+            or datetime.fromisoformat(row["last_sent_at"]) <= self.clock() - interval
+        )
+
     def tick(self) -> bool:
         fd = os.open(
             self.store.path.parent / m.TICK_LOCK, os.O_CREAT | os.O_RDWR, 0o600
@@ -942,6 +1420,39 @@ class Broker:
                 ):
                     self.store.transition(str(batch.id), m.BatchState.STALE)
             self.store.retain(at)
+            if os.environ.get(m.FLAG_ENV) == "1":
+                for batch in self.store.batches():
+                    if batch.state in ledger.OPEN_FOR_ATTACH:
+                        self.worker(str(batch.id), spool_digest=False)
+                tasks = (
+                    {
+                        entry["task_id"]
+                        for entry in self.store.due_registrations()
+                        if self.registration_retry_due(entry)
+                    }
+                    | {
+                        row[0]
+                        for row in self.store.db.execute(
+                            "SELECT DISTINCT task FROM notice WHERE spooled=0"
+                        )
+                    }
+                    | {
+                        row[0]
+                        for row in self.store.db.execute(
+                            "SELECT DISTINCT task FROM digest"
+                        )
+                    }
+                )
+                for task in tasks:
+                    oldest = self.store.db.execute(
+                        "SELECT min(due_at) FROM (SELECT b.updated_at AS due_at FROM batch b JOIN registration r ON r.batch=b.id AND r.batch_rev=b.rev WHERE b.task=? AND (r.state<>? OR r.progress_seq>r.acked_progress_seq) UNION ALL SELECT created_at FROM notice WHERE task=? AND spooled=0 UNION ALL SELECT spooled_at FROM digest WHERE task=?)",
+                        (task, m.RegistrationState.ACKED, task, task),
+                    ).fetchone()[0]
+                    if (
+                        oldest
+                        and datetime.fromisoformat(oldest) <= at - DIGEST_COALESCE
+                    ):
+                        self.digest(task)
             with self.store.transaction():
                 self.store.db.execute(
                     "INSERT INTO tick_state VALUES(1,?) ON CONFLICT(id) DO UPDATE SET last_run_at=excluded.last_run_at",
@@ -979,6 +1490,8 @@ def parser() -> argparse.ArgumentParser:
     audit = commands.add_parser(Command.AUDIT)
     audit.add_argument("--task", required=True)
     commands.add_parser(Command.TICK)
+    worker = commands.add_parser(Command.WORKER)
+    worker.add_argument("--batch", required=True)
     return cli
 
 
@@ -1052,6 +1565,9 @@ def main(argv: list[str] | None = None) -> int:
                     )
             elif command is Command.TICK:
                 broker.tick()
+            elif command is Command.WORKER:
+                if os.environ.get(m.FLAG_ENV) == "1":
+                    broker.worker(args.batch)
         except BlockingIOError:
             return 4
         except (ValueError, KeyError):

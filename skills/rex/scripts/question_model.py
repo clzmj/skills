@@ -101,7 +101,7 @@ IDENTITY_CAPS: Final[Mapping[IdentityField, int]] = {
 UTF8: Final = "utf-8"
 UNICODE_NORMALIZATION: Final = "NFC"
 COLLABORATOR_ACK_PREFIX: Final = "Acknowledge receipt"
-COLLABORATOR_HEADER_PATTERN: Final = re.compile(r"\[Codex team [^\]]*\]")
+COLLABORATOR_HEADER_PATTERN: Final = re.compile(r"\[Codex team (?P<body>[^\]]*)\]")
 
 
 def parse_identity(value: object, field: str, *, allow_empty: bool = False) -> str:
@@ -1369,6 +1369,12 @@ class Status(TypedDict):
     notices: list[DigestNotice]
 
 
+class DigestMetadata(TypedDict):
+    requester: str
+    repo: str
+    branch: str
+
+
 class DigestNotice(TypedDict):
     id: str
     kind: NoticeKind
@@ -1725,6 +1731,22 @@ def parse_register_progress(value: object) -> RegisterProgress:
     if (progress["local_resolution"] is None) != (progress["local_level"] is None):
         raise ValueError("incomplete local resolution")
     return progress
+
+
+def collaborator_message_id(text: str) -> str | None:
+    lines = text.splitlines()
+    header = COLLABORATOR_HEADER_PATTERN.fullmatch(lines[0]) if lines else None
+    if header is None:
+        return None
+    parts = header["body"].rsplit("; ", 2)
+    if (
+        len(parts) == 3
+        and parts[0]
+        and parts[1].startswith("from ")
+        and parts[2].startswith("message-id ")
+    ):
+        return parts[2][len("message-id ") :] or None
+    return None
 
 
 def normalize_prompt(text: str, wrappers: tuple[tuple[str, str], ...] = ()) -> str:
