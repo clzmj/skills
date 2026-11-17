@@ -430,21 +430,15 @@ def _parse_session_state(record: str) -> SessionState:
     return cast(SessionState, value)
 
 
-def session_state(
-    agent: AgentKind, session: str, child: str = ""
-) -> SessionState | None:
+def session_state(agent: AgentKind, session: str, child: str = "") -> SessionState | None:
     """Read one callback session record without creating or modifying its database."""
     path = rex.STATE / "grokbot-callback.sqlite3"
     if not path.exists():
         return None
     try:
-        with closing(
-            sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)
-        ) as db:
-            row = db.execute(
-                "SELECT record FROM sessions WHERE key=?",
-                (actor_key(agent, session, child),),
-            ).fetchone()
+        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)) as db:
+            row = db.execute("SELECT record FROM sessions WHERE key=?",
+                             (actor_key(agent, session, child),)).fetchone()
         return _parse_session_state(row[0]) if row else None
     except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
         return None
