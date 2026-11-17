@@ -250,7 +250,10 @@ raise SystemExit(64)
         shown = self.box.show(str(batch.id))
         self.assertEqual(shown["record"].state, box.BoxBatchState.DELIVERED)
         self.assertEqual(len(shown["deliveries"]), 1)
-        call = json.loads(self.log.read_text().splitlines()[0])
+        calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertEqual(len(calls), 2)
+        self.assertIn(":pending]", calls[0][2])
+        call = calls[-1]
         self.assertEqual(call[0], "queue")
         self.assertEqual(call[1], f"--thread={registered_entry['root_session']}")
         self.assertTrue(call[2].startswith("--message="))

@@ -215,6 +215,7 @@ class Claim:
     owner: str
     attempt: int
     route: m.Route
+    previous_state: m.DeliveryState = m.DeliveryState.PENDING
 
 
 @dataclass(frozen=True, slots=True)
@@ -563,6 +564,7 @@ class Ledger:
                 m.OutboundPurpose.ANSWER,
             ),
         )
+        self._settle_dispatch_attempts(str(batch.id), m.DeliveryState.SUPPRESSED)
 
     def record_attempt(self, attempt: m.Attempt) -> m.Attempt:
         """Finalize against the current revision; settled history is immutable."""
@@ -918,7 +920,13 @@ class Ledger:
                         text,
                         m.body_digest(text),
                         secrets.token_hex(16),
-                        (m.Route.REX_SEND,),
+                        (
+                            m.Route.CODEX_QUEUE,
+                            m.Route.CODEX_QUEUE_RESUME,
+                            m.Route.REX_SEND,
+                        )
+                        if batch.asker.agent is m.AgentKind.CODEX
+                        else (m.Route.REX_SEND,),
                         m.DeliveryState.PENDING,
                         None,
                         None,
@@ -1012,6 +1020,74 @@ class Ledger:
                 str(batch.id),
             )
 
+    def get_outbound(self, outbound: str) -> m.OutboundMessage:
+        row = self.db.execute(
+            "SELECT * FROM outbound WHERE id=?", (outbound,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(outbound)
+        return m.parse_outbound(
+            {
+                "id": row["id"],
+                "batch": row["batch"],
+                "purpose": row["purpose"],
+                "resolution_rev": row["resolution_rev"],
+                "target_actor": row["target_actor"],
+                "child_actor": row["child_actor"],
+                "text": row["text"],
+                "body_digest": row["body_digest"],
+                "ack_token": row["ack_token"],
+                "route_plan": json.loads(row["route_plan_json"]),
+                "state": row["state"],
+                "suppress_cause": row["suppress_cause"],
+                "claim_owner": row["claim_owner"],
+                "claimed_at": row["claimed_at"],
+                "paused_by": row["paused_by"],
+                "updated_at": row["updated_at"],
+            }
+        )
+
+    def outbounds(self, batch: str) -> tuple[m.OutboundMessage, ...]:
+        return tuple(
+            self.get_outbound(row[0])
+            for row in self.db.execute(
+                "SELECT id FROM outbound WHERE batch=? ORDER BY rowid", (batch,)
+            )
+        )
+
+    def _settle_dispatch_attempts(self, batch: str, state: m.DeliveryState) -> None:
+        self.db.execute(
+            "UPDATE dispatch_attempt SET result=?,finished_at=? WHERE result IS NULL AND outbound IN (SELECT id FROM outbound WHERE batch=? AND state=?)",
+            (state, now().isoformat(), batch, state),
+        )
+
+    def observe_outbounds(self, actor: str, prompt: str) -> bool:
+        """Recompute stored text digests; observations cannot resurrect suppression."""
+        matched = False
+        with self.transaction():
+            for row in self.db.execute(
+                "SELECT id,text FROM outbound WHERE target_actor=?", (actor,)
+            ):
+                if m.body_digest(row["text"]) != m.body_digest(prompt):
+                    continue
+                matched = True
+                self.db.execute(
+                    "UPDATE outbound SET state=?,updated_at=? WHERE id=? AND state IN (?,?,?,?,?)",
+                    (
+                        m.DeliveryState.OBSERVED,
+                        now().isoformat(),
+                        row["id"],
+                        m.DeliveryState.PENDING,
+                        m.DeliveryState.DISPATCH_FAILED,
+                        m.DeliveryState.CLAIMED,
+                        m.DeliveryState.DISPATCHED,
+                        m.DeliveryState.DISPATCH_UNCERTAIN,
+                    ),
+                )
+                row_batch = self.get_outbound(row["id"]).batch
+                self._settle_dispatch_attempts(str(row_batch), m.DeliveryState.OBSERVED)
+        return matched
+
     def resolve(
         self, resolution: m.Resolution, outbounds: tuple[m.OutboundMessage, ...]
     ) -> None:
@@ -1066,6 +1142,7 @@ class Ledger:
 
     def claim(self, outbound: str, owner: str, route: m.Route) -> Claim | None:
         with self.transaction():
+            previous = self.get_outbound(outbound).state
             updated = self.db.execute(
                 """UPDATE outbound SET state=?,claim_owner=?,claimed_at=?,updated_at=? WHERE id=? AND state IN (?,?) AND paused_by IS NULL
                 AND NOT EXISTS(SELECT 1 FROM takeover WHERE takeover.batch=outbound.batch AND origin=? AND cleared_at IS NULL)""",
@@ -1090,7 +1167,43 @@ class Ledger:
                 "INSERT INTO dispatch_attempt VALUES(?,?,?,?,?,?)",
                 (outbound, attempt, route, None, now().isoformat(), None),
             )
-            return Claim(outbound, owner, attempt, route)
+            return Claim(outbound, owner, attempt, route, previous)
+
+    def stop_claim(
+        self,
+        claim: Claim,
+        *,
+        cause: m.SuppressCause | None = None,
+        paused_by: str | None = None,
+        abandon: bool = False,
+    ) -> bool:
+        """Release or suppress only the current claim, preserving its previous state."""
+        with self.transaction():
+            state = (
+                m.DeliveryState.ABANDONED
+                if abandon
+                else m.DeliveryState.SUPPRESSED
+                if cause
+                else claim.previous_state
+            )
+            changed = self.db.execute(
+                "UPDATE outbound SET state=?,suppress_cause=?,paused_by=?,claim_owner=NULL,claimed_at=NULL,updated_at=? WHERE id=? AND state=? AND claim_owner=?",
+                (
+                    state,
+                    cause,
+                    paused_by,
+                    now().isoformat(),
+                    claim.outbound,
+                    m.DeliveryState.CLAIMED,
+                    claim.owner,
+                ),
+            ).rowcount
+            if changed:
+                self.db.execute(
+                    "UPDATE dispatch_attempt SET result=?,finished_at=? WHERE outbound=? AND n=?",
+                    (state, now().isoformat(), claim.outbound, claim.attempt),
+                )
+            return bool(changed)
 
     def finish_claim(self, claim: Claim, state: m.DeliveryState) -> bool:
         if state not in {
@@ -1125,25 +1238,50 @@ class Ledger:
                     encoded({"outbound_id": claim.outbound, "state": state}),
                     str(batch.id),
                 )
+                if state is m.DeliveryState.DISPATCH_UNCERTAIN:
+                    self.notice(
+                        m.NoticeKind.DISPATCH_UNCERTAIN,
+                        batch.asker.task,
+                        f"Uncertain dispatch {claim.outbound}",
+                        str(batch.id),
+                    )
+            else:
+                logging.warning("Dropped late dispatch result for %s", claim.outbound)
             return bool(changed)
 
     def recover_claims(self, at: datetime | None = None) -> int:
         with self.transaction():
             cutoff = ((at or now()) - m.CLAIM_STALE_AFTER).isoformat()
             rows = self.db.execute(
-                "SELECT id,batch FROM outbound WHERE state=? AND claimed_at<?",
-                (m.DeliveryState.CLAIMED, cutoff),
+                "SELECT id,batch,claim_owner,claimed_at FROM outbound WHERE state=?",
+                (m.DeliveryState.CLAIMED,),
             ).fetchall()
-            changed = self.db.execute(
-                "UPDATE outbound SET state=?,updated_at=? WHERE state=? AND claimed_at<?",
-                (
-                    m.DeliveryState.DISPATCH_UNCERTAIN,
-                    now().isoformat(),
-                    m.DeliveryState.CLAIMED,
-                    cutoff,
-                ),
-            ).rowcount
+            changed = 0
             for row in rows:
+                owner = row["claim_owner"] or ""
+                pid = owner.partition(":")[0]
+                gone = False
+                # PID reuse can defer recovery until CLAIM_STALE_AFTER; the
+                # bounded stale cutoff still makes the claim uncertain.
+                if pid.isdecimal():
+                    try:
+                        os.kill(int(pid), 0)
+                    except ProcessLookupError:
+                        gone = True
+                    except PermissionError:
+                        pass
+                if not gone and row["claimed_at"] >= cutoff:
+                    continue
+                changed += self.db.execute(
+                    "UPDATE outbound SET state=?,updated_at=? WHERE id=? AND state=? AND claim_owner=?",
+                    (
+                        m.DeliveryState.DISPATCH_UNCERTAIN,
+                        now().isoformat(),
+                        row["id"],
+                        m.DeliveryState.CLAIMED,
+                        row["claim_owner"],
+                    ),
+                ).rowcount
                 self.db.execute(
                     "UPDATE dispatch_attempt SET result=?,finished_at=? WHERE outbound=? AND result IS NULL",
                     (m.DeliveryState.DISPATCH_UNCERTAIN, now().isoformat(), row["id"]),
@@ -1277,6 +1415,14 @@ class Ledger:
 
     def clear_takeover(self, takeover: str, by: str) -> None:
         with self.transaction():
+            row = self.db.execute(
+                "SELECT origin FROM takeover WHERE id=?", (takeover,)
+            ).fetchone()
+            if (
+                row is None
+                or m.PromptOrigin(row["origin"]) is not m.PromptOrigin.UNKNOWN
+            ):
+                raise ValueError("only a known UNKNOWN takeover can be cleared")
             self.db.execute(
                 "UPDATE takeover SET cleared_at=?,cleared_by=? WHERE id=? AND origin=? AND cleared_at IS NULL",
                 (now().isoformat(), by, takeover, m.PromptOrigin.UNKNOWN),
@@ -1462,7 +1608,12 @@ class Ledger:
             ).fetchone()
         )
 
-    def record_takeover(self, takeover: m.Takeover) -> None:
+    def record_takeover(
+        self,
+        takeover: m.Takeover,
+        *,
+        cause: m.CancelCause = m.CancelCause.HUMAN_TOOK_OVER,
+    ) -> None:
         if takeover.origin not in {m.PromptOrigin.UNKNOWN, m.PromptOrigin.HUMAN}:
             raise ValueError("takeover requires positive human evidence or UNKNOWN")
         with self.transaction():
@@ -1483,10 +1634,17 @@ class Ledger:
                     "UPDATE outbound SET paused_by=? WHERE batch=? AND state IN (?,?,?) AND paused_by IS NULL",
                     (str(takeover.id), str(takeover.batch), *UNDISPATCHED),
                 )
+                batch = self.get_batch(str(takeover.batch))
+                self.notice(
+                    m.NoticeKind.TAKEOVER_SUSPECTED,
+                    batch.asker.task,
+                    f"Unverified input; takeover {takeover.id}",
+                    str(batch.id),
+                )
             else:
                 self.cancel_local(
                     str(takeover.batch),
-                    m.CancelCause.HUMAN_TOOK_OVER,
+                    cause,
                     takeover.prompt_digest,
                 )
             batch = self.get_batch(str(takeover.batch))
@@ -1529,6 +1687,7 @@ class Ledger:
                     m.DeliveryState.DISPATCH_UNCERTAIN,
                 ),
             )
+            self._settle_dispatch_attempts(batch_id, m.DeliveryState.SUPPRESSED)
             self.notice(m.NoticeKind.CANCELLED, batch.asker.task, cause.value, batch_id)
             self.audit(AuditKind.CANCELLATION, batch.asker.task, cause.value, batch_id)
 

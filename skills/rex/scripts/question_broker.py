@@ -26,6 +26,7 @@ from typing import Callable, Final, Generator, TypedDict, TypeVar, cast
 from uuid import UUID, uuid4
 
 import grokbot_callback as callback
+import question_delivery as delivery
 import question_guard as guard
 import question_ledger as ledger
 import question_model as m
@@ -463,26 +464,11 @@ class Broker:
     def _file_lock(
         self, name: str, *, wait: float | None = None
     ) -> Generator[int | None, None, None]:
-        fd = os.open(
+        with delivery.file_lock(
             self.store.path.parent / name,
-            os.O_CREAT | os.O_RDWR,
-            0o600,
-        )
-        acquired = False
-        deadline = time.monotonic() + (self.lock_wait if wait is None else wait)
-        try:
-            while True:
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    acquired = True
-                    break
-                except BlockingIOError:
-                    if time.monotonic() >= deadline:
-                        break
-                    time.sleep(min(0.05, max(0, deadline - time.monotonic())))
-            yield fd if acquired else None
-        finally:
-            os.close(fd)
+            wait=self.lock_wait if wait is None else wait,
+        ) as acquired:
+            yield acquired
 
     @contextmanager
     def worker_lock(
@@ -639,9 +625,14 @@ class Broker:
                     m.BoxNoteState.UNKNOWN,
                 )
                 result["route_used"] = route
-                dispatched = self.runner.send(
-                    route, body, lambda: self.fence(request, body)
-                )
+                previous_fds = self.runner.pass_fds
+                self.runner.pass_fds = (*previous_fds, acquired)
+                try:
+                    dispatched = self.runner.send(
+                        route, body, lambda: self.fence(request, body)
+                    )
+                finally:
+                    self.runner.pass_fds = previous_fds
                 if dispatched.outcome is routes.RouteOutcome.REFUSED:
                     continue
                 if dispatched.outcome is routes.RouteOutcome.FENCED:
@@ -1075,10 +1066,12 @@ class Broker:
         }
 
     def worker(self, batch_id: str, *, spool_digest: bool = True) -> m.QuestionBatch:
-        """Phase 3 has no classifier or local dispatcher. Register immediately."""
+        """Dispatch local intents, register, then coalesce and spool a task digest."""
         with self.worker_lock(batch_id, wait=0) as acquired:
             if acquired is None:
                 return self.store.get_batch(batch_id)
+            dispatcher = delivery.Delivery(self.store, runner=self.runner)
+            dispatcher.dispatch_batch_locked(batch_id, acquired)
             with self.store.transaction():
                 batch = self.store.get_batch(batch_id)
                 if batch.state in ledger.TERMINAL:
@@ -1142,6 +1135,7 @@ class Broker:
                     if batch.state is not m.BatchState.BLOCKED:
                         self.store.take_ownership(batch_id, classification.floor)
                 task = batch.asker.task
+            dispatcher.dispatch_batch_locked(batch_id, acquired)
         if spool_digest:
             # The detached worker must publish even if no later hook runs (§5.7).
             # Release the batch lock and transaction before coalescing siblings.
@@ -1422,7 +1416,7 @@ class Broker:
             self.store.retain(at)
             if os.environ.get(m.FLAG_ENV) == "1":
                 for batch in self.store.batches():
-                    if batch.state in ledger.OPEN_FOR_ATTACH:
+                    if batch.state not in ledger.TERMINAL:
                         self.worker(str(batch.id), spool_digest=False)
                 tasks = (
                     {

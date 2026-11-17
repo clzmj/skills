@@ -3,7 +3,7 @@
 # requires-python = ">=3.11"
 # dependencies = []
 # ///
-"""Public PR-3 hook observations; unmatched input has no PR-4 takeover effect."""
+"""Hook origin precedence and conservative unmatched-input handling."""
 
 from dataclasses import replace
 import os
@@ -82,13 +82,13 @@ class QuestionPromptOrigins(unittest.TestCase):
         self.assertEqual(self.submit(text.replace("é", "e\u0301") + "  \n"), {})
         self.assertEqual(self.last_origin(), m.PromptOrigin.BROKER)
         self.submit("Different content")
-        self.assertIsNone(self.last_origin())
+        self.assertEqual(self.last_origin(), m.PromptOrigin.UNKNOWN)
         # A poisoned stored digest cannot bless different text.
         self.store.db.execute(
             "UPDATE outbound SET body_digest=?", (m.body_digest("Different content"),)
         )
         self.submit("Different content")
-        self.assertIsNone(self.last_origin())
+        self.assertEqual(self.last_origin(), m.PromptOrigin.UNKNOWN)
 
     def test_box_origin_marks_echoed_and_actor_scope_and_broker_precedence(self):
         text = "[qe:fixture:r1] Box answer"
@@ -122,7 +122,7 @@ class QuestionPromptOrigins(unittest.TestCase):
         self.assertEqual(self.last_origin(), m.PromptOrigin.BROKER)
         with patch.object(callback, "actor_key", return_value="different-actor"):
             self.submit(text)
-        self.assertIsNone(self.last_origin())
+        self.assertEqual(self.last_origin(), m.PromptOrigin.UNVERIFIED_MARKER)
 
     def test_collaborator_requires_recipient_id_kind_and_exact_normalized_stored_text(
         self,
@@ -143,27 +143,34 @@ class QuestionPromptOrigins(unittest.TestCase):
             header.replace("message-1", "missing") + "\nHello café",
         ):
             self.submit(prompt)
-            self.assertIsNone(self.last_origin())
+            self.assertEqual(self.last_origin(), m.PromptOrigin.UNKNOWN)
         for column, value in (("recipient", "other-session"), ("kind", "delivered")):
             with sqlite3.connect(self.root / "coordination.sqlite3") as db:
                 db.execute(f"UPDATE events SET {column}=?", (value,))
             self.submit(header + "\nHello café")
-            self.assertIsNone(self.last_origin())
+            self.assertEqual(self.last_origin(), m.PromptOrigin.UNKNOWN)
             with sqlite3.connect(self.root / "coordination.sqlite3") as db:
                 db.execute(
                     "UPDATE events SET recipient='session-1',kind='queue_requested'"
                 )
 
-    def test_unmatched_markers_are_unclassified_without_takeover(self):
+    def test_unmatched_markers_notice_and_ordinary_input_pauses_without_cancelling(
+        self,
+    ):
         for prompt in (
             "[qe:unknown:r1] Unverified",
             "[Codex team unknown] Unverified",
             "Ordinary unmarked prompt",
         ):
             self.submit(prompt)
-            self.assertIsNone(self.last_origin())
+            expected = (
+                m.PromptOrigin.UNVERIFIED_MARKER
+                if "[qe:" in prompt or "[Codex team" in prompt
+                else m.PromptOrigin.UNKNOWN
+            )
+            self.assertEqual(self.last_origin(), expected)
         self.assertEqual(
-            self.store.db.execute("SELECT count(*) FROM takeover").fetchone()[0], 0
+            self.store.db.execute("SELECT count(*) FROM takeover").fetchone()[0], 1
         )
         self.assertEqual(
             self.store.get_batch(str(self.batch.id)).state, m.BatchState.OPEN
