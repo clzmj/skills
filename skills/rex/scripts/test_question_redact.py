@@ -3,10 +3,12 @@
 # requires-python = ">=3.11"
 # dependencies = []
 # ///
-import subprocess
+import re
+import time
 import unittest
-from pathlib import Path
+from unittest.mock import patch
 
+import question_guard as guard
 import question_redact as redact
 from question_model import UntrustedSource
 
@@ -76,6 +78,55 @@ class RedactionTests(unittest.TestCase):
                 self.assertEqual(redact.redact(value).text, value)
                 self.assertFalse(redact.redact(value).secret_present)
 
+    def test_secret_and_nonsecret_key_variants(self):
+        cases = (
+            ("GITHUB_TOKEN_PROD", True),
+            ("API_KEY_PROD", True),
+            ("SECRET_KEY_STAGING", True),
+            ("password_prod_eu", True),
+            ("auth_token_value", True),
+            ("db-password-production", True),
+            ("OPENAI_API_KEY_DEV", True),
+            ("aws-secret-access-key-test", True),
+            ("secret_key_base_staging", True),
+            ("Private-Key-Stage", True),
+            ("PASSWORD_PRODUCTION", True),
+            ("Passwd_Development", True),
+            ("pwd_test", True),
+            ("passphrase-dev", True),
+            ("token_key_prod", True),
+            ("token-value", True),
+            ("apiKey_staging", True),
+            ("secret_prod_eu", True),
+            ("service_db_password", True),
+            ("TOKEN", True),
+            ("token_count", False),
+            ("TOKEN-LIMIT", False),
+            ("password_min_length", False),
+            ("max_token_length", False),
+            ("secret_santa_count", False),
+            ("max_tokens", False),
+            ("tokenizer", False),
+            ("max_token", False),
+            ("MAX-TOKEN", False),
+            ("tokens_per_second", False),
+            ("mytoken", False),
+            ("notpassword", False),
+        )
+        for key, secret in cases:
+            with self.subTest(key=key):
+                value = f"{key}=hunter2"
+                result = redact.redact(value)
+                self.assertEqual(result.secret_present, secret)
+                self.assertEqual("hunter2" not in result.text, secret)
+
+    def test_assignment_separator_does_not_cross_newlines(self):
+        for newline in ("\n", "\r", "\r\n"):
+            for value in (f"Token:{newline}The answer", f"password{newline}=hunter2"):
+                with self.subTest(value=value):
+                    self.assertEqual(redact.redact(value).text, value)
+        self.assertEqual(redact.redact("password\t=\tfixture").text, "[REDACTED]")
+
     def test_url_userinfo_is_removed_without_changing_destination(self):
         result = redact.redact("Fetch https://alice:example-password@example.test/repo")
         self.assertEqual(result.text, "Fetch https://example.test/repo")
@@ -107,34 +158,43 @@ class RedactionTests(unittest.TestCase):
                     )
 
     def test_compound_key_regex_finishes_quickly_on_nonmatching_tail(self):
-        script = """
-import sys, time
-sys.path.insert(0, sys.argv[1])
-import question_redact
-value = 'token' + '_a' * 40 + '!'
-start = time.perf_counter()
-question_redact.redact(value)
-print(time.perf_counter() - start)
-"""
-        try:
-            result = subprocess.run(
-                [
-                    "uv",
-                    "run",
-                    "--no-project",
-                    "python",
-                    "-c",
-                    script,
-                    str(Path(__file__).parent),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=2,
-                check=True,
-            )
-        except subprocess.TimeoutExpired:
-            self.fail("redaction regex hung on 40 nonmatching suffix segments")
-        self.assertLess(float(result.stdout), 0.1)
+        # A process launch must not be part of the measured operation.
+        with patch("subprocess.run", side_effect=AssertionError("must run in-process")):
+            start = time.perf_counter()
+            redact.redact("token" + "_a" * 40 + "!")
+            self.assertLess(time.perf_counter() - start, 0.5)
+
+    def test_url_userinfo_does_not_retry_every_scheme_character(self):
+        start = time.perf_counter()
+        self.assertEqual(redact.redact("x" * 20_000).text, "x" * 20_000)
+        self.assertLess(time.perf_counter() - start, 0.5)
+
+    def test_all_patterns_and_guard_finish_quickly_on_adversarial_text(self):
+        inputs = (
+            "x" * 200_000,
+            "a-" * 100_000,
+            "_a" * 100_000,
+            "eyJ" + "a-" * 99_998 + "a",
+            " \t" * 100_000,
+            "://" * 66_666 + ":/",
+        )
+        patterns = {
+            name: value
+            for name, value in vars(redact).items()
+            if isinstance(value, re.Pattern)
+        }
+        patterns.update((rule.value, pattern) for rule, pattern in redact.PATTERNS)
+        # Time the whole input table for each compiled pattern and the real scan path.
+        for name, pattern in patterns.items():
+            with self.subTest(pattern=name):
+                start = time.perf_counter()
+                for value in inputs:
+                    tuple(pattern.finditer(value))
+                self.assertLess(time.perf_counter() - start, 0.5)
+        start = time.perf_counter()
+        for value in inputs:
+            guard.scan(value)
+        self.assertLess(time.perf_counter() - start, 0.5)
 
     def test_every_secret_shape_and_entropy_is_removed(self):
         samples = (

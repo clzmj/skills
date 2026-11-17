@@ -34,7 +34,9 @@ class RedactionRule(StrEnum):
 
 
 REDACTED: Final = "[REDACTED]"
-URL_USERINFO: Final = re.compile(r"([a-z][a-z0-9+.-]*://)[^/?#\s]+@", re.I)
+URL_USERINFO: Final = re.compile(
+    r"(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*://)[^/?#\s]+@", re.I
+)
 TOKEN: Final = re.compile(r"\S{32,}")
 PATTERNS: Final = (
     (
@@ -55,8 +57,12 @@ PATTERNS: Final = (
     (RedactionRule.BEARER, re.compile(r"Bearer\s+\S{12,}", re.I)),
     (
         RedactionRule.ASSIGNMENT,
+        # Match complete keys with namespace prefixes; max_token is a limit setting.
         re.compile(
-            r"(?:(?:password|passwd|pwd|passphrase)(?:[_-](?:prod|production|staging|stage|dev|development|test))?|secret(?:[_-](?:access[_-]key|key(?:[_-]base)?))?|token(?:[_-]key)?|api[_-]?key|private[_-]?key)[\"']?\s*[:=]\s*(?:\"[^\"\r\n]*(?:\"|(?=[\r\n]|\Z))|'[^'\r\n]*(?:'|(?=[\r\n]|\Z))|\S+)",
+            r"(?<![\w-])(?!max[_-]token\b)(?:[a-z0-9]+[_-])*"
+            r"(?:password|passwd|pwd|passphrase|secret(?:[_-](?:access[_-]key|key(?:[_-]base)?))?|token(?:[_-]key)?|api[_-]?key|private[_-]?key)"
+            r"(?:[_-](?:prod|production|staging|stage|dev|development|test|eu|value))*"
+            r"[\"']?[ \t]*[:=][ \t]*(?:\"[^\"\r\n]*(?:\"|(?=[\r\n]|\Z))|'[^'\r\n]*(?:'|(?=[\r\n]|\Z))|\S+)",
             re.I,
         ),
     ),

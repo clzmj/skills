@@ -122,10 +122,11 @@ def load_guard(path: Path = GUARD_FILE) -> tuple[GuardRule, ...]:
 def _policy_hits(
     text: str, *, question: QuestionId | None = None, rules: Sequence[GuardRule]
 ) -> tuple[GuardHit, ...]:
+    normalized = normalize(text)
     return tuple(
         GuardHit(rule.trigger, rule.strength, rule.id, question)
         for rule in rules
-        if rule.pattern.search(normalize(text))
+        if rule.pattern.search(normalized)
     )
 
 
