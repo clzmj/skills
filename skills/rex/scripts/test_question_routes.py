@@ -99,7 +99,15 @@ class QuestionRoutesTests(unittest.TestCase):
         self.assertEqual(RouteRunner().capture("s", "block:b"), "captured\n")
         entry = self.entries()[0]
         self.assertEqual(
-            entry["argv"], ["capture", "-s", "s", "-b", "block:b", "--trim", "--unwrap"]
+            entry["argv"],
+            ["capture", "--session=s", "--block=block:b", "--trim", "--unwrap"],
+        )
+
+    def test_capture_keeps_option_like_session_as_an_option_value(self) -> None:
+        RouteRunner().capture("-session", "block:b")
+        self.assertEqual(
+            self.entries()[0]["argv"],
+            ["capture", "--session=-session", "--block=block:b", "--trim", "--unwrap"],
         )
 
     def test_rex_send_stages_text_then_a_separate_carriage_return(self) -> None:
@@ -118,7 +126,17 @@ class QuestionRoutesTests(unittest.TestCase):
             [entry["stdin"] for entry in entries], ["a 'quoted' $message", "\r"]
         )
         self.assertEqual(
-            entries[0]["argv"], ["send", "-s", "session-id", "-b", "block:block-id"]
+            entries[0]["argv"],
+            ["send", "--session=session-id", "--block=block:block-id"],
+        )
+
+    def test_rex_send_keeps_option_like_session_as_an_option_value(self) -> None:
+        body = self.body()
+        body["rex_session"] = "-session"
+        RouteRunner().send(m.Route.REX_SEND, body, lambda: None)
+        self.assertEqual(
+            self.entries()[0]["argv"],
+            ["send", "--session=-session", "--block=block:block-id"],
         )
 
     def test_codex_queue_preserves_message_as_one_argument_and_resume_flag(
@@ -132,13 +150,27 @@ class QuestionRoutesTests(unittest.TestCase):
             self.entries()[0]["argv"],
             [
                 "queue",
-                "--thread",
-                "thread-id",
+                "--thread=thread-id",
                 "--resume",
-                "--message",
-                "a 'quoted' $message",
+                "--message=a 'quoted' $message",
             ],
         )
+
+    def test_codex_queue_keeps_option_like_values_as_option_values(self) -> None:
+        body = self.body("-message 'quoted' $text")
+        body["codex_thread"] = "-thread"
+        RouteRunner().send(m.Route.CODEX_QUEUE, body, lambda: None)
+        self.assertEqual(
+            self.entries()[0]["argv"],
+            ["queue", "--thread=-thread", "--message=-message 'quoted' $text"],
+        )
+
+    def test_missing_codex_thread_is_refused_without_calling_cli(self) -> None:
+        body = self.body()
+        body["codex_thread"] = None
+        result = RouteRunner().send(m.Route.CODEX_QUEUE, body, lambda: None)
+        self.assertEqual(result.outcome, RouteOutcome.REFUSED)
+        self.assertFalse(self.log.exists())
 
     def test_unrecorded_nonzero_exit_is_unknown(self) -> None:
         os.environ["ROUTE_RC"] = "1"

@@ -69,17 +69,15 @@ class RouteRunner:
                 [
                     "rex",
                     "capture",
-                    "-s",
-                    session,
-                    "-b",
-                    rex_target(block),
+                    f"--session={session}",
+                    f"--block={rex_target(block)}",
                     "--trim",
                     "--unwrap",
                 ],
                 capture_output=True,
                 text=True,
                 check=False,
-                timeout=ROUTE_TIMEOUT,
+                timeout=self.timeout,
                 pass_fds=self.pass_fds,
             )
         except (OSError, subprocess.TimeoutExpired):
@@ -108,11 +106,11 @@ class RouteRunner:
 
         if route in (m.Route.CODEX_QUEUE, m.Route.CODEX_QUEUE_RESUME):
             if not body["codex_thread"]:
-                return RouteResult(RouteOutcome.UNKNOWN, None, route)
-            args = ["codex", "queue", "--thread", body["codex_thread"]]
+                return RouteResult(RouteOutcome.REFUSED, None, route)
+            args = ["codex", "queue", f"--thread={body['codex_thread']}"]
             if route is m.Route.CODEX_QUEUE_RESUME:
                 args.append("--resume")
-            args.extend(["--message", body["text"]])
+            args.append(f"--message={body['text']}")
             return self._call(route, args)
 
         if route is not m.Route.REX_SEND:
@@ -121,10 +119,8 @@ class RouteRunner:
         args = [
             "rex",
             "send",
-            "-s",
-            body["rex_session"],
-            "-b",
-            rex_target(body["rex_block"]),
+            f"--session={body['rex_session']}",
+            f"--block={rex_target(body['rex_block'])}",
         ]
         try:
             text_result = subprocess.run(
