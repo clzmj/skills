@@ -52,6 +52,46 @@ class AgentTypeMoveTests(unittest.TestCase):
             with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as db:
                 self.assertEqual(db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0], 2)
 
+    def test_reader_rejects_malformed_session_records(self):
+        with (
+            tempfile.TemporaryDirectory() as folder,
+            patch.object(callback.rex, "STATE", Path(folder)),
+        ):
+            path = Path(folder) / "grokbot-callback.sqlite3"
+            valid = {
+                "key": "bad",
+                "id": "id",
+                "agent": "codex",
+                "parent": "",
+                "root": "bad",
+                "depth": 0,
+                "task_id": "task",
+                "requester": "bot",
+                "turn": "turn",
+                "status": "idle",
+                "rex_session": "",
+                "rex_block": "",
+            }
+            with sqlite3.connect(path) as db:
+                db.execute("CREATE TABLE sessions (key TEXT PRIMARY KEY, record TEXT)")
+                db.execute("INSERT INTO sessions VALUES (?, ?)", ("bad", "{}"))
+            for record in (
+                {"key": "bad"},
+                {**valid, "depth": True},
+                {**valid, "agent": "unknown"},
+                {**valid, "status": "unknown"},
+                {**valid, "retired_turns": [1]},
+            ):
+                with self.subTest(record=record), sqlite3.connect(path) as db:
+                    db.execute(
+                        "UPDATE sessions SET record=? WHERE key='bad'",
+                        (json.dumps(record),),
+                    )
+                    db.commit()
+                    self.assertIsNone(
+                        callback.session_state(agent_types.AgentKind.CODEX, "bad")
+                    )
+
     def test_reader_returns_none_for_missing_database_or_row(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(callback.rex, "STATE", Path(folder)):
             self.assertIsNone(callback.session_state(agent_types.AgentKind.CODEX, "missing"))

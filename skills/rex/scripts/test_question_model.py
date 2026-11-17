@@ -72,6 +72,12 @@ def asker():
 
 
 class RecordTests(unittest.TestCase):
+    def test_invalid_decimal_is_a_value_error(self):
+        with self.assertRaises(ValueError):
+            qm.parse_record(
+                qm.Usage, {"input_tokens": 1, "output_tokens": 1, "usd": "invalid"}
+            )
+
     def test_question_roundtrip_preserves_types_and_digest(self):
         q = question()
         parsed = qm.parse_question(json.loads(qm.canonical(q)))
