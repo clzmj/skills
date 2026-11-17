@@ -310,6 +310,29 @@ class RunPlanTests(unittest.TestCase):
                 self.broker.status()["batches"][0]["box_notes"][0]["acked_rev"]
             )
 
+    def test_recovery_storage_fault_is_logged_and_returns_unknown(self):
+        def fail_writes():
+            self.store.db.set_authorizer(
+                lambda action, table, *_: (
+                    sqlite3.SQLITE_DENY
+                    if action == sqlite3.SQLITE_UPDATE and table == "box_note"
+                    else sqlite3.SQLITE_OK
+                )
+            )
+
+        runner = StubRunner(self.store, before_call=fail_writes)
+        try:
+            with self.assertLogs(broker.__name__, level="ERROR") as logs:
+                result = broker.Broker(self.store, runner=runner).run_plan(
+                    send_plan(self.batch)
+                )
+        finally:
+            self.store.db.set_authorizer(None)
+        self.assertEqual(result["send"], m.SendOutcome.SEND_UNKNOWN)
+        self.assertTrue(m.parse_result(result)["ok"])
+        self.assertIn("could not persist SEND_UNKNOWN recovery", logs.output[0])
+        self.assertIn("DatabaseError", logs.output[0])
+
     def test_task_scoped_sync_keeps_batchless_notices_for_selected_tasks(self):
         wanted = self.store.notice(m.NoticeKind.BUDGET_EXHAUSTED, "task-1", "limit")
         self.store.notice(m.NoticeKind.BUDGET_EXHAUSTED, "other-task", "limit")

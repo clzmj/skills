@@ -12,6 +12,7 @@ import base64
 import binascii
 import fcntl
 import json
+import logging
 import os
 import re
 import sys
@@ -660,7 +661,9 @@ class Broker:
         except Exception:
             # A continuing storage fault must not hide the SEND_UNKNOWN result.
             # PREPARED was committed as UNKNOWN before invoking the route.
-            pass
+            logging.getLogger(__name__).exception(
+                "could not persist SEND_UNKNOWN recovery"
+            )
 
     def _execute_plan(self, request: m.Plan, result: m.Result) -> m.Result:
         try:
