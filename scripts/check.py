@@ -10,5 +10,5 @@ from pathlib import Path
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
-for suite in (ROOT / 'tests', ROOT / 'skills/rex/scripts'):
+for suite in (ROOT / 'tests', ROOT / 'skills/rex/scripts', ROOT / 'grokbot/qe-box/tests'):
     subprocess.run(['uv', 'run', '--no-project', 'python', '-m', 'unittest', 'discover', '-s', str(suite), '-p', 'test_*.py', '-v'], cwd=ROOT, check=True)
