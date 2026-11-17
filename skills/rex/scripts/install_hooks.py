@@ -202,6 +202,17 @@ def rex_hooks(data, root, home, uv, codex, question_escalation: QuestionEscalati
         _apply_spec(data, spec, root, home, uv, agent, sibling_matchers, question_escalation)
 
 
+def _has_enabled_owned_hook(data, root, home, codex):
+    scripts = {spec.script for spec, _ in _hook_specs(codex)}
+    return any(
+        f"{FLAG_ENV}=1" in shlex.split(handler.get("command", ""))
+        for groups in data.get("hooks", {}).values()
+        for group in groups
+        for handler in group.get("hooks", [])
+        if any(owned_handler(handler.get("command", ""), script, home, root) for script in scripts)
+    )
+
+
 def install(home, agents, question_escalation: QuestionEscalation = QuestionEscalation.OFF):
     uv = shutil.which("uv")
     if not uv:
@@ -214,10 +225,14 @@ def install(home, agents, question_escalation: QuestionEscalation = QuestionEsca
         shutil.copytree(source, runtime, dirs_exist_ok=True,
                         ignore=shutil.ignore_patterns("__pycache__", ".state", "*.pyc"))
     changed = []
+    downgrades_question_escalation = False
     for agent in agents:
         codex = agent == "codex"
         path = home / (".codex/hooks.json" if codex else ".claude/settings.json")
         data = json.loads(path.read_text()) if path.exists() else {}
+        if (question_escalation is QuestionEscalation.OFF
+                and _has_enabled_owned_hook(data, runtime, home, codex)):
+            downgrades_question_escalation = True
         rex_hooks(data, runtime, home, uv, codex, question_escalation)
         if write(path, json.dumps(data, indent=2) + "\n"):
             changed.append(str(path))
@@ -230,6 +245,8 @@ def install(home, agents, question_escalation: QuestionEscalation = QuestionEsca
 
     return {"runtime": str(runtime), "changed": changed,
             "question_escalation": question_escalation.value,
+            "GROKBOT_QE": question_escalation.environment_value,
+            "downgrades_question_escalation": downgrades_question_escalation,
             "hook_review": "Review new or changed hooks in the host's /hooks menu. This installer never changes hook trust or tool permissions."}
 
 
@@ -241,4 +258,7 @@ if __name__ == "__main__":
                         choices=list(QuestionEscalation), default=QuestionEscalation.OFF,
                         help="Operator-controlled question escalation for installed hooks (default: off).")
     args = parser.parse_args()
-    print(json.dumps(install(args.home.expanduser().resolve(), args.agents, args.question_escalation), indent=2))
+    receipt = install(args.home.expanduser().resolve(), args.agents, args.question_escalation)
+    if receipt["downgrades_question_escalation"]:
+        print("Warning: reinstalling without --question-escalation changes existing GROKBOT_QE=1 hooks to GROKBOT_QE=0.", file=sys.stderr)
+    print(json.dumps(receipt, indent=2))
