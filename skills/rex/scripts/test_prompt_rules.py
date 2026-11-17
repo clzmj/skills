@@ -3,6 +3,7 @@
 import unittest
 import io
 import json
+from pathlib import Path
 import sys
 from dataclasses import replace
 from unittest.mock import patch
@@ -382,11 +383,41 @@ class PromptRules(HookFixture):
             m.NoticeKind.UNVERIFIED_MARKER,
         )
 
-    def test_recorded_p10_has_no_positive_queue_or_keyboard_marker(self):
-        self.assertEqual(
-            hooks.prompt_origin(self.store, "actor", "fixture", "hello"),
-            m.PromptOrigin.UNKNOWN,
-        )
+    def test_recorded_p10_codex_and_claude_prompts_pause_pending_delivery(self):
+        fixtures = Path(__file__).resolve().parents[3] / "tests/qe/hooks"
+        for filename, agent in (
+            ("codex-p10.jsonl", m.AgentKind.CODEX),
+            ("claude-p10.jsonl", m.AgentKind.CLAUDE),
+        ):
+            with self.subTest(filename=filename):
+                wrapper = json.loads((fixtures / filename).read_text().splitlines()[0])
+                payload = wrapper["payload"]
+                actor = f"{agent}:fixture"
+                batch = self.store.open_or_attach(
+                    replace(asker(actor=actor), agent=agent),
+                    (question(filename),),
+                    native_call(filename),
+                    classification(),
+                ).batch
+                self.store.take_ownership(str(batch.id), m.EscalationLevel(3))
+                message = self.store.outbounds(str(batch.id))[0]
+                event = dict(payload, session_id="fixture", cwd=str(self.directory))
+                current_state = dict(state(), key=actor, root=actor, agent=agent)
+                with (
+                    patch.object(callback, "session_state", return_value=current_state),
+                    patch.object(callback, "actor_key", return_value=batch.asker.actor),
+                ):
+                    hooks.handle(event, agent, self.store, spawn=False)
+                after = self.store.get_outbound(str(message.id))
+                self.assertEqual(after.state, m.DeliveryState.PENDING)
+                self.assertIsNotNone(after.paused_by)
+                takeover = self.store.db.execute(
+                    "SELECT origin FROM takeover WHERE id=?", (str(after.paused_by),)
+                ).fetchone()
+                self.assertEqual(takeover[0], m.PromptOrigin.UNKNOWN)
+                self.assertEqual(
+                    self.store.get_batch(str(batch.id)).state, m.BatchState.BOX_OWNED
+                )
 
 
 if __name__ == "__main__":

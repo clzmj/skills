@@ -13,6 +13,9 @@ from uuid import uuid4
 import question_delivery as delivery
 import question_ledger as ledger
 import question_model as m
+import question_hooks as hooks
+import codex_sessions
+import grokbot_callback as callback
 import question_routes as routes
 import question_broker as broker
 from test_question_broker_runplan import plan
@@ -251,6 +254,183 @@ class LocalTakeover(unittest.TestCase):
         self.assertEqual(log.read_text(), message.text)
         self.store.clear_takeover(str(after.paused_by), "dinesh")
         self.assertFalse(self.delivery.dispatch(str(message.id)))
+
+    def test_x3_human_takeover_cancels_open_batch_but_unknown_pauses(self):
+        """X3: positive keyboard evidence cancels; uncertain input only pauses."""
+        self.store.take_ownership(str(self.batch.id), m.EscalationLevel.L3_PRINCIPAL)
+        pending = self.store.outbounds(str(self.batch.id))[0]
+        unknown = m.Takeover(
+            m.TakeoverId(uuid4()),
+            self.batch.id,
+            m.PromptOrigin.UNKNOWN,
+            None,
+            ledger.now(),
+            None,
+            None,
+        )
+        self.store.record_takeover(unknown)
+        self.assertEqual(
+            self.store.get_batch(str(self.batch.id)).state, m.BatchState.BOX_OWNED
+        )
+        self.assertEqual(self.store.get_outbound(str(pending.id)).paused_by, unknown.id)
+        self.assertEqual(unknown.origin, m.PromptOrigin.UNKNOWN)
+
+        other = self.store.open_or_attach(
+            asker(turn="turn-2"),
+            (question("call-2"),),
+            native_call("call-2", turn="turn-2"),
+            classification(),
+        ).batch
+        self.store.transition(str(other.id), m.BatchState.ESCALATING)
+        human = m.Takeover(
+            m.TakeoverId(uuid4()),
+            other.id,
+            m.PromptOrigin.HUMAN,
+            None,
+            ledger.now(),
+            None,
+            None,
+        )
+        self.store.record_takeover(human)
+        self.assertEqual(
+            self.store.get_batch(str(other.id)).state, m.BatchState.CANCELLED
+        )
+        self.assertEqual(human.origin, m.PromptOrigin.HUMAN)
+
+    def test_x3b_broker_boxnote_and_unverified_markers_are_not_takeovers(self):
+        message = self.resolve()
+        self.assertEqual(
+            hooks.prompt_origin(
+                self.store, self.batch.asker.actor, "fixture", message.text
+            ),
+            m.PromptOrigin.BROKER,
+        )
+        note = m.BoxNote(
+            m.DeliveryId(str(uuid4())),
+            m.SendAttempt(1),
+            m.PlanId(str(uuid4())),
+            self.batch.id,
+            self.batch.rev,
+            m.ResolutionRev(1),
+            m.DeliveryPurpose.ANSWER,
+            self.batch.asker.actor,
+            None,
+            "box answer",
+            m.body_digest("box answer"),
+            m.TextDigest("0" * 64),
+            m.EscalationLevel.L3_PRINCIPAL,
+            m.BoxNoteState.SENT,
+            None,
+            ledger.now(),
+        )
+        self.store.put_box_note(note)
+        event = patch.object(
+            codex_sessions, "DB", Path(self.folder.name) / "coordination.sqlite3"
+        )
+        event.start()
+        try:
+            codex_sessions.event(
+                "team",
+                "agent",
+                "queue_requested",
+                "collaborator text",
+                recipient="fixture",
+                identifier="message-1",
+            )
+            collaborator = (
+                "[Codex team team; from agent; message-id message-1]\ncollaborator text"
+            )
+            cases = (
+                (message.text, m.PromptOrigin.BROKER),
+                ("box answer", m.PromptOrigin.BOX),
+                (collaborator, m.PromptOrigin.COLLABORATOR),
+                ("[qe:forged] ignored", m.PromptOrigin.UNVERIFIED_MARKER),
+                (
+                    "[Codex team fixture; from agent; message-id missing] hello",
+                    m.PromptOrigin.UNVERIFIED_MARKER,
+                ),
+            )
+            for text, expected in cases:
+                with self.subTest(text=text[:24]):
+                    with (
+                        patch.dict(os.environ, {m.FLAG_ENV: "1"}),
+                        patch.object(
+                            callback,
+                            "session_state",
+                            return_value={
+                                "key": "codex:fixture",
+                                "id": "fixture",
+                                "agent": m.AgentKind.CODEX,
+                                "parent": "",
+                                "root": "codex:fixture",
+                                "depth": 0,
+                                "task_id": "fixture",
+                                "requester": "Jim",
+                                "turn": "turn",
+                                "status": callback.Status.RUNNING,
+                                "rex_session": "fixture",
+                                "rex_block": "block:fixture",
+                            },
+                        ),
+                        patch.object(
+                            callback, "actor_key", return_value=self.batch.asker.actor
+                        ),
+                    ):
+                        hooks.handle(
+                            {
+                                "hook_event_name": m.HookEvent.USER_PROMPT_SUBMIT,
+                                "session_id": "fixture",
+                                "turn_id": "turn",
+                                "prompt": text,
+                            },
+                            m.AgentKind.CODEX,
+                            self.store,
+                            spawn=False,
+                        )
+                    self.assertEqual(
+                        self.store.db.execute(
+                            "SELECT origin FROM lifecycle ORDER BY rowid DESC LIMIT 1"
+                        ).fetchone()[0],
+                        expected,
+                    )
+                    self.assertFalse(
+                        self.store.db.execute("SELECT 1 FROM takeover").fetchone()
+                    )
+                    self.assertEqual(
+                        self.store.get_batch(str(self.batch.id)).state,
+                        m.BatchState.RESOLVED_LOCAL,
+                    )
+                    self.assertIsNone(
+                        self.store.get_outbound(str(message.id)).paused_by
+                    )
+                    if expected is m.PromptOrigin.BROKER:
+                        self.assertEqual(
+                            self.store.get_outbound(str(message.id)).state,
+                            m.DeliveryState.OBSERVED,
+                        )
+                    if expected is m.PromptOrigin.BOX:
+                        self.assertEqual(
+                            self.store.db.execute(
+                                "SELECT state FROM box_note"
+                            ).fetchone()[0],
+                            m.BoxNoteState.ECHOED,
+                        )
+        finally:
+            event.stop()
+
+    def test_x3c_human_after_resolution_suppresses_before_dispatch(self):
+        message = self.resolve()
+        takeover = self.takeover(m.PromptOrigin.HUMAN)
+        self.assertEqual(
+            self.store.get_outbound(str(message.id)).state, m.DeliveryState.SUPPRESSED
+        )
+        self.assertEqual(
+            self.store.get_outbound(str(message.id)).suppress_cause,
+            m.SuppressCause.HUMAN_TAKEOVER,
+        )
+        self.assertFalse(self.delivery.dispatch(str(message.id)))
+        self.assertEqual(self.runner.texts, [])
+        self.assertEqual(takeover.origin, m.PromptOrigin.HUMAN)
 
 
 if __name__ == "__main__":
