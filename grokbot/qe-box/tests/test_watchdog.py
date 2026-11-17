@@ -118,6 +118,57 @@ class WatchdogTests(BoxTest):
             sum(r.kind == box.BoxReport.HANDOFF_UNACKED for r in reports), 2
         )
 
+    def test_handoff_unacked_is_not_repeated_when_an_answer_shrinks_pairs(self):
+        first, second = entry(), entry()
+        for value in (first, second):
+            self.box.register(value)
+        self.box.handoff("fixture", "jim")
+        for _ in range(3):
+            self.box.handoff("fixture", "jim", resend=True)
+        self.now += timedelta(hours=1)
+        self.assertIn(box.BoxReport.HANDOFF_UNACKED.value, self.box.tick().notices)
+
+        card = self.box.card_intent("fixture", "jim", by="jim")
+        self.box.card_posted("fixture", "jim", card.gen, "partial", by="jim")
+        ticket = self.box.decide(
+            box.DecisionKind.ANSWER,
+            4,
+            first["batch_id"],
+            1,
+            answer(first),
+            by="jim",
+            card_gen=card.gen,
+            card_ref="partial",
+        ).plans[0]
+        self.box.result(report(ticket, m.SendOutcome.SENT_ECHOED, self.now))
+        self.box.card_close("fixture", "jim", card.gen, by="jim")
+        self.assertNotIn(box.BoxReport.HANDOFF_UNACKED.value, self.box.tick().notices)
+        self.assertNotIn(
+            box.BoxReport.HANDOFF_UNACKED.value,
+            self.box.handoff("fixture", "jim", resend=True).notices,
+        )
+        reports = self.box.show(second["batch_id"])["reports"]
+        self.assertEqual(
+            sum(r.kind == box.BoxReport.HANDOFF_UNACKED for r in reports), 1
+        )
+
+    def test_handoff_rows_stay_bounded_across_pair_changes_and_resends(self):
+        values = [entry() for _ in range(4)]
+        for value in values:
+            self.box.register(value)
+        self.box.handoff("fixture", "jim")
+        current = values[-1]
+        for value in values[:-1]:
+            self.box.cancel(value["batch_id"], from_mac=True)
+            self.box.handoff("fixture", "jim", resend=True)
+            current = revision(current)
+            self.box.register(current)
+            self.box.tick()
+            self.box.handoff("fixture", "jim", resend=True)
+            self.assertEqual(
+                self.box.db.execute("SELECT COUNT(*) FROM handoff").fetchone()[0], 1
+            )
+
     def test_answered_ask_and_correction_cards_do_not_remind(self):
         for correction in (False, True):
             with self.subTest(correction=correction):

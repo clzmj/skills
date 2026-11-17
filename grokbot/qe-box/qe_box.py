@@ -1799,13 +1799,15 @@ class Box:
             for record in records
             if record.batch in previous
             and (
-                handoff.purpose == CardPurpose.ASK
-                and (
-                    record.state == BoxBatchState.AWAITING_L4
-                    or record.state == BoxBatchState.AWAITING_L3
+                (
+                    handoff.purpose == CardPurpose.ASK
+                    and record.state
+                    in {BoxBatchState.AWAITING_L4, BoxBatchState.AWAITING_L3}
                 )
-                or handoff.purpose == CardPurpose.CORRECTION
-                and record.state == BoxBatchState.CORRECTION_DUE
+                or (
+                    handoff.purpose == CardPurpose.CORRECTION
+                    and record.state == BoxBatchState.CORRECTION_DUE
+                )
             )
         ]
 
@@ -1840,7 +1842,7 @@ class Box:
         ]
         current = replace(
             handoff,
-            id=str(uuid4()),
+            id=str(uuid4()) if revisions else handoff.id,
             batch_revs_json=pairs_json,
             sent_count=1 if revisions else handoff.sent_count,
             last_sent_at=max(
@@ -1848,8 +1850,14 @@ class Box:
             ),
         )
         self.db.execute(
-            "INSERT INTO handoff VALUES (?,?,?,?,?,?,?)",
-            tuple(self._sql(getattr(current, f.name)) for f in fields(current)),
+            "UPDATE handoff SET id=?,batch_revs_json=?,sent_count=?,last_sent_at=? WHERE id=?",
+            (
+                current.id,
+                pairs_json,
+                current.sent_count,
+                current.last_sent_at.isoformat(),
+                handoff.id,
+            ),
         )
         return current
 

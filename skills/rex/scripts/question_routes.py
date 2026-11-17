@@ -16,8 +16,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Callable, Sequence, TypedDict
 
-import question_model as m
 import grokbot_callback as callback
+import question_model as m
 
 ROUTE_TIMEOUT = m.ROUTE_TIMEOUT.total_seconds()
 
