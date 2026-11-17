@@ -60,11 +60,13 @@ test("release --list returns the filtered tracked inventory", () => {
     "skills/rex/scripts/grokbot_callback.py",
     "skills/rex/scripts/install_codex.py",
     "skills/rex/scripts/install_hooks.py",
+    "skills/rex/scripts/question_broker.py",
     "skills/rex/scripts/question_guard.py",
     "skills/rex/scripts/question_guard.toml",
     "skills/rex/scripts/question_ledger.py",
     "skills/rex/scripts/question_model.py",
     "skills/rex/scripts/question_redact.py",
+    "skills/rex/scripts/question_routes.py",
     "skills/rex/scripts/rex_visible.py",
   ]);
   expect(
