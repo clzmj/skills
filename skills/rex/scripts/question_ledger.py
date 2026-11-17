@@ -183,16 +183,16 @@ def redacted_audit_detail(detail: str) -> str:
         "related_to",
     }
 
-    def clean(value: object, key: str = "") -> object:
+    def clean(value: object, cap: int, key: str = "") -> object:
         if isinstance(value, dict):
-            return {field: clean(item, field) for field, item in value.items()}
+            return {field: clean(item, cap, field) for field, item in value.items()}
         if isinstance(value, list):
-            return [clean(item) for item in value]
+            return [clean(item, cap) for item in value]
         if isinstance(value, str):
             return (
                 value
                 if key in identifiers or key.endswith(("_id", "_digest"))
-                else redact(value).text[:500]
+                else redact(value).text[:cap]
             )
         return value
 
@@ -200,7 +200,13 @@ def redacted_audit_detail(detail: str) -> str:
         record = json.loads(detail)
     except ValueError:
         return redact(detail).text[:500]
-    return encoded(clean(record))[:500]
+    cap = 500
+    while True:
+        saved = encoded(clean(record, cap))
+        # Metadata alone may exceed the cap; never cut identifiers or encoded JSON.
+        if len(saved) <= 500 or cap == 0:
+            return saved
+        cap //= 2
 
 
 @dataclass(frozen=True, slots=True)
