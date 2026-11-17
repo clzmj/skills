@@ -28,6 +28,7 @@ from uuid import uuid4
 
 import grokbot_callback as callback
 import question_ledger as ledger
+import question_delivery as delivery
 import question_model as m
 import question_routes as routes
 import question_guard as guard
@@ -488,10 +489,10 @@ class Broker:
     @contextmanager
     def worker_lock(
         self, batch: str, *, wait: float | None = None
-    ) -> Generator[bool, None, None]:
+    ) -> Generator[int | None, None, None]:
         UUID(batch)
         with self._file_lock(m.WORKER_LOCK.format(batch=batch), wait=wait) as acquired:
-            yield acquired is not None
+            yield acquired
 
     def fence(self, request: m.Plan, body: m.SendBody) -> m.SendOutcome | None:
         if self.clock() > datetime.fromisoformat(body["issued_at"]) + timedelta(
@@ -640,9 +641,14 @@ class Broker:
                     m.BoxNoteState.UNKNOWN,
                 )
                 result["route_used"] = route
-                dispatched = self.runner.send(
-                    route, body, lambda: self.fence(request, body)
-                )
+                previous_fds = self.runner.pass_fds
+                self.runner.pass_fds = (*previous_fds, acquired)
+                try:
+                    dispatched = self.runner.send(
+                        route, body, lambda: self.fence(request, body)
+                    )
+                finally:
+                    self.runner.pass_fds = previous_fds
                 if dispatched.outcome is routes.RouteOutcome.REFUSED:
                     continue
                 if dispatched.outcome is routes.RouteOutcome.FENCED:
@@ -1077,10 +1083,12 @@ class Broker:
         }
 
     def worker(self, batch_id: str, *, spool_digest: bool = True) -> m.QuestionBatch:
-        """Phase 3 has no classifier or local dispatcher. Register immediately."""
+        """Dispatch durable local intents, then register immediately without a classifier."""
         with self.worker_lock(batch_id, wait=0) as acquired:
             if not acquired:
                 return self.store.get_batch(batch_id)
+            dispatcher = delivery.Delivery(self.store, runner=self.runner)
+            dispatcher.dispatch_batch_locked(batch_id, acquired)
             with self.store.transaction():
                 batch = self.store.get_batch(batch_id)
                 if batch.state in ledger.TERMINAL:
@@ -1144,6 +1152,7 @@ class Broker:
                     if batch.state is not m.BatchState.BLOCKED:
                         self.store.take_ownership(batch_id, classification.floor)
                 task = batch.asker.task
+            dispatcher.dispatch_batch_locked(batch_id, acquired)
         if spool_digest:
             # Coalesce across task siblings without holding the per-batch SEND lock.
             time.sleep(DIGEST_COALESCE.total_seconds())
@@ -1439,7 +1448,7 @@ class Broker:
             self.store.retain(at)
             if os.environ.get(m.FLAG_ENV) == "1":
                 for batch in self.store.batches():
-                    if batch.state in ledger.OPEN_FOR_ATTACH:
+                    if batch.state not in ledger.TERMINAL:
                         self.worker(str(batch.id), spool_digest=False)
                 tasks = (
                     {

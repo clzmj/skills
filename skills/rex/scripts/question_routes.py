@@ -14,7 +14,7 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Callable, Sequence
+from typing import Callable, Sequence, TypedDict
 
 import question_model as m
 
@@ -33,6 +33,15 @@ class RouteResult:
     outcome: RouteOutcome
     fence: m.SendOutcome | None
     route: m.Route
+
+
+class RouteBody(TypedDict):
+    """Transport fields shared by local intents and box SEND plans."""
+
+    codex_thread: str | None
+    rex_session: str
+    rex_block: str
+    text: str
 
 
 def rex_target(block: str) -> str:
@@ -87,7 +96,7 @@ class RouteRunner:
     def send(
         self,
         route: m.Route,
-        body: m.SendBody,
+        body: RouteBody,
         fence: Callable[[], m.SendOutcome | None],
     ) -> RouteResult:
         def check_fence(*, staged: bool = False) -> RouteResult | None:

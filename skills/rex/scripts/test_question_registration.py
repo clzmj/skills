@@ -138,6 +138,8 @@ class Registration(hook_fixtures.HookFixture):
             )
         )
         self.store.transition(str(batch.id), m.BatchState.STALE)
+        # PR-4 dispatch can emit notices; this fixture models fully drained history.
+        self.store.db.execute("UPDATE notice SET spooled=1")
         with (
             patch.object(
                 worker, "clock", return_value=worker.clock() + timedelta(minutes=1)

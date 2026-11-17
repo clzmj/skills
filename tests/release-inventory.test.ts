@@ -63,6 +63,7 @@ test("release --list returns the filtered tracked inventory", () => {
     "skills/rex/scripts/install_codex.py",
     "skills/rex/scripts/install_hooks.py",
     "skills/rex/scripts/question_broker.py",
+    "skills/rex/scripts/question_delivery.py",
     "skills/rex/scripts/question_guard.py",
     "skills/rex/scripts/question_guard.toml",
     "skills/rex/scripts/question_hooks.py",
