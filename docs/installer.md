@@ -15,16 +15,16 @@ separate choices. Descriptions appear alongside the highlighted row. Native
 plugins remain complete bundles. Global hooks follow the skill selection;
 project scope skips global hooks and native plugins.
 
-| Key       | Action                                                                       |
-| --------- | ---------------------------------------------------------------------------- |
-| ↑ / ↓     | Move between choices; scroll review and summary pages                        |
-| Space     | Toggle the highlighted item in a multiple-selection list                     |
-| `a` / `n` | Select all / clear all in the entire list, including filtered-out items      |
-| `/`       | Edit a filter on the same multiple-selection page; Enter ends filter editing |
-| Enter     | Continue with the current selection                                          |
-| Esc       | Clear an active filter first, then go back, retaining completed choices      |
-| `y` / `n` | Accept or decline a yes/no page, including the final review                  |
-| Ctrl-C    | Cancel and restore the terminal                                              |
+| Key | Action |
+| --- | --- |
+| ↑ / ↓ | Move between choices; scroll review and summary pages |
+| Space | Toggle the highlighted item in a multiple-selection list |
+| `a` / `n` | Select all / clear all in the entire list, including filtered-out items |
+| `/` | Edit a filter on the same multiple-selection page; Enter ends filter editing |
+| Enter | Continue with the current selection |
+| Esc | Clear an active filter first, then go back, retaining completed choices |
+| `y` / `n` | Accept or decline a yes/no page, including the final review |
+| Ctrl-C | Cancel and restore the terminal |
 
 Home, End, Page Up, and Page Down navigate long lists. The folder browser offers
 the current folder, its parent, and existing child folders; select a folder to
@@ -45,22 +45,22 @@ Use `--yes` for unattended execution. A dry run previews the plan without instal
 skills or registering hooks; read-only upstream discovery can still occur. The
 hosted bootstrap downloads and verifies its temporary payload.
 
-| Option                                      | Behavior                                                                                                 |
-| ------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `--scope global`                            | Default; configure the selected agents for this user                                                     |
-| `--scope project --project-dir "$PWD"`      | Use an existing absolute project directory; skip global hooks and native plugins                         |
-| `--method symlink` / `--method copy`        | Symlink by default; use `copy` for independent copies; symlink sources must remain available             |
-| `--agents codex claude-code`                | Select one or both agents; detected hosts are preselected                                                |
-| `--core rex python-tooling` / `--core none` | Select personal skills                                                                                   |
-| `--core-only`                               | Install personal skills without upstream favorites                                                       |
-| `--favorites owner/repo`                    | Select a favorite pack from `favorites.json`                                                             |
-| `--skills owner/repo:name1,name2`           | Select named skills within an upstream pack                                                              |
-| `--all-favorites`                           | Explicitly select every configured favorite                                                              |
-| `--hooks` / `--no-hooks`                    | Opt into or skip both Rex and Python hook integrations; off by default and independent of core selection |
-| `--update`                                  | Explicitly refresh existing ordinary skills                                                              |
-| `--yes` / `-y`                              | Apply the selected plan without interactive confirmation                                                 |
-| `--dry-run`                                 | Preview without persistent installation changes                                                          |
-| `--help`                                    | Show installation options                                                                                |
+| Option | Behavior |
+| --- | --- |
+| `--scope global` | Default; configure the selected agents for this user |
+| `--scope project --project-dir "$PWD"` | Use an existing absolute project directory; skip global hooks and native plugins |
+| `--method symlink` / `--method copy` | Symlink by default; use `copy` for independent copies; symlink sources must remain available |
+| `--agents codex claude-code` | Select one or both agents; detected hosts are preselected |
+| `--core rex python-tooling` / `--core none` | Select personal skills |
+| `--core-only` | Install personal skills without upstream favorites |
+| `--favorites owner/repo` | Select a favorite pack from `favorites.json` |
+| `--skills owner/repo:name1,name2` | Select named skills within an upstream pack |
+| `--all-favorites` | Explicitly select every configured favorite |
+| `--hooks` / `--no-hooks` | Opt into or skip both Rex and Python hook integrations; off by default and independent of core selection |
+| `--update` | Explicitly refresh existing ordinary skills |
+| `--yes` / `-y` | Apply the selected plan without interactive confirmation |
+| `--dry-run` | Preview without persistent installation changes |
+| `--help` | Show installation options |
 
 Existing ordinary skills are preserved during installation. Native plugin
 inventories preserve existing pins, disabled states, and supported curated
@@ -109,6 +109,15 @@ is `~/.local/bin/clzmj-skills`. Ensure `~/.local/bin` is on `PATH`. Project sett
 live in `.clzmj-skills/install.json`; invoke
 `.clzmj-skills/bin/clzmj-skills` from that project.
 
+Global installs run from the user home directory and ignore saved `projectDir`.
+Project scope requires an existing directory; a missing directory error names
+the path. `--core-only` keeps saved favorites and individual pack selections
+when the final favorite selection is empty. Combining it with `--favorites`
+is rejected. Successful runs save selections after launcher registration.
+Failed or cancelled runs keep all prior selections and only record owned paths
+written during the run. A first failed install records ownership with empty
+selections, so later uninstall can identify partially installed skills.
+
 ```sh
 clzmj-skills install --yes --agents codex --core-only
 clzmj-skills update --yes
@@ -118,14 +127,7 @@ clzmj-skills uninstall --dry-run
 ```
 
 `install` applies choices. `update` reuses saved choices and refreshes ordinary
-skills. Global commands run from the user home directory, ignoring any saved
-project directory. Project scope requires an existing directory and reports its
-path when it is missing. `--core-only` preserves saved favorite packs and their
-individual skill selections for later updates. Settings are saved only after
-installation and launcher registration succeed; failures and cancellation leave
-existing settings unchanged.
-
-`self-update` fetches the hosted manifest and archive, verifies the
+skills. `self-update` fetches the hosted manifest and archive, verifies the
 checksum and archive paths, checks the new command, and replaces the launcher
 only after validation. It does not update installed skills or hook runtimes.
 An already-current installer is a no-op.
