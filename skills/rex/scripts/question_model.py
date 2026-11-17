@@ -673,7 +673,7 @@ class Classification:
     sensitive_topics: tuple[str, ...]
     hits: tuple[GuardHit, ...]
     floor: EscalationLevel
-    classified: bool = True
+    classified: bool = False
 
 
 @dataclass(frozen=True, slots=True)

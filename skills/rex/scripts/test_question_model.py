@@ -72,6 +72,16 @@ def asker():
 
 
 class RecordTests(unittest.TestCase):
+    def test_classification_defaults_to_unclassified(self):
+        classification = qm.Classification(
+            qm.Category.REPO_CONVENTION,
+            True,
+            (),
+            (),
+            qm.EscalationLevel.L1_CHEAP,
+        )
+        self.assertFalse(classification.classified)
+
     def test_invalid_decimal_is_a_value_error(self):
         with self.assertRaises(ValueError):
             qm.parse_record(

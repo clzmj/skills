@@ -3,7 +3,9 @@
 # requires-python = ">=3.11"
 # dependencies = []
 # ///
+import subprocess
 import unittest
+from pathlib import Path
 
 import question_redact as redact
 from question_model import UntrustedSource
@@ -53,13 +55,23 @@ class RedactionTests(unittest.TestCase):
             "AWS_SECRET_ACCESS_KEY=hunter2",
             "secret_key_base: abc",
             "private_key: abc",
+            "api_key: abc",
             "PASSWORD_PROD=x",
         ):
             with self.subTest(value=value):
                 result = redact.redact(value)
                 self.assertTrue(result.secret_present)
                 self.assertNotIn(value.split()[-1].split("=")[-1], result.text)
-        for value in ("max_tokens=1000", "tokenizer=fast", "tokens_per_second: 50"):
+        for value in (
+            "max_tokens=1000",
+            "tokenizer=fast",
+            "tokens_per_second: 50",
+            "token_count=5",
+            "token_limit: 4096",
+            "password_min_length=8",
+            "secret_santa_count=3",
+            "max_token_length=512",
+        ):
             with self.subTest(value=value):
                 self.assertEqual(redact.redact(value).text, value)
                 self.assertFalse(redact.redact(value).secret_present)
@@ -83,6 +95,46 @@ class RedactionTests(unittest.TestCase):
         for value in ('password = "hunter two"', "password = 'hunter two'"):
             with self.subTest(value=value):
                 self.assertEqual(redact.redact(value).text, "[REDACTED]")
+
+    def test_quoted_values_do_not_cross_newlines(self):
+        for quote in ('"', "'"):
+            for newline in ("\n", "\r"):
+                with self.subTest(quote=quote, newline=repr(newline)):
+                    value = f"password = {quote}first line{newline}second line{quote}"
+                    self.assertEqual(
+                        redact.redact(value).text,
+                        f"[REDACTED]{newline}second line{quote}",
+                    )
+
+    def test_compound_key_regex_finishes_quickly_on_nonmatching_tail(self):
+        script = """
+import sys, time
+sys.path.insert(0, sys.argv[1])
+import question_redact
+value = 'token' + '_a' * 40 + '!'
+start = time.perf_counter()
+question_redact.redact(value)
+print(time.perf_counter() - start)
+"""
+        try:
+            result = subprocess.run(
+                [
+                    "uv",
+                    "run",
+                    "--no-project",
+                    "python",
+                    "-c",
+                    script,
+                    str(Path(__file__).parent),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=True,
+            )
+        except subprocess.TimeoutExpired:
+            self.fail("redaction regex hung on 40 nonmatching suffix segments")
+        self.assertLess(float(result.stdout), 0.1)
 
     def test_every_secret_shape_and_entropy_is_removed(self):
         samples = (

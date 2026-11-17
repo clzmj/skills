@@ -87,7 +87,7 @@ def native_call(
 
 def classification(floor=ledger.m.EscalationLevel.L1_CHEAP):
     return ledger.m.Classification(
-        ledger.m.Category.DESIGN_CHOICE, False, (), (), floor
+        ledger.m.Category.DESIGN_CHOICE, False, (), (), floor, classified=True
     )
 
 
@@ -384,7 +384,9 @@ class LedgerTests(unittest.TestCase):
         self.assertNotIn("fixture-secret", saved["rationale"]["text"])
 
     def test_classified_flag_round_trips_through_ledger(self):
-        unclassified = question_guard.derive_floor((question("unclassified"),), rules=())
+        unclassified = question_guard.derive_floor(
+            (question("unclassified"),), rules=()
+        )
         classified = question_guard.derive_floor(
             (question("classified"),), classification=classification(), rules=()
         )
@@ -429,12 +431,34 @@ class LedgerTests(unittest.TestCase):
             "content_digest": "0123456789abcdef" * 4,
             "answers": [
                 {"answer_id": str(uuid4()), "text": "answer " + "x" * 600}
-                for _ in range(8)
+                for _ in range(3)
             ],
         }
         self.store.audit(ledger.AuditKind.ATTEMPT, "task", ledger.encoded(detail))
         saved = self.store.audit_events("task")[0].detail
         self.assertLessEqual(len(saved), 500)
+        parsed = json.loads(saved)
+        self.assertEqual(parsed["batch_id"], detail["batch_id"])
+        self.assertEqual(parsed["content_digest"], detail["content_digest"])
+        self.assertEqual(
+            [answer["answer_id"] for answer in parsed["answers"]],
+            [answer["answer_id"] for answer in detail["answers"]],
+        )
+
+    def test_audit_detail_preserves_metadata_when_it_alone_exceeds_cap(self):
+        detail = {
+            "answers": [
+                {"answer_id": str(uuid4()), "text": "x" * 600} for _ in range(12)
+            ],
+            "content_digest": "0123456789abcdef" * 4,
+        }
+        saved = json.loads(ledger.redacted_audit_detail(ledger.encoded(detail)))
+        self.assertEqual(saved["content_digest"], detail["content_digest"])
+        self.assertEqual(
+            [answer["answer_id"] for answer in saved["answers"]],
+            [answer["answer_id"] for answer in detail["answers"]],
+        )
+        self.assertTrue(all(not answer["text"] for answer in saved["answers"]))
 
     def test_post_commit_audit_write_failure_logs_and_continues(self):
         original_open = os.open
@@ -447,9 +471,10 @@ class LedgerTests(unittest.TestCase):
                 raise OSError("audit unavailable")
             return original_open(path, *args, **kwargs)
 
-        with patch.object(ledger.os, "open", side_effect=open_once), self.assertLogs(
-            ledger.__name__, level="ERROR"
-        ) as logs:
+        with (
+            patch.object(ledger.os, "open", side_effect=open_once),
+            self.assertLogs(ledger.__name__, level="ERROR") as logs,
+        ):
             with self.store.transaction():
                 self.store.db.execute(
                     "INSERT INTO budget VALUES(?,?,0,0,0,'0','0')",
