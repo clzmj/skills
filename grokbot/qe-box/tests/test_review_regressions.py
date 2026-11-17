@@ -288,6 +288,91 @@ class ReviewRegressionTests(BoxTest):
         self.assertEqual(notices.count(f"card_cap_reached:{batch}"), 1)
         self.assertNotIn(f"card_cap_reached:{batch}", self.box.tick().notices)
 
+    def reach_card_cap(self, value, *, purpose=box.CardPurpose.ASK, reconciles=None):
+        task = value["task_id"]
+        if purpose == box.CardPurpose.ASK:
+            self.box.handoff(task, "jim", purpose=purpose)
+        card = self.box.card_intent(
+            task, "jim", purpose=purpose, reconciles=reconciles, by="jim"
+        )
+        for _ in range(m.MAX_ABANDONED_CARD_GENERATIONS):
+            self.now += timedelta(minutes=10)
+            card = self.box.card_intent(
+                task, "jim", purpose=purpose, reconciles=card.gen, by="jim"
+            )
+        self.now += timedelta(minutes=10)
+        notices = []
+        for _ in range(2):
+            self.assertRefused(
+                box.BoxRefusal.CARD_CAP_REACHED,
+                self.box.card_intent,
+                task,
+                "jim",
+                purpose=purpose,
+                reconciles=card.gen,
+                by="jim",
+            )
+            notices.extend(self.box.tick().notices)
+        return card, notices
+
+    def test_card_cap_new_revision_notifies_again(self):
+        value = entry()
+        self.box.register(value)
+        card, notices = self.reach_card_cap(value)
+        value = revision(value)
+        self.box.register(value)
+        _, more = self.reach_card_cap(value, reconciles=card.gen)
+        notices.extend(more)
+        self.assertEqual(notices.count(f"card_cap_reached:{value['batch_id']}"), 2)
+        self.assertFalse(self.box.tick().notices)
+
+    def test_card_cap_correction_purpose_notifies_again(self):
+        value = entry()
+        self.box.register(value)
+        card, notices = self.reach_card_cap(value)
+        self.box.card_posted(value["task_id"], "jim", card.gen, "ask-card", by="jim")
+        ticket = self.box.decide(
+            box.DecisionKind.ANSWER,
+            4,
+            value["batch_id"],
+            value["batch_rev"],
+            answer(value),
+            by="jim",
+            card_gen=card.gen,
+            card_ref="ask-card",
+        ).plans[0]
+        self.box.result(report(ticket, m.SendOutcome.SENT_ECHOED, self.now))
+        _, more = self.reach_card_cap(value, purpose=box.CardPurpose.CORRECTION)
+        notices.extend(more)
+        self.assertEqual(notices.count(f"card_cap_reached:{value['batch_id']}"), 2)
+        self.assertFalse(self.box.tick().notices)
+
+    def test_card_cap_second_batch_notifies_independently(self):
+        values = [entry(task_id=str(box.uuid4())) for _ in range(2)]
+        notices = []
+        for value in values:
+            self.box.register(value)
+            _, more = self.reach_card_cap(value)
+            notices.extend(more)
+        for value in values:
+            with self.subTest(batch=value["batch_id"]):
+                self.assertEqual(
+                    notices.count(f"card_cap_reached:{value['batch_id']}"), 1
+                )
+        self.assertFalse(self.box.tick().notices)
+
+    def test_card_cap_large_pair_set_still_notifies_once(self):
+        values = [entry() for _ in range(50)]
+        for value in values:
+            self.box.register(value)
+        _, notices = self.reach_card_cap(values[0])
+        for value in values:
+            with self.subTest(batch=value["batch_id"]):
+                self.assertEqual(
+                    notices.count(f"card_cap_reached:{value['batch_id']}"), 1
+                )
+        self.assertFalse(self.box.tick().notices)
+
     def test_notify_once_legacy_duplicate_rows(self):
         self.box.db.execute("DROP TABLE report")
         self.box.db.execute(
@@ -296,10 +381,11 @@ class ReviewRegressionTests(BoxTest):
         )
         batch = str(box.uuid4())
         for kind in (box.BoxReport.SYNC_OVERSIZED, box.BoxReport.CARD_CAP_REACHED):
-            self.box.db.executemany(
-                "INSERT INTO report(kind,batch,detail,at) VALUES (?,?,?,?)",
-                [(kind.value, batch, "legacy", self.now.isoformat())] * 3,
-            )
+            for detail in ("legacy-a", "legacy-b"):
+                self.box.db.executemany(
+                    "INSERT INTO report(kind,batch,detail,at) VALUES (?,?,?,?)",
+                    [(kind.value, batch, detail, self.now.isoformat())] * 3,
+                )
         reopened = box.Box(
             Path(self.temp.name) / "state" / "box.sqlite3",
             clock=lambda: self.now,
@@ -308,7 +394,8 @@ class ReviewRegressionTests(BoxTest):
             notices = reopened.tick().notices
             for kind in (box.BoxReport.SYNC_OVERSIZED, box.BoxReport.CARD_CAP_REACHED):
                 with self.subTest(kind=kind):
-                    self.assertEqual(notices.count(f"{kind}:{batch}"), 1)
+                    expected = 2 if kind == box.BoxReport.CARD_CAP_REACHED else 1
+                    self.assertEqual(notices.count(f"{kind}:{batch}"), expected)
             self.assertIsNone(
                 reopened.db.execute(
                     "SELECT 1 FROM report WHERE notified_at IS NULL"

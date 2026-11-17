@@ -670,11 +670,11 @@ class Box:
         return int(value) if isinstance(value, bool) else value
 
     def _report(self, kind: BoxReport, batch: str | None, detail: str = "") -> bool:
-        # These notices have no reset rule: keep one occurrence per batch lifetime.
+        # Card caps reset for a new purpose/pair set; oversized syncs do not.
         if kind in (BoxReport.SYNC_OVERSIZED, BoxReport.CARD_CAP_REACHED):
             if self.db.execute(
-                "SELECT 1 FROM report WHERE kind=? AND batch IS ?",
-                (kind.value, batch),
+                "SELECT 1 FROM report WHERE kind=? AND batch IS ? AND (kind<>? OR detail=?)",
+                (kind.value, batch, BoxReport.CARD_CAP_REACHED.value, detail),
             ).fetchone():
                 return False
         self.db.execute(
@@ -682,7 +682,10 @@ class Box:
             (
                 kind.value,
                 batch,
-                redaction.redact(detail).text[:2048],
+                # The cap key contains only a purpose and validated UUID/rev pairs.
+                detail
+                if kind == BoxReport.CARD_CAP_REACHED
+                else redaction.redact(detail).text[:2048],
                 self.clock().isoformat(),
             ),
         )
@@ -1954,8 +1957,10 @@ class Box:
             if error.reason == BoxRefusal.CARD_CAP_REACHED:
                 # The failed intent transaction has rolled back. Keep its alert.
                 with self.transaction():
-                    for batch, _ in self._pairs(task, callback_bot, purpose):
-                        self._report(BoxReport.CARD_CAP_REACHED, batch)
+                    pairs = self._pairs(task, callback_bot, purpose)
+                    detail = f"{purpose}:{json_text(pairs)}"
+                    for batch, _ in pairs:
+                        self._report(BoxReport.CARD_CAP_REACHED, batch, detail)
             raise
 
     def _card_intent(
@@ -2833,14 +2838,26 @@ class Box:
             plans: list[PlanTicket] = []
             handoffs: list[m.L4Handoff] = []
             notices: list[str] = []
-            for kind, batch in self.db.execute(
-                "SELECT kind,batch FROM report WHERE kind IN (?,?) AND notified_at IS NULL GROUP BY kind,batch ORDER BY min(id)",
-                (BoxReport.SYNC_OVERSIZED.value, BoxReport.CARD_CAP_REACHED.value),
+            for kind, batch, detail in self.db.execute(
+                "SELECT kind,batch,CASE WHEN kind=? THEN detail ELSE '' END AS notice_detail "
+                "FROM report WHERE kind IN (?,?) AND notified_at IS NULL "
+                "GROUP BY kind,batch,notice_detail ORDER BY min(id)",
+                (
+                    BoxReport.CARD_CAP_REACHED.value,
+                    BoxReport.SYNC_OVERSIZED.value,
+                    BoxReport.CARD_CAP_REACHED.value,
+                ),
             ).fetchall():
                 notices.append(f"{BoxReport(kind)}:{batch}")
                 self.db.execute(
-                    "UPDATE report SET notified_at=? WHERE kind=? AND batch IS ?",
-                    (self.clock().isoformat(), kind, batch),
+                    "UPDATE report SET notified_at=? WHERE kind=? AND batch IS ? AND (kind<>? OR detail=?)",
+                    (
+                        self.clock().isoformat(),
+                        kind,
+                        batch,
+                        BoxReport.CARD_CAP_REACHED.value,
+                        detail,
+                    ),
                 )
             for key, _ in self.db.execute(
                 "SELECT key,value FROM box_meta WHERE key LIKE 'ack:%' OR key LIKE 'cancel:%' OR key LIKE 'registered:%' OR key LIKE 'stale:%'"
