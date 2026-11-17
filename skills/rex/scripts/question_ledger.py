@@ -95,6 +95,8 @@ CREATE TABLE IF NOT EXISTS native_call (call TEXT PRIMARY KEY, batch TEXT NOT NU
  turn TEXT NOT NULL, failed INTEGER NOT NULL DEFAULT 0, fallback_of TEXT UNIQUE, seen_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS attempt (batch TEXT NOT NULL, batch_rev INTEGER NOT NULL, level INTEGER NOT NULL,
  ordinal INTEGER NOT NULL, outcome TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY(batch,batch_rev,level,ordinal));
+CREATE TABLE IF NOT EXISTS ladder_run (batch TEXT NOT NULL, batch_rev INTEGER NOT NULL, started_at TEXT NOT NULL,
+ PRIMARY KEY(batch,batch_rev));
 CREATE TABLE IF NOT EXISTS resolution (batch TEXT NOT NULL, rev INTEGER NOT NULL, batch_rev INTEGER NOT NULL,
  level INTEGER NOT NULL CHECK(level IN (1,2)), json TEXT NOT NULL, PRIMARY KEY(batch,rev));
 CREATE TABLE IF NOT EXISTS registration (batch TEXT NOT NULL, batch_rev INTEGER NOT NULL, content_digest TEXT NOT NULL,
@@ -133,7 +135,10 @@ CREATE TABLE IF NOT EXISTS budget (scope TEXT NOT NULL, key TEXT NOT NULL, attem
  PRIMARY KEY(scope,key));
 CREATE TABLE IF NOT EXISTS budget_reservation (id TEXT PRIMARY KEY, task TEXT NOT NULL, model TEXT NOT NULL,
  day TEXT NOT NULL, tokens INTEGER NOT NULL, usd TEXT NOT NULL, settled INTEGER NOT NULL DEFAULT 0,
- overrun INTEGER NOT NULL DEFAULT 0);
+ overrun INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00+00:00');
+CREATE TABLE IF NOT EXISTS classifier_pending (batch TEXT NOT NULL REFERENCES batch(id), batch_rev INTEGER NOT NULL,
+ remote TEXT NOT NULL, brief_json TEXT, root_session TEXT NOT NULL, started_at TEXT NOT NULL,
+ PRIMARY KEY(batch,batch_rev));
 CREATE TABLE IF NOT EXISTS tick_state (id INTEGER PRIMARY KEY CHECK(id=1), last_run_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
 """
@@ -224,6 +229,14 @@ class LiveContext:
     brief_digest: m.TextDigest | None
     changed: bool
     brief_path: Path | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PendingClassification:
+    remote: str
+    brief: m.BriefEscalation | None
+    root_session: str
+    started_at: datetime
 
 
 class AuditKind(StrEnum):
@@ -335,6 +348,14 @@ class Ledger:
                     self.db.execute(
                         f"ALTER TABLE {table} ADD COLUMN metadata_json TEXT"
                     )
+            reservation_columns = {
+                row["name"]
+                for row in self.db.execute("PRAGMA table_info(budget_reservation)")
+            }
+            if "created_at" not in reservation_columns:
+                self.db.execute(
+                    "ALTER TABLE budget_reservation ADD COLUMN created_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00+00:00'"
+                )
             states = ",".join(f"'{state.value}'" for state in sorted(OPEN_FOR_ATTACH))
             self.db.execute(
                 f"CREATE UNIQUE INDEX IF NOT EXISTS batch_one_open ON batch(actor,turn) WHERE state IN ({states})"
@@ -459,6 +480,148 @@ class Ledger:
                 "opened_at": row["opened_at"],
             }
         )
+
+    def guard_floor(self, batch_id: str) -> m.EscalationLevel:
+        """Return committed floors without the conservative unclassified read floor."""
+        row = self.db.execute(
+            "SELECT mac_floor,box_floor FROM batch WHERE id=?", (batch_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(batch_id)
+        return m.EscalationLevel(max(row["mac_floor"], row["box_floor"] or 0))
+
+    def start_ladder(
+        self, batch_id: str, rev: m.BatchRev, context: m.ContextDigest
+    ) -> bool:
+        """Admit one paid run per revision; lost completion recovers through the box."""
+        with self.transaction():
+            batch = self.get_batch(batch_id)
+            if (
+                batch.rev != rev
+                or batch.context != context
+                or batch.state
+                not in {
+                    m.BatchState.OPEN,
+                    m.BatchState.ESCALATING,
+                }
+            ):
+                return False
+            return bool(
+                self.db.execute(
+                    "INSERT OR IGNORE INTO ladder_run VALUES(?,?,?)",
+                    (batch_id, rev, now().isoformat()),
+                ).rowcount
+            )
+
+    def queue_classification(
+        self,
+        batch_id: str,
+        *,
+        remote: str,
+        brief: m.BriefEscalation | None,
+        root_session: str,
+    ) -> None:
+        """Persist first-seen inputs and deadline origin for the current revision."""
+        if not isinstance(remote, str) or not isinstance(root_session, str):
+            raise ValueError("classification metadata must be strings")
+        if brief is not None:
+            if not isinstance(brief, m.BriefEscalation):
+                raise ValueError("invalid classification brief")
+            brief = m.parse_record(m.BriefEscalation, json.loads(encoded(brief)))
+        with self.transaction():
+            row = self.db.execute(
+                "SELECT rev FROM batch WHERE id=?", (batch_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(batch_id)
+            self.db.execute(
+                """INSERT INTO classifier_pending VALUES(?,?,?,?,?,?)
+                ON CONFLICT(batch,batch_rev) DO NOTHING""",
+                (
+                    batch_id,
+                    row["rev"],
+                    remote,
+                    encoded(brief) if brief is not None else None,
+                    root_session,
+                    now().isoformat(),
+                ),
+            )
+
+    def classification_pending(
+        self, batch_id: str, batch_rev: m.BatchRev
+    ) -> PendingClassification | None:
+        row = self.db.execute(
+            "SELECT * FROM classifier_pending WHERE batch=? AND batch_rev=?",
+            (batch_id, batch_rev),
+        ).fetchone()
+        if row is None:
+            return None
+        return PendingClassification(
+            row["remote"],
+            m.parse_record(m.BriefEscalation, json.loads(row["brief_json"]))
+            if row["brief_json"] is not None
+            else None,
+            row["root_session"],
+            datetime.fromisoformat(row["started_at"]),
+        )
+
+    def apply_classification(
+        self,
+        batch_id: str,
+        expected_rev: m.BatchRev,
+        context: m.ContextDigest,
+        classification: m.Classification,
+    ) -> bool:
+        """Apply proof only to its revision; stale results can only raise the floor."""
+        if not isinstance(classification, m.Classification):
+            raise ValueError("classification must be a typed result")
+        classification = m.parse_record(
+            m.Classification, json.loads(encoded(classification))
+        )
+        if not classification.classified:
+            raise ValueError("classification must be complete")
+        with self.transaction():
+            row = self.db.execute(
+                "SELECT rev,context,mac_floor,box_floor,state,task FROM batch WHERE id=?",
+                (batch_id,),
+            ).fetchone()
+            if row is None or row["state"] in TERMINAL:
+                return False
+            if row["rev"] > expected_rev:
+                # Questions are retained across revisions, including retired ones.
+                # A stale result grants no new proof, but its higher floor survives.
+                self.db.execute(
+                    "UPDATE batch SET mac_floor=max(mac_floor,?) WHERE id=?",
+                    (classification.floor, batch_id),
+                )
+                if classification.floor > max(row["mac_floor"], row["box_floor"] or 0):
+                    self.audit(
+                        AuditKind.CONTEXT,
+                        row["task"],
+                        f"Floor {classification.floor} from source revision r{expected_rev} carried floor-only to current revision r{row['rev']}; current proof unchanged",
+                        batch_id,
+                    )
+                return False
+            if row["rev"] != expected_rev or row["context"] != context:
+                return False
+            registered = self.db.execute(
+                "SELECT entry_json FROM registration WHERE batch=? AND batch_rev=?",
+                (batch_id, expected_rev),
+            ).fetchone()
+            unclassified_entry = bool(
+                registered
+                and registered["entry_json"]
+                and not json.loads(registered["entry_json"])["classified"]
+            )
+            floor = max(classification.floor, row["mac_floor"], row["box_floor"] or 0)
+            if unclassified_entry or row["state"] == m.BatchState.BOX_OWNED:
+                floor = max(floor, m.EscalationLevel.L3_PRINCIPAL)
+            classification = replace(classification, floor=m.EscalationLevel(floor))
+            self.db.execute(
+                "UPDATE batch SET classification_json=?,mac_floor=?,updated_at=? WHERE id=?",
+                (encoded(classification), floor, now().isoformat(), batch_id),
+            )
+            return True
 
     def batches(self, *, task: str | None = None) -> tuple[m.QuestionBatch, ...]:
         rows = self.db.execute(
@@ -658,7 +821,12 @@ class Ledger:
                 all_questions = old_questions + questions
                 classification = replace(
                     classification,
-                    floor=max(classification.floor, previous.classification.floor),
+                    floor=max(
+                        classification.floor,
+                        previous.classification.floor
+                        if previous.classification.classified
+                        else self.guard_floor(str(previous.id)),
+                    ),
                     hits=tuple(
                         dict.fromkeys(
                             previous.classification.hits + classification.hits
@@ -785,6 +953,19 @@ class Ledger:
                     entry["content_digest"],
                     m.RegistrationState.DUE,
                     encoded(entry),
+                ),
+            )
+
+            self.db.execute(
+                "UPDATE batch SET mac_floor=max(mac_floor,?) WHERE id=?",
+                (
+                    max(
+                        entry["mac_floor"],
+                        m.EscalationLevel.L3_PRINCIPAL
+                        if not entry["classified"]
+                        else 0,
+                    ),
+                    entry["batch_id"],
                 ),
             )
 
@@ -1748,6 +1929,8 @@ class Ledger:
                     "attempt",
                     "resolution",
                     "registration",
+                    "classifier_pending",
+                    "ladder_run",
                     "progress",
                     "lifecycle",
                     "cancellation",
@@ -1849,8 +2032,18 @@ class Ledger:
                 )
             reservation = ReservationId(str(uuid4()))
             self.db.execute(
-                "INSERT INTO budget_reservation (id,task,model,day,tokens,usd) VALUES (?,?,?,?,?,?)",
-                (reservation, task, model, day, tokens, str(amount)),
+                "INSERT INTO budget_reservation (id,task,model,day,tokens,usd,created_at) VALUES (?,?,?,?,?,?,?)",
+                (
+                    reservation,
+                    task,
+                    model,
+                    day,
+                    tokens,
+                    str(amount),
+                    (at or now())
+                    .astimezone(timezone.utc)
+                    .isoformat(timespec="microseconds"),
+                ),
             )
             self.audit(
                 AuditKind.BUDGET, task, f"reserved {tokens} tokens, USD {amount}"
@@ -1909,3 +2102,21 @@ class Ledger:
                 (int(tokens > tokens_reserved or usd > usd_reserved), reservation),
             )
             self.audit(AuditKind.BUDGET, task, f"settled {tokens} tokens, USD {usd}")
+
+    def sweep_budget_reservations(self, *, at: datetime | None = None) -> int:
+        """Settle reservations older than ten minutes as fully spent.
+
+        Ten minutes exceeds the longest bounded answerer call (four minutes),
+        leaving margin for scheduling and result settlement after process exit.
+        """
+        cutoff = (
+            (at or now()).astimezone(timezone.utc) - timedelta(minutes=10)
+        ).isoformat(timespec="microseconds")
+        with self.transaction():
+            expired = self.db.execute(
+                "SELECT id FROM budget_reservation WHERE settled=0 AND created_at<? ORDER BY created_at,id",
+                (cutoff,),
+            ).fetchall()
+            for row in expired:
+                self.settle_budget(ReservationId(row["id"]), usage=None)
+        return len(expired)

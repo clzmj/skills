@@ -1,0 +1,167 @@
+{
+  "schema": "qe.p12-read-calibration/1",
+  "sample_count": 6,
+  "max_calls": 6,
+  "profile": "question_answerers.build_command + answerer_environment; Broker.ladder_prompt",
+  "schema_sha256": "f1d2d13d12b355bb993b42bd3a5711a72624ad6e6735ed4f7c10a8cdc2a752df",
+  "adapter_sha256": "19ef5b73b0e34fccb6ac15912e380db9f731ed31c98d0a29db2022affa6dc745",
+  "max_turns": 4,
+  "prompt_bytes": 24512,
+  "p95_method": "empirical nearest rank over three bounded read-bearing samples per model; small sample, no tail guarantee",
+  "samples": [
+    {
+      "model": "haiku",
+      "ordinal": 1,
+      "max_turns": 4,
+      "wall_clock_s": 90,
+      "prompt_bytes": 24512,
+      "num_turns": 3,
+      "exit_code": 0,
+      "timed_out": false,
+      "subtype": "success",
+      "elapsed_ms": 7271,
+      "successful_evidence": true,
+      "model_family_valid": true,
+      "marker_evidence_valid": true,
+      "validation_failures": [],
+      "local_rejection": null,
+      "parse_failure": null,
+      "tokens": 34160,
+      "usd": "0.00397892",
+      "model_ids": [
+        "claude-haiku-5-5"
+      ]
+    },
+    {
+      "model": "haiku",
+      "ordinal": 2,
+      "max_turns": 4,
+      "wall_clock_s": 90,
+      "prompt_bytes": 24512,
+      "num_turns": 4,
+      "exit_code": 0,
+      "timed_out": false,
+      "subtype": "success",
+      "elapsed_ms": 6155,
+      "successful_evidence": true,
+      "model_family_valid": true,
+      "marker_evidence_valid": true,
+      "validation_failures": [],
+      "local_rejection": null,
+      "parse_failure": null,
+      "tokens": 34311,
+      "usd": "0.00136951",
+      "model_ids": [
+        "claude-haiku-5-5"
+      ]
+    },
+    {
+      "model": "haiku",
+      "ordinal": 3,
+      "max_turns": 4,
+      "wall_clock_s": 90,
+      "prompt_bytes": 24512,
+      "num_turns": 4,
+      "exit_code": 0,
+      "timed_out": false,
+      "subtype": "success",
+      "elapsed_ms": 6649,
+      "successful_evidence": true,
+      "model_family_valid": true,
+      "marker_evidence_valid": true,
+      "validation_failures": [],
+      "local_rejection": null,
+      "parse_failure": null,
+      "tokens": 34302,
+      "usd": "0.00138325",
+      "model_ids": [
+        "claude-haiku-5-5"
+      ]
+    },
+    {
+      "model": "sonnet",
+      "ordinal": 1,
+      "max_turns": 4,
+      "wall_clock_s": 240,
+      "prompt_bytes": 24512,
+      "num_turns": 3,
+      "exit_code": 0,
+      "timed_out": false,
+      "subtype": "success",
+      "elapsed_ms": 6013,
+      "successful_evidence": true,
+      "model_family_valid": true,
+      "marker_evidence_valid": true,
+      "validation_failures": [],
+      "local_rejection": null,
+      "parse_failure": null,
+      "tokens": 31998,
+      "usd": "0.054965799999999995",
+      "model_ids": [
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "model": "sonnet",
+      "ordinal": 2,
+      "max_turns": 4,
+      "wall_clock_s": 240,
+      "prompt_bytes": 24512,
+      "num_turns": 3,
+      "exit_code": 0,
+      "timed_out": false,
+      "subtype": "success",
+      "elapsed_ms": 5749,
+      "successful_evidence": true,
+      "model_family_valid": true,
+      "marker_evidence_valid": true,
+      "validation_failures": [],
+      "local_rejection": null,
+      "parse_failure": null,
+      "tokens": 32013,
+      "usd": "0.018982",
+      "model_ids": [
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "model": "sonnet",
+      "ordinal": 3,
+      "max_turns": 4,
+      "wall_clock_s": 240,
+      "prompt_bytes": 24512,
+      "num_turns": 3,
+      "exit_code": 0,
+      "timed_out": false,
+      "subtype": "success",
+      "elapsed_ms": 5928,
+      "successful_evidence": true,
+      "model_family_valid": true,
+      "marker_evidence_valid": true,
+      "validation_failures": [],
+      "local_rejection": null,
+      "parse_failure": null,
+      "tokens": 32035,
+      "usd": "0.0193538",
+      "model_ids": [
+        "claude-sonnet-5-5"
+      ]
+    }
+  ],
+  "models": {
+    "haiku": {
+      "sample_count": 3,
+      "model_family_valid_count": 3,
+      "successful_evidence_count": 3,
+      "reserve_tokens": 34311,
+      "reserve_usd": "0.00397892"
+    },
+    "sonnet": {
+      "sample_count": 3,
+      "model_family_valid_count": 3,
+      "successful_evidence_count": 3,
+      "reserve_tokens": 32035,
+      "reserve_usd": "0.054965799999999995"
+    }
+  }
+}

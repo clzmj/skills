@@ -1,0 +1,64 @@
+{
+  "model": "sonnet",
+  "sample_count": 3,
+  "max_turns": 2,
+  "wall_clock_s": 240,
+  "output_transport": "stream-json for actual inventory evidence; result usage matches JSON transport",
+  "p95_method": "empirical nearest rank; small sample, not a statistical tail guarantee",
+  "reserve_tokens": 10213,
+  "reserve_usd": "0.041172",
+  "tools_validated": true,
+  "samples": [
+    {
+      "ordinal": 1,
+      "exit_code": 0,
+      "subtype": "success",
+      "tokens": 10213,
+      "usd": "0.041172",
+      "elapsed_ms": 2836,
+      "tools": [
+        "Glob",
+        "Grep",
+        "Read",
+        "StructuredOutput"
+      ],
+      "mcp_servers": [],
+      "model_id": "claude-sonnet-5-5",
+      "cli_version": "2.1.325"
+    },
+    {
+      "ordinal": 2,
+      "exit_code": 0,
+      "subtype": "success",
+      "tokens": 10212,
+      "usd": "0.0177251",
+      "elapsed_ms": 2716,
+      "tools": [
+        "Glob",
+        "Grep",
+        "Read",
+        "StructuredOutput"
+      ],
+      "mcp_servers": [],
+      "model_id": "claude-sonnet-5-5",
+      "cli_version": "2.1.325"
+    },
+    {
+      "ordinal": 3,
+      "exit_code": 0,
+      "subtype": "success",
+      "tokens": 10199,
+      "usd": "0.0176731",
+      "elapsed_ms": 2645,
+      "tools": [
+        "Glob",
+        "Grep",
+        "Read",
+        "StructuredOutput"
+      ],
+      "mcp_servers": [],
+      "model_id": "claude-sonnet-5-5",
+      "cli_version": "2.1.325"
+    }
+  ]
+}

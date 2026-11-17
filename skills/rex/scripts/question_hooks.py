@@ -450,7 +450,7 @@ def handle(
     secret = any(
         redact(text).secret_present for text in content_strings(input.tool_input)
     )
-    classification = guard.derive_floor(
+    classification = guard.assess_guard(
         questions,
         brief=policy,
         cwd=input.cwd,
@@ -507,14 +507,36 @@ def handle(
                     "Claude parked-dialog route blocked by recorded P5 failure; answer in the pane",
                     str(batch.id),
                 )
-            broker.prepare_registration(
-                store,
-                store.get_batch(str(batch.id)),
-                origin,
-                policy,
-                lineage["root_session_id"],
-                secret,
-            )
+            batch = store.get_batch(str(batch.id))
+            if len(batch.questions) > m.MAX_QUESTIONS or any(
+                len(q.options) > m.MAX_OPTIONS for q in batch.questions
+            ):
+                broker.block_oversized(
+                    store,
+                    batch,
+                    "Question or option count exceeds registration limits; answer in the pane",
+                )
+            elif store.guard_floor(
+                str(batch.id)
+            ) >= m.EscalationLevel.L3_PRINCIPAL or batch.state in {
+                m.BatchState.BLOCKED,
+                m.BatchState.BOX_OWNED,
+            }:
+                broker.prepare_registration(
+                    store,
+                    store.get_batch(str(batch.id)),
+                    origin,
+                    policy,
+                    lineage["root_session_id"],
+                    secret,
+                )
+            else:
+                store.queue_classification(
+                    str(batch.id),
+                    remote=origin,
+                    brief=policy,
+                    root_session=lineage["root_session_id"],
+                )
     if spawn:
         try:
             launch(broker.Command.TICK)

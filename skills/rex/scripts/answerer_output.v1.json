@@ -1,0 +1,131 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "verdict": {
+      "enum": [
+        "answer",
+        "escalate"
+      ]
+    },
+    "category": {
+      "enum": [
+        "trivial_factual",
+        "repo_convention",
+        "design_choice",
+        "irreversible_or_costly",
+        "product_scope"
+      ]
+    },
+    "delegable": {
+      "type": "boolean"
+    },
+    "sensitive_topics": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "string",
+        "maxLength": 128
+      }
+    },
+    "reversible": {
+      "type": "boolean"
+    },
+    "crosses_boundary": {
+      "type": "boolean"
+    },
+    "changes_adr": {
+      "type": "boolean"
+    },
+    "revert": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "answers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "question": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "choice": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "free_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "confidence": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 1
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "line": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 1
+                },
+                "quote": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "line",
+                "quote"
+              ]
+            }
+          }
+        },
+        "required": [
+          "question",
+          "choice",
+          "free_text",
+          "rationale",
+          "confidence",
+          "evidence"
+        ]
+      }
+    }
+  },
+  "required": [
+    "verdict",
+    "category",
+    "delegable",
+    "sensitive_topics",
+    "reversible",
+    "crosses_boundary",
+    "changes_adr",
+    "revert",
+    "answers"
+  ]
+}
