@@ -164,7 +164,7 @@ raise SystemExit(64)
         hooks.handle(prompt, agent, self.store, spawn=False)
 
     def register_with_box(self, batch_id: str) -> m.RegisterEntry:
-        batch = broker.Broker(self.store).worker(batch_id)
+        batch = broker.Broker(self.store).worker(batch_id, spool_digest=False)
         (entry,) = self.store.due_registrations()
         self.assertEqual(entry["batch_id"], str(batch.id))
         registered = self.box.register(entry)
@@ -295,7 +295,9 @@ raise SystemExit(64)
             "SELECT block_cause FROM batch WHERE id=?", (str(batch.id),)
         ).fetchone()
         self.assertEqual(blocked[0], m.BlockCause.NO_DELIVERY_ROUTE)
-        worker_batch = broker.Broker(self.store).worker(str(batch.id))
+        worker_batch = broker.Broker(self.store).worker(
+            str(batch.id), spool_digest=False
+        )
         self.assertEqual(worker_batch.state, m.BatchState.BLOCKED)
         (entry,) = self.store.due_registrations()
         self.assertFalse(entry["classified"])

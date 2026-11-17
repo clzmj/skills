@@ -1074,7 +1074,7 @@ class Broker:
             "cursor": page["cursor"],
         }
 
-    def worker(self, batch_id: str) -> m.QuestionBatch:
+    def worker(self, batch_id: str, *, spool_digest: bool = True) -> m.QuestionBatch:
         """Phase 3 has no classifier or local dispatcher. Register immediately."""
         with self.worker_lock(batch_id, wait=0) as acquired:
             if acquired is None:
@@ -1141,7 +1141,12 @@ class Broker:
                             )
                     if batch.state is not m.BatchState.BLOCKED:
                         self.store.take_ownership(batch_id, classification.floor)
-        # Tick coalesces task siblings; hook-launched workers never wait or spool.
+                task = batch.asker.task
+        if spool_digest:
+            # The detached worker must publish even if no later hook runs (§5.7).
+            # Release the batch lock and transaction before coalescing siblings.
+            time.sleep(DIGEST_COALESCE.total_seconds())
+            self.digest(task)
         return self.store.get_batch(batch_id)
 
     def digest_envelope(
@@ -1418,7 +1423,7 @@ class Broker:
             if os.environ.get(m.FLAG_ENV) == "1":
                 for batch in self.store.batches():
                     if batch.state in ledger.OPEN_FOR_ATTACH:
-                        self.worker(str(batch.id))
+                        self.worker(str(batch.id), spool_digest=False)
                 tasks = (
                     {
                         entry["task_id"]

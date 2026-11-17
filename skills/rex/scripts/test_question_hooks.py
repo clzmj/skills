@@ -189,12 +189,12 @@ class QuestionHooks(HookFixture):
             patch.object(sys, "stdout", io.StringIO()) as stdout,
         ):
             self.assertEqual(hooks.main(), 0)
-            self.assertIsNotNone(callback.input_request(raw, m.AgentKind.CODEX))
+            self.assertIsNone(callback.input_request(raw, m.AgentKind.CODEX))
         self.assertEqual(stdout.getvalue().strip(), "{}")
         receipt.assert_called_once_with(callback.Outcome.HOOK_ERROR)
         self.assertEqual(self.store.batches(), ())
 
-    def test_legacy_notification_suppressed_only_after_registration(self):
+    def test_legacy_notification_suppressed_independently_of_registration(self):
         raw = {
             "hook_event_name": "PreToolUse",
             "session_id": "fixture",
@@ -213,11 +213,11 @@ class QuestionHooks(HookFixture):
             "cwd": str(self.directory),
         }
         with patch.object(callback.rex, "STATE", self.directory):
-            self.assertIsNotNone(callback.input_request(raw, m.AgentKind.CODEX))
+            self.assertIsNone(callback.input_request(raw, m.AgentKind.CODEX))
             with patch.object(hooks, "launch"):
                 self.detect(spawn=True)
             self.assertIsNone(callback.input_request(raw, m.AgentKind.CODEX))
-            self.assertIsNotNone(
+            self.assertIsNone(
                 callback.input_request(
                     {**raw, "tool_use_id": "other"}, m.AgentKind.CODEX
                 )
@@ -294,7 +294,7 @@ class QuestionHooks(HookFixture):
     def test_detect_registers_unclassified_box_owned_without_dispatch(self):
         self.assertEqual(self.detect(), {})
         (first,) = self.store.batches()
-        result = broker.Broker(self.store).worker(str(first.id))
+        result = broker.Broker(self.store).worker(str(first.id), spool_digest=False)
         self.assertEqual(result.state, m.BatchState.BOX_OWNED)
         (entry,) = self.store.due_registrations()
         self.assertFalse(entry["classified"])
@@ -345,7 +345,7 @@ class QuestionHooks(HookFixture):
     def test_native_answer_closes_ordinary_batch_before_same_turn_reask(self):
         self.detect()
         (first,) = self.store.batches()
-        broker.Broker(self.store).worker(str(first.id))
+        broker.Broker(self.store).worker(str(first.id), spool_digest=False)
         self.detect(
             hook_event_name="PostToolUse",
             tool_response={"answers": {"one": {"answers": ["Tabs"]}}},
