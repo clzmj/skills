@@ -13,6 +13,7 @@ import time
 import io
 import sys
 import json
+import sqlite3
 from contextlib import redirect_stdout
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 import unittest
@@ -33,6 +34,7 @@ from test_question_ledger import (
     native_call,
     classification,
     registration,
+    progress,
     outbound,
     resolution,
 )
@@ -139,6 +141,225 @@ class RunPlanTests(unittest.TestCase):
         ).batch
         self.runner = StubRunner(self.store)
         self.broker = broker.Broker(self.store, runner=self.runner, lock_wait=0)
+
+    def test_forged_ack_digest_is_refused_and_low_floor_cannot_lower_current(self):
+        entry = registration(self.batch)
+        self.store.put_registration(entry)
+        self.store.progress(progress(self.batch, 1))
+        body = dict(
+            batch_id=str(self.batch.id),
+            batch_rev=1,
+            content_digest="0" * 64,
+            progress_seq=999,
+            floor=4,
+            owned=True,
+        )
+        self.assertFalse(self.broker.run_plan(plan(m.PlanAction.ACK, body))["ok"])
+        self.assertEqual(
+            self.store.get_batch(str(self.batch.id)).state, m.BatchState.OPEN
+        )
+        self.assertEqual(
+            self.store.db.execute(
+                "SELECT acked_progress_seq FROM registration"
+            ).fetchone()[0],
+            0,
+        )
+        body["content_digest"] = entry["content_digest"]
+        self.assertTrue(self.broker.run_plan(plan(m.PlanAction.ACK, body))["ok"])
+        body["floor"] = 1
+        self.assertTrue(self.broker.run_plan(plan(m.PlanAction.ACK, body))["ok"])
+        self.assertEqual(
+            self.store.get_batch(str(self.batch.id)).classification.floor, 4
+        )
+        row = self.store.db.execute(
+            "SELECT acked_progress_seq,acked_floor FROM registration"
+        ).fetchone()
+        self.assertEqual(tuple(row), (1, 4))
+
+    def test_real_route_runner_refuses_when_no_allowed_route_is_available(self):
+        request = send_plan(self.batch, allowed_routes=[m.Route.CODEX_QUEUE])
+        live = self.store.live_context(str(self.batch.id))
+        with (
+            patch.object(self.store, "live_context", return_value=live),
+            patch.object(routes.subprocess, "run") as call,
+        ):
+            result = broker.Broker(self.store).run_plan(request)
+        call.assert_not_called()
+        self.assertEqual(result["send"], m.SendOutcome.NOT_SENT_ROUTE_REFUSED)
+        note = self.broker.box_note(request["body"]["delivery_id"])
+        assert note is not None
+        self.assertEqual(
+            note.state,
+            m.BoxNoteState.NOT_SENT,
+        )
+
+    def test_real_mid_send_expiry_is_unknown_and_box_answered(self):
+        at = datetime.now(timezone.utc)
+        clock = [at]
+        request = send_plan(self.batch, issued_at=at.isoformat())
+        staged = []
+
+        def call(args, **kwargs):
+            staged.append(kwargs["input"])
+            clock[0] = at + timedelta(minutes=9)
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        live = self.store.live_context(str(self.batch.id))
+        with (
+            patch.object(self.store, "live_context", return_value=live),
+            patch.object(routes.subprocess, "run", side_effect=call),
+        ):
+            result = broker.Broker(self.store, clock=lambda: clock[0]).run_plan(request)
+        self.assertEqual(staged, [request["body"]["text"]])
+        self.assertEqual(result["send"], m.SendOutcome.SEND_UNKNOWN)
+        note = self.broker.box_note(request["body"]["delivery_id"])
+        assert note is not None
+        self.assertEqual(
+            note.state,
+            m.BoxNoteState.UNKNOWN,
+        )
+        self.assertEqual(result["mac_state"], m.BatchState.BOX_ANSWERED)
+
+    def test_post_route_exceptions_emit_result_and_mark_unknown(self):
+        for error in (sqlite3.OperationalError("busy"), RuntimeError("route failure")):
+            with self.subTest(error=type(error).__name__):
+                request = send_plan(self.batch)
+                original = ledger.Ledger.finish_box_note
+                calls = [0]
+
+                def finish(store, *args):
+                    calls[0] += 1
+                    if args[-1] is m.BoxNoteState.SENT:
+                        raise error
+                    return original(store, *args)
+
+                output = io.StringIO()
+                with (
+                    patch.object(ledger.Ledger, "finish_box_note", finish),
+                    patch.object(
+                        broker.routes, "RouteRunner", return_value=self.runner
+                    ),
+                    redirect_stdout(output),
+                ):
+                    code = broker.main(["run-plan", "--b64", broker.encode(request)])
+                self.assertEqual(code, 0)
+                result = m.parse_result(
+                    json.loads(
+                        base64.urlsafe_b64decode(output.getvalue().split()[1] + "==")
+                    )
+                )
+                self.assertEqual(result["send"], m.SendOutcome.SEND_UNKNOWN)
+                note = self.broker.box_note(request["body"]["delivery_id"])
+                assert note is not None
+                self.assertEqual(
+                    note.state,
+                    m.BoxNoteState.UNKNOWN,
+                )
+                self.assertEqual(result["mac_state"], m.BatchState.BOX_ANSWERED)
+
+    def test_replay_refreshes_mac_now_and_result_digest(self):
+        at = datetime.now(timezone.utc)
+        clock = [at]
+        instance = broker.Broker(self.store, runner=self.runner, clock=lambda: clock[0])
+        request = send_plan(self.batch, issued_at=at.isoformat())
+        first = instance.run_plan(request)
+        clock[0] += timedelta(minutes=2)
+        replay = instance.run_plan(request)
+        self.assertEqual(replay["mac_now"], clock[0].isoformat(timespec="microseconds"))
+        self.assertNotEqual(first["result_digest"], replay["result_digest"])
+        self.assertEqual(len(self.runner.calls), 1)
+
+    def test_persistent_database_fault_after_route_still_returns_unknown(self):
+        for failed_table in ("box_note", "plan_seen"):
+            with self.subTest(table=failed_table):
+                request = send_plan(self.batch)
+
+                def fail_writes():
+                    self.store.db.set_authorizer(
+                        lambda action, table, *_: (
+                            sqlite3.SQLITE_DENY
+                            if action == sqlite3.SQLITE_UPDATE and table == failed_table
+                            else sqlite3.SQLITE_OK
+                        )
+                    )
+
+                runner = StubRunner(self.store, before_call=fail_writes)
+                try:
+                    result = broker.Broker(self.store, runner=runner).run_plan(request)
+                finally:
+                    self.store.db.set_authorizer(None)
+                self.assertEqual(result["send"], m.SendOutcome.SEND_UNKNOWN)
+                self.assertTrue(m.parse_result(result)["ok"])
+                note = self.broker.box_note(request["body"]["delivery_id"])
+                assert note is not None
+                self.assertEqual(
+                    note.state,
+                    m.BoxNoteState.UNKNOWN,
+                )
+
+    def test_status_masks_old_ack_when_box_note_is_prepared_or_not_sent(self):
+        request = send_plan(self.batch)
+        self.broker.run_plan(request)
+        identifier = request["body"]["delivery_id"]
+        self.assertTrue(self.store.ack(identifier, request["body"]["ack_token"]))
+        for state in (m.BoxNoteState.PREPARED, m.BoxNoteState.NOT_SENT):
+            self.store.db.execute(
+                "UPDATE box_note SET state=? WHERE delivery_id=?", (state, identifier)
+            )
+            self.assertIsNone(
+                self.broker.status()["batches"][0]["box_notes"][0]["acked_rev"]
+            )
+
+    def test_task_scoped_sync_keeps_batchless_notices_for_selected_tasks(self):
+        wanted = self.store.notice(m.NoticeKind.BUDGET_EXHAUSTED, "task-1", "limit")
+        self.store.notice(m.NoticeKind.BUDGET_EXHAUSTED, "other-task", "limit")
+        for tasks in (["task-1"], ["task-1", "task-2"]):
+            result = self.broker.run_plan(
+                plan(m.PlanAction.SYNC, dict(tasks=tasks, cursor=None, plan_ids=[]))
+            )
+            payload = result["payload"]
+            assert payload is not None
+            self.assertEqual(
+                [item["id"] for item in payload["status"]["notices"]],
+                [wanted],
+            )
+
+    def test_sync_cursor_survives_acknowledging_previous_page(self):
+        expected = []
+        for index in range(12):
+            batch = self.store.open_or_attach(
+                asker(actor=f"page-{index}", turn=f"page-{index}"),
+                (question(f"page-{index}", "q" * 1800),),
+                native_call(
+                    f"page-{index}", actor=f"page-{index}", turn=f"page-{index}"
+                ),
+                classification(),
+            ).batch
+            self.store.put_registration(registration(batch))
+            expected.append(str(batch.id))
+        found, cursor = [], None
+        while True:
+            result = self.broker.run_plan(
+                plan(m.PlanAction.SYNC, dict(tasks=[], cursor=cursor, plan_ids=[]))
+            )
+            payload = result["payload"]
+            assert payload is not None
+            for entry in payload["registrations"]:
+                found.append(entry["batch_id"])
+                self.store.ack_registration(
+                    dict(
+                        batch_id=entry["batch_id"],
+                        batch_rev=entry["batch_rev"],
+                        content_digest=entry["content_digest"],
+                        progress_seq=0,
+                        floor=m.EscalationLevel.L1_CHEAP,
+                        owned=False,
+                    )
+                )
+            if not payload["more"]:
+                break
+            cursor = payload["cursor"]
+        self.assertEqual(found, expected)
 
     def test_ack_replays_and_cannot_lower_floor(self):
         entry = registration(self.batch)

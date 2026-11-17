@@ -178,6 +178,67 @@ class BrokerCliTests(unittest.TestCase):
         )
         self.assertFalse(self.route_log.exists())
 
+    def test_oversized_plans_exit_64_without_recording_or_routing(self) -> None:
+        request = send_plan(self.batch)
+        raw = m.canonical(request)
+        oversized_json = raw + b" " * (m.MAX_PLAN_JSON + 1 - len(raw))
+        cases = (
+            "A" * (m.MAX_PLAN_B64 + 1),
+            base64.urlsafe_b64encode(oversized_json).decode().rstrip("="),
+        )
+        for value in cases:
+            with self.subTest(size=len(value)):
+                result = self.cli("run-plan", "--b64", value)
+                self.assertEqual(result.returncode, 64, result.stderr)
+                self.assertEqual(
+                    self.store.db.execute("SELECT count(*) FROM plan_seen").fetchone()[
+                        0
+                    ],
+                    0,
+                )
+                self.assertFalse(self.route_log.exists())
+        # Both transport bounds normally coincide; isolate the decoded guard.
+        from unittest.mock import patch
+
+        with patch.object(m, "MAX_PLAN_B64", len(cases[1])):
+            with self.assertRaisesRegex(ValueError, "plan too large"):
+                broker.decode_plan(cases[1])
+
+    def test_non_ascii_ack_token_is_refused_without_traceback(self) -> None:
+        local = outbound(self.batch)
+        self.store.transition(str(self.batch.id), m.BatchState.ESCALATING)
+        self.store.resolve(resolution(self.batch), (local,))
+        result = self.cli(
+            "ack", "--outbound", str(local.id), "--token-stdin", input_text="tökén"
+        )
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_human_reconcile_cannot_reset_a_box_delivery(self) -> None:
+        request = send_plan(self.batch)
+        self.assertEqual(
+            self.cli("run-plan", "--b64", self.encode_plan(request)).returncode, 0
+        )
+        identifier = cast(m.SendBody, request["body"])["delivery_id"]
+        self.store.db.execute(
+            "UPDATE box_note SET state=? WHERE delivery_id=?",
+            (m.BoxNoteState.UNKNOWN, identifier),
+        )
+        result = self.cli(
+            "reconcile",
+            "--outbound",
+            identifier,
+            "--verdict",
+            m.ReconcileVerdict.NOT_DELIVERED,
+        )
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(
+            self.store.db.execute(
+                "SELECT state FROM box_note WHERE delivery_id=?", (identifier,)
+            ).fetchone()[0],
+            m.BoxNoteState.UNKNOWN,
+        )
+
     def test_status_task_and_batch_filters(self) -> None:
         second = self.store.open_or_attach(
             asker(actor="actor-2", turn="turn-2", cwd=str(REPO_ROOT), head="b" * 40),

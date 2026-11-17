@@ -19,7 +19,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from enum import StrEnum
+from enum import IntEnum, StrEnum
 from typing import Callable, Final, Generator, TypeVar, TypedDict, cast
 from uuid import UUID
 
@@ -67,6 +67,15 @@ class RegistrationsPage(TypedDict):
     cursor: str | None
 
 
+class PageTable(IntEnum):
+    REGISTRATION = 0
+    PROGRESS = 1
+    BATCH = 2
+    TAKEOVER = 3
+    NOTICE = 4
+    PLAN_SEEN = 5
+
+
 T = TypeVar("T")
 
 
@@ -75,14 +84,22 @@ class PageItem:
     append: Callable[[], None]
     pop: Callable[[], object]
     batch_id: str
+    key: tuple[PageTable, int]
 
 
 def page_items(
-    destination: list[T], source: list[T], identity: Callable[[T], str]
+    destination: list[T],
+    source: list[T],
+    identity: Callable[[T], str],
+    table: PageTable,
+    position: Callable[[T], int],
 ) -> list[PageItem]:
     return [
         PageItem(
-            lambda item=item: destination.append(item), destination.pop, identity(item)
+            lambda item=item: destination.append(item),
+            destination.pop,
+            identity(item),
+            (table, position(item)),
         )
         for item in source
     ]
@@ -225,6 +242,9 @@ class Broker:
                     (identifier,),
                 )
             ]
+            for note in notes:
+                if note["state"] not in ARRIVED:
+                    note["acked_rev"] = None
             result["batches"].append(
                 {
                     "batch_id": identifier,
@@ -452,6 +472,14 @@ class Broker:
             )
             result["send"] = m.SendOutcome.NOT_SENT_ROUTE_REFUSED
             for route in selected:
+                # Commit uncertainty before any external call. Even a broken
+                # database after typing must never leave PREPARED evidence.
+                self.store.finish_box_note(
+                    body["delivery_id"],
+                    body["attempt"],
+                    request["plan_id"],
+                    m.BoxNoteState.UNKNOWN,
+                )
                 result["route_used"] = route
                 dispatched = self.runner.send(
                     route, body, lambda: self.fence(request, body)
@@ -577,6 +605,7 @@ class Broker:
                         )
                     )
                 result["replayed"] = True
+                result["mac_now"] = self.clock().isoformat(timespec="microseconds")
                 return seal(result)
             with self.store.transaction():
                 self.store.db.execute(
@@ -592,9 +621,46 @@ class Broker:
             previous_fds = self.runner.pass_fds
             self.runner.pass_fds = (*previous_fds, guard)
             try:
-                return self._execute_plan(request, result)
+                try:
+                    return self._execute_plan(request, result)
+                except Exception:
+                    if result["route_used"] is None:
+                        raise
+                    # Includes result persistence and a failed recovery write.
+                    # The pre-route UNKNOWN note already fences later plans.
+                    self._send_unknown(request, result)
+                    result["mac_now"] = self.clock().isoformat(timespec="microseconds")
+                    return seal(result)
             finally:
                 self.runner.pass_fds = previous_fds
+
+    def _send_unknown(self, request: m.Plan, result: m.Result) -> None:
+        result["send"] = m.SendOutcome.SEND_UNKNOWN
+        body = cast(m.SendBody, request["body"])
+        try:
+            with self.worker_lock(body["batch_id"]) as acquired:
+                if acquired:
+                    self.store.finish_box_note(
+                        body["delivery_id"],
+                        body["attempt"],
+                        request["plan_id"],
+                        m.BoxNoteState.UNKNOWN,
+                    )
+                    with self.store.transaction():
+                        current = self.store.get_batch(body["batch_id"])
+                        if current.state in m.SEND_DELIVERABLE:
+                            self.store.transition(
+                                body["batch_id"], m.BatchState.BOX_ANSWERED
+                            )
+                    current = self.store.get_batch(body["batch_id"])
+                    result["mac_batch_rev"], result["mac_state"] = (
+                        current.rev,
+                        current.state,
+                    )
+        except Exception:
+            # A continuing storage fault must not hide the SEND_UNKNOWN result.
+            # PREPARED was committed as UNKNOWN before invoking the route.
+            pass
 
     def _execute_plan(self, request: m.Plan, result: m.Result) -> m.Result:
         try:
@@ -617,37 +683,15 @@ class Broker:
                 )
             elif action is m.PlanAction.SYNC:
                 result["payload"] = self.sync(cast(m.SyncBody, request["body"]), result)
-        except (ValueError, KeyError, OSError):
+        except Exception as error:
             if (
                 request["action"] is m.PlanAction.SEND
                 and result["route_used"] is not None
             ):
-                result["send"] = m.SendOutcome.SEND_UNKNOWN
-                body = cast(m.SendBody, request["body"])
-                with self.worker_lock(body["batch_id"]) as acquired:
-                    if acquired:
-                        self.store.finish_box_note(
-                            body["delivery_id"],
-                            body["attempt"],
-                            request["plan_id"],
-                            m.BoxNoteState.UNKNOWN,
-                        )
-                        try:
-                            current = self.store.get_batch(body["batch_id"])
-                            if current.state in m.SEND_DELIVERABLE:
-                                self.store.transition(
-                                    body["batch_id"], m.BatchState.BOX_ANSWERED
-                                )
-                        except ledger.IllegalTransition:
-                            # A hook may have just cancelled or ended it. The
-                            # accepted-text evidence remains UNKNOWN either way.
-                            pass
-                        current = self.store.get_batch(body["batch_id"])
-                        result["mac_batch_rev"], result["mac_state"] = (
-                            current.rev,
-                            current.state,
-                        )
+                self._send_unknown(request, result)
             else:
+                if not isinstance(error, (ValueError, KeyError, OSError)):
+                    raise
                 result["ok"], result["error_kind"] = False, m.RunPlanError.BAD_PLAN
                 result["send"], result["payload"], result["takeover_id"] = (
                     None,
@@ -699,8 +743,19 @@ class Broker:
             status["takeovers"] = [
                 item for item in status["takeovers"] if item["batch_id"] in allowed
             ]
+            batchless_notices = {
+                row[0]
+                for row in self.store.db.execute(
+                    "SELECT id FROM notice WHERE task IN ("
+                    + ",".join("?" for _ in body["tasks"])
+                    + ") AND batch IS NULL",
+                    body["tasks"],
+                )
+            }
             status["notices"] = [
-                item for item in status["notices"] if item["batch_id"] in allowed
+                item
+                for item in status["notices"]
+                if item["batch_id"] in allowed or item["id"] in batchless_notices
             ]
         payload: m.SyncPayload = {
             "registrations": [],
@@ -717,62 +772,114 @@ class Broker:
             "cursor": None,
             "oversized": [],
         }
-        # Whole items page in deterministic table order. The cursor is a
-        # nonnegative offset; scans are read-only and never acknowledge rows.
+
+        # Keyset cursors survive ACKs removing due rows between pages.
+        def rowid(
+            table: PageTable,
+            identifier: str,
+            rev: int | None = None,
+            seq: int | None = None,
+        ) -> int:
+            if table is PageTable.REGISTRATION:
+                query, args = (
+                    "SELECT rowid FROM registration WHERE batch=? AND batch_rev=?",
+                    (identifier, rev),
+                )
+            elif table is PageTable.PROGRESS:
+                query, args = (
+                    "SELECT rowid FROM progress WHERE batch=? AND batch_rev=? AND seq=?",
+                    (identifier, rev, seq),
+                )
+            else:
+                name = {
+                    PageTable.BATCH: "batch",
+                    PageTable.TAKEOVER: "takeover",
+                    PageTable.NOTICE: "notice",
+                    PageTable.PLAN_SEEN: "plan_seen",
+                }[table]
+                column = "plan_id" if table is PageTable.PLAN_SEEN else "id"
+                query, args = (
+                    f"SELECT rowid FROM {name} WHERE {column}=?",
+                    (identifier,),
+                )
+            return self.store.db.execute(query, args).fetchone()[0]
+
         items = page_items(
             payload["registrations"],
             list(self.store.due_registrations()),
             lambda item: item["batch_id"],
+            PageTable.REGISTRATION,
+            lambda item: rowid(
+                PageTable.REGISTRATION, item["batch_id"], item["batch_rev"]
+            ),
         )
         items += page_items(
             payload["progress"],
             list(self.store.due_progress()),
             lambda item: item["batch_id"],
+            PageTable.PROGRESS,
+            lambda item: rowid(
+                PageTable.PROGRESS, item["batch_id"], item["batch_rev"], item["seq"]
+            ),
         )
         if include_status:
             items += page_items(
                 payload["status"]["batches"],
                 status["batches"],
                 lambda item: item["batch_id"],
+                PageTable.BATCH,
+                lambda item: rowid(PageTable.BATCH, item["batch_id"]),
             )
             items += page_items(
                 payload["status"]["takeovers"],
                 status["takeovers"],
                 lambda item: item["batch_id"],
+                PageTable.TAKEOVER,
+                lambda item: rowid(PageTable.TAKEOVER, item["id"]),
             )
             items += page_items(
                 payload["status"]["notices"],
                 status["notices"],
                 lambda item: item["batch_id"] or item["id"],
+                PageTable.NOTICE,
+                lambda item: rowid(PageTable.NOTICE, item["id"]),
             )
             items += page_items(
                 payload["plan_results"],
                 self.seen_results(body["plan_ids"]),
                 lambda item: item["plan_id"],
+                PageTable.PLAN_SEEN,
+                lambda item: rowid(PageTable.PLAN_SEEN, item["plan_id"]),
             )
-        cursor = int(body["cursor"]) if body["cursor"] is not None else 0
-        if cursor < 0 or cursor > len(items):
-            raise ValueError("invalid cursor")
+        cursor = None
+        if body["cursor"] is not None:
+            kind, position = body["cursor"].split(":")
+            cursor = (PageTable(int(kind)), int(position))
+            if cursor[1] < 1:
+                raise ValueError("invalid cursor")
+        items.sort(key=lambda item: item.key)
+        items = [item for item in items if cursor is None or item.key > cursor]
         count = 0
-        for index in range(cursor, len(items)):
-            item = items[index]
+        previous = body["cursor"]
+        for index, item in enumerate(items):
             item.append()
             payload["more"], payload["cursor"] = (
                 index + 1 < len(items),
-                str(index + 1) if index + 1 < len(items) else None,
+                f"{item.key[0]}:{item.key[1]}" if index + 1 < len(items) else None,
             )
             candidate = result.copy()
             candidate["payload"] = payload
             if len(encode(seal(candidate))) > m.MAX_RESULT_B64:
                 if count:
                     item.pop()
-                    payload["more"], payload["cursor"] = True, str(index)
+                    payload["more"], payload["cursor"] = True, previous
                     break
                 if len(encode(seal(candidate))) > m.MAX_SYNC_SINGLE_B64:
                     item.pop()
                     payload["oversized"].append(item.batch_id)
                 break
             count += 1
+            previous = f"{item.key[0]}:{item.key[1]}"
         return payload
 
     def registrations(self, cursor: str | None = None) -> RegistrationsPage:
@@ -919,9 +1026,7 @@ def main(argv: list[str] | None = None) -> int:
                 store.clear_takeover(args.takeover, args.by)
             elif command is Command.RECONCILE:
                 broker.reconcile(
-                    m.ReconcileTargetKind.BOX_DELIVERY
-                    if broker.box_note(args.outbound)
-                    else m.ReconcileTargetKind.LOCAL_OUTBOUND,
+                    m.ReconcileTargetKind.LOCAL_OUTBOUND,
                     args.outbound,
                     m.ReconcileVerdict(args.verdict),
                 )
