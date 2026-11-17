@@ -91,7 +91,12 @@ def answer(
 
 
 AFFIRMATIVE = model.Classification(
-    model.Category.REPO_CONVENTION, True, (), (), model.EscalationLevel.L1_CHEAP
+    model.Category.REPO_CONVENTION,
+    True,
+    (),
+    (),
+    model.EscalationLevel.L1_CHEAP,
+    classified=True,
 )
 
 
