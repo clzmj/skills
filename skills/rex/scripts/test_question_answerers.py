@@ -15,7 +15,7 @@ import tempfile
 import tomllib
 import re
 import subprocess
-import sys
+import platform
 import pwd
 from unittest.mock import patch
 import question_model as m
@@ -246,7 +246,7 @@ class InvocationTests(unittest.TestCase):
         )
         with (
             patch.dict(os.environ, {"ANTHROPIC_API_KEY": "unused-api-key"}, clear=True),
-            patch.object(sys, "platform", "darwin"),
+            patch.object(platform, "system", return_value="Darwin"),
             patch.object(pwd, "getpwuid") as account,
             patch.object(a.subprocess, "run") as security,
         ):
@@ -291,7 +291,7 @@ class InvocationTests(unittest.TestCase):
                 patch.dict(
                     os.environ, {"ANTHROPIC_API_KEY": "unused-api-key"}, clear=True
                 ),
-                patch.object(sys, "platform", "darwin"),
+                patch.object(platform, "system", return_value="Darwin"),
                 patch.object(a.subprocess, "run") as security,
                 patch.object(a.subprocess, "Popen") as launch,
             ):
@@ -312,7 +312,7 @@ class InvocationTests(unittest.TestCase):
     def test_non_macos_without_explicit_oauth_is_unavailable(self):
         with (
             patch.dict(os.environ, {}, clear=True),
-            patch.object(sys, "platform", "linux"),
+            patch.object(platform, "system", return_value="Linux"),
             patch.object(a.subprocess, "run") as security,
         ):
             result = self.runner.invoke(

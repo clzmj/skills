@@ -15,12 +15,12 @@ import fcntl
 import json
 import math
 import os
+import platform
 import pwd
 import re
 from pathlib import Path
 import signal
 import subprocess
-import sys
 import time
 import tempfile
 import tomllib
@@ -452,7 +452,7 @@ def answerer_environment(kind: m.AnswererKind) -> dict[str, str] | None:
     }
     if kind != m.AnswererKind.CLAUDE_PRINT or env.get("CLAUDE_CODE_OAUTH_TOKEN"):
         return env
-    if sys.platform != "darwin":
+    if platform.system() != "Darwin":
         return None
     try:
         result = subprocess.run(

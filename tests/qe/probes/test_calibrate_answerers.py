@@ -5,6 +5,7 @@ from io import StringIO
 import os
 from pathlib import Path
 import sys
+import platform
 import subprocess
 import tempfile
 import unittest
@@ -69,7 +70,7 @@ class CalibrationGuards(unittest.TestCase):
                         ],
                     ),
                     patch.dict(os.environ, {}, clear=True),
-                    patch.object(sys, "platform", "darwin"),
+                    patch.object(platform, "system", return_value="Darwin"),
                     patch.object(
                         calibration.subprocess,
                         "run",

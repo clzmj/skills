@@ -2,7 +2,7 @@
 
 import os
 import subprocess
-import sys
+import platform
 from unittest.mock import patch
 
 import question_guard as guard
@@ -113,7 +113,7 @@ class WorkerLadder(ClassificationAdmission):
     def test_missing_keychain_escalates_without_launching_answerers(self):
         with (
             patch.dict(os.environ, {m.FLAG_ENV: "1"}, clear=True),
-            patch.object(sys, "platform", "darwin"),
+            patch.object(platform, "system", return_value="Darwin"),
             patch(
                 "question_answerers.subprocess.run",
                 return_value=subprocess.CompletedProcess(
