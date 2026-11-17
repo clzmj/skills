@@ -20,6 +20,7 @@ import question_hooks as hooks
 import question_ledger as ledger
 import question_broker as broker
 import question_model as m
+from test_question_ledger import outbound
 
 
 def state():
@@ -93,6 +94,109 @@ class HookFixture(unittest.TestCase):
 
 
 class QuestionHooks(HookFixture):
+    def test_main_skips_locked_batch_and_launches_only_one_worker(self):
+        self.detect()
+        self.detect(turn_id="second", tool_use_id="call-2")
+        self.detect(turn_id="third", tool_use_id="call-3")
+        batches = self.store.batches()
+        for batch in batches:
+            self.store.put_outbound(outbound(batch))
+        raw = {"hook_event_name": "Stop", "session_id": "fixture"}
+
+        def launch_unlocked(_command, batch):
+            with broker.Broker(self.store).worker_lock(batch, wait=0) as lock:
+                self.assertIsNotNone(lock)
+
+        with (
+            broker.Broker(self.store).worker_lock(str(batches[0].id), wait=0) as locked,
+            patch.object(callback.rex, "STATE", self.directory),
+            patch.object(hooks, "handle", return_value={}),
+            patch.object(hooks, "launch", side_effect=launch_unlocked) as launch,
+            patch.object(
+                sys, "argv", ["question_hooks.py", "hook", "--agent", "codex"]
+            ),
+            patch.object(sys, "stdin", io.StringIO(json.dumps(raw))),
+            patch.object(sys, "stdout", io.StringIO()),
+        ):
+            self.assertIsNotNone(locked)
+            self.assertEqual(hooks.main(), 0)
+        launch.assert_called_once_with(broker.Command.WORKER, str(batches[1].id))
+
+    def test_main_coalesces_detection_and_pending_recovery(self):
+        self.detect()
+        (batch,) = self.store.batches()
+        self.store.put_outbound(outbound(batch))
+        raw = {
+            "hook_event_name": "PreToolUse",
+            "session_id": "fixture",
+            "turn_id": "turn",
+            "tool_name": "request_user_input",
+            "tool_use_id": "call-1",
+            "tool_input": {
+                "questions": [
+                    {
+                        "id": "one",
+                        "question": "Which indentation?",
+                        "options": [{"label": "Tabs"}, {"label": "Spaces"}],
+                    }
+                ]
+            },
+            "cwd": str(self.directory),
+        }
+        with (
+            patch.object(callback, "session_state", return_value=state()),
+            patch.object(
+                callback,
+                "session_lineage",
+                return_value={
+                    "role": callback.Role.AGENT,
+                    "root_session_id": "fixture",
+                },
+            ),
+            patch.object(callback.rex, "STATE", self.directory),
+            patch.object(hooks, "launch") as launch,
+            patch.object(
+                sys, "argv", ["question_hooks.py", "hook", "--agent", "codex"]
+            ),
+            patch.object(sys, "stdin", io.StringIO(json.dumps(raw))),
+            patch.object(sys, "stdout", io.StringIO()),
+        ):
+            self.assertEqual(hooks.main(), 0)
+        workers = [
+            call
+            for call in launch.call_args_list
+            if call.args[0] == broker.Command.WORKER
+        ]
+        self.assertEqual(len(workers), 1)
+        self.assertEqual(workers[0].args[1], str(batch.id))
+
+    def test_main_logs_recovery_failure_and_preserves_inline_output(self):
+        inline = {
+            "hookSpecificOutput": {
+                "hookEventName": "PermissionRequest",
+                "decision": {"behavior": "allow"},
+            }
+        }
+        with (
+            patch.object(callback.rex, "STATE", self.directory),
+            patch.object(hooks, "handle", return_value=inline),
+            patch.object(
+                m, "parse_hook_input", side_effect=ValueError("private details")
+            ),
+            patch.object(callback, "receipt") as receipt,
+            patch.object(
+                sys, "argv", ["question_hooks.py", "hook", "--agent", "claude"]
+            ),
+            patch.object(sys, "stdin", io.StringIO("{}")),
+            patch.object(sys, "stdout", io.StringIO()) as stdout,
+            self.assertLogs(hooks.__name__, level="ERROR") as logs,
+        ):
+            self.assertEqual(hooks.main(), 0)
+        self.assertEqual(json.loads(stdout.getvalue()), inline)
+        receipt.assert_called_once_with(callback.Outcome.ENQUEUE_FAILED)
+        self.assertIn("recovery", logs.output[0].lower())
+        self.assertNotIn("private details", logs.output[0])
+
     def test_claude_second_call_attaches_to_blocked_batch_without_reblocking(self):
         raw = dict(
             hook_event_name="PreToolUse",
