@@ -13,6 +13,7 @@ unproven; these tests use the recorded prompt payload only for lifecycle input.
 from __future__ import annotations
 
 from datetime import timedelta
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -47,6 +48,13 @@ def recorded_prompt(name: str) -> dict[str, Any]:
 
 class FixtureReplay(unittest.TestCase):
     def setUp(self) -> None:
+        disabled = {
+            key: replace(value, enabled=False)
+            for key, value in broker.answerers.load_models().items()
+        }
+        models = patch.object(broker.answerers, "load_models", return_value=disabled)
+        models.start()
+        self.addCleanup(models.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)

@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 import tempfile
 import unittest
+from dataclasses import replace
 from unittest.mock import patch
 
 import grokbot_callback as callback
@@ -46,6 +47,15 @@ class HookFixture(unittest.TestCase):
         self.env = patch.dict(os.environ, {m.FLAG_ENV: "1"}, clear=True)
         self.env.start()
         self.addCleanup(self.env.stop)
+        # These inherited delivery tests exercise the no-answerer phase. Never
+        # let later production capability calibration turn them into paid calls.
+        disabled = {
+            key: replace(value, enabled=False)
+            for key, value in broker.answerers.load_models().items()
+        }
+        models = patch.object(broker.answerers, "load_models", return_value=disabled)
+        models.start()
+        self.addCleanup(models.stop)
         self.store = ledger.Ledger(self.directory / m.LEDGER_FILE)
         self.addCleanup(self.store.close)
 

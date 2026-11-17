@@ -253,6 +253,7 @@ class Registration(hook_fixtures.HookFixture):
         ]
         self.detect(tool_input={"questions": questions})
         (batch,) = self.store.batches()
+        broker.Broker(self.store).worker(str(batch.id), spool_digest=False)
         (entry,) = self.store.due_registrations()
         self.assertLessEqual(len(m.canonical(entry)), m.REGISTER_ENTRY_MAX)
         self.assertEqual(entry["batch_id"], str(batch.id))

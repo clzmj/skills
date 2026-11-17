@@ -237,6 +237,7 @@ def derive_floor(
     secret_present: bool = False,
     policy_available: bool = True,
     rules: Sequence[GuardRule] | None = None,
+    require_classification: bool = True,
 ) -> Classification:
     """Compute a monotone batch floor, retaining retired question policy."""
     hits: list[GuardHit] = []
@@ -295,10 +296,13 @@ def derive_floor(
         floor = EscalationLevel.L4_OWNER
     elif hits:
         floor = max(floor, EscalationLevel.L3_PRINCIPAL)
-    if classification is None or (
-        not classification.classified
-        or not classification.delegable
-        or classification.sensitive_topics
+    if require_classification and (
+        classification is None
+        or (
+            not classification.classified
+            or not classification.delegable
+            or classification.sensitive_topics
+        )
     ):
         floor = max(floor, EscalationLevel.L3_PRINCIPAL)
     return Classification(
@@ -308,6 +312,31 @@ def derive_floor(
         tuple(dict.fromkeys(hits)),
         floor,
         classified=classification.classified if classification else False,
+    )
+
+
+def assess_guard(
+    questions: Sequence[Question],
+    *,
+    brief: BriefEscalation | None = None,
+    cwd: str = "",
+    remote: str = "",
+    previous_floor: EscalationLevel = EscalationLevel.L0_SELF,
+    secret_present: bool = False,
+    policy_available: bool = True,
+    rules: Sequence[GuardRule] | None = None,
+) -> Classification:
+    """Deterministic pre-classification policy, never proof of local admission."""
+    return derive_floor(
+        questions,
+        brief=brief,
+        cwd=cwd,
+        remote=remote,
+        previous_floor=previous_floor,
+        secret_present=secret_present,
+        policy_available=policy_available,
+        rules=rules,
+        require_classification=False,
     )
 
 
