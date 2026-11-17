@@ -109,6 +109,18 @@ is `~/.local/bin/clzmj-skills`. Ensure `~/.local/bin` is on `PATH`. Project sett
 live in `.clzmj-skills/install.json`; invoke
 `.clzmj-skills/bin/clzmj-skills` from that project.
 
+- Global installs and plugin inventory run from home, ignoring saved `projectDir`.
+- Project scope requires an existing directory; missing-directory errors name it.
+- Unattended `--core-only` keeps saved favorites and pack selections. Interactive
+  pages start from saved choices: Enter keeps them; clearing saves empty choices.
+  Core-only cannot be combined with `--favorites`, `--all-favorites`, or `--skills`.
+- Retry hints include explicit attempted selections. For interactive core-only,
+  they use the favorites confirmed on the page, including any changes or clears.
+  Updates ignore empty choices recorded after a first failure.
+- Successful runs save choices after launcher registration. Failed or cancelled
+  runs retain prior choices and record only newly created or already-owned paths;
+  pre-existing unowned paths stay unowned.
+
 ```sh
 clzmj-skills install --yes --agents codex --core-only
 clzmj-skills update --yes

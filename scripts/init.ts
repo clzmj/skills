@@ -86,6 +86,9 @@ export function parseOptions(args: string[], detected: Agent[] = [], cwd = proce
       }
     } else throw new Error(`Unknown argument: ${flag}`);
   }
+  const flags = new Set(args.filter(arg => arg.startsWith("--")));
+  const conflicting = ["--favorites", "--all-favorites", "--skills"].find(flag => flags.has(flag));
+  if (flags.has("--core-only") && conflicting) throw new Error(`--core-only cannot be combined with ${conflicting}`);
   if (options.scope === InstallScope.Project && !args.includes("--project-dir") && options.yes) throw new Error("Unattended project installs require --project-dir /absolute/directory");
   return options;
 }
@@ -293,10 +296,14 @@ export async function initialize(manifest: unknown, initial: Options, runtime: R
   const favorites = parseManifest(manifest);
   let options = { ...initial, packSkills: { ...initial.packSkills } };
   const saved = runtime.load?.(settingsPath(options));
-  if (options.update && saved) {
+  if (options.update && saved?.options.agents?.length) {
     options = { ...saved.options, packSkills: { ...saved.options.packSkills }, dryRun: initial.dryRun, yes: initial.yes, update: true, help: initial.help, provided: initial.provided };
     const flags: [string[], keyof Options][] = [[["--agents"], "agents"], [["--core"], "core"], [["--core-only", "--all-favorites", "--favorites"], "favorites"], [["--skills"], "packSkills"], [["--hooks", "--no-hooks"], "hooks"], [["--scope"], "scope"], [["--project-dir"], "projectDir"], [["--method"], "method"]];
     for (const [names, key] of flags) if (names.some(flag => initial.provided?.includes(flag))) (options as any)[key] = key === "packSkills" ? { ...saved.options.packSkills, ...initial.packSkills } : initial[key];
+  }
+  if (initial.provided?.includes("--core-only") && !options.yes && !options.dryRun && saved) {
+    options.favorites = saved.options.favorites?.slice();
+    options.packSkills = { ...saved.options.packSkills };
   }
   const exists = runtime.exists ?? pathExists;
   let plan: ReturnType<typeof buildPlan>;
@@ -310,7 +317,7 @@ export async function initialize(manifest: unknown, initial: Options, runtime: R
     options = await chooseOptions(options, favorites, runtime, resume, catalogs);
     interactiveSelections = { ...interactiveSelections, ...options.packSkills };
     if (!options.agents.length) throw new Error("No agents selected/detected. Pass --agents codex and/or claude-code.");
-    if (options.scope === InstallScope.Project && !statSync(options.projectDir).isDirectory()) throw new Error("Project directory must exist");
+    if (options.scope === InstallScope.Project && !statSync(options.projectDir, { throwIfNoEntry: false })?.isDirectory()) throw new Error(`Project directory must exist and be a directory: ${options.projectDir}`);
     if (options.favorites?.some(source => !favorites.some(favorite => favorite.source === source))) throw new Error("Unknown favorite source; use an owner/repo listed in favorites.json");
     selected = favorites.filter(favorite => options.favorites === undefined || options.favorites.includes(favorite.source)).map(favorite => ({ ...favorite }));
     for (const source of Object.keys(options.packSkills)) if (!selected.some(favorite => favorite.source === source && favorite.type === "skills")) {
@@ -336,8 +343,8 @@ export async function initialize(manifest: unknown, initial: Options, runtime: R
     states = {};
     if (!options.dryRun && options.scope === InstallScope.Global && selected.some(favorite => favorite.type === "plugin")) for (const agent of options.agents) {
       states[agent] = await activity(runtime, `Checking ${agent} native plugins`, async () => parseState(agent,
-        JSON.parse(await runtime.run([cli(agent), "plugin", "list", "--json"], true, options.projectDir)),
-        JSON.parse(await runtime.run([cli(agent), "plugin", "marketplace", "list", "--json"], true, options.projectDir))));
+        JSON.parse(await runtime.run([cli(agent), "plugin", "list", "--json"], true, homedir())),
+        JSON.parse(await runtime.run([cli(agent), "plugin", "marketplace", "list", "--json"], true, homedir()))));
     }
     plan = buildPlan(selected, options, states, coreSource, exists);
     const summary = [
@@ -376,33 +383,46 @@ export async function initialize(manifest: unknown, initial: Options, runtime: R
   if (runtime.prepare) { coreSource = await activity(runtime, "Preparing verified release", () => runtime.prepare!(options, coreSource)); plan = buildPlan(selected!, options, states!, coreSource, exists); }
   const scopedSaved = runtime.load?.(settingsPath(options));
   const record: InstallRecord = { version: 1, options, ownedPaths: { ...(scopedSaved?.ownedPaths ?? {}) } };
+  const empty: Options = { agents: [], core: [], favorites: [], packSkills: {}, projectDir: "", scope: InstallScope.Global, method: "symlink", hooks: false, dryRun: false, yes: false, update: false, help: false };
+  const saveOwnership = () => runtime.save?.(settingsPath(options), { ...record, options: scopedSaved?.options ?? empty });
   let completed = 0, failed = 0;
   const changed = new Set<string>(), errors: string[] = [];
-  for (const step of plan!.steps) {
-    const fresh = step.paths.filter(path => !exists(path));
-    const previouslyOwned = step.paths.filter(path => record.ownedPaths[path]);
+  const installStep = async (step: Step) => {
+    const owned = step.paths.filter(path => !exists(path) || record.ownedPaths[path]);
     if (!runtime.ui) runtime.log(step.label);
     try {
       await activity(runtime, step.label, async () => {
         if (step.link) { if (!runtime.link) throw new Error("Native symlink operation unavailable"); runtime.link(step.link.source, step.link.destination); }
-        else await runtime.run(step.command, false, options.projectDir);
+        else await runtime.run(step.command, false, options.scope === InstallScope.Global ? homedir() : options.projectDir);
       }, { completed, total: plan!.steps.length, failed });
       completed++;
       for (const path of step.paths) if (exists(path)) changed.add(path);
-      for (const path of [...fresh, ...previouslyOwned]) if (exists(path) && runtime.fingerprint) record.ownedPaths[path] = runtime.fingerprint(path);
     } catch (error) {
-      if (error instanceof TerminalCancelled) { runtime.save?.(settingsPath(options), record); throw error; }
+      if (error instanceof TerminalCancelled) throw error;
       failed++;
       const details = [`Failed ${step.label}: ${error instanceof Error ? error.message : String(error)}`];
-      if (!step.link) details.push(`Retry from ${options.projectDir}: ${displayCommand(step.command)}`);
-      details.push(`Installer retry (explicitly updates all saved ordinary selections): ${displayCommand(["bun", resolve(coreSource === CORE_SOURCE ? root : coreSource, "scripts/init.ts"), "--update", "--yes", "--scope", options.scope, ...(options.scope === InstallScope.Project ? ["--project-dir", options.projectDir] : [])])}`);
+      if (!step.link) details.push(`Retry from ${options.scope === InstallScope.Global ? homedir() : options.projectDir}: ${displayCommand(step.command)}`);
+      const retry = ["bun", resolve(coreSource === CORE_SOURCE ? root : coreSource, "scripts/init.ts"), "--update", "--yes", "--scope", options.scope, ...(options.scope === InstallScope.Project ? ["--project-dir", options.projectDir] : []), "--agents", ...options.agents, "--core", ...(options.core.length ? options.core : ["none"]), "--method", options.method, options.hooks ? "--hooks" : "--no-hooks"];
+      const packs = selected!.filter(favorite => favorite.type === "plugin" || favorite.skills.length);
+      retry.push(...(packs.length ? ["--favorites", ...packs.map(favorite => favorite.source)] : ["--core-only"]));
+      for (const favorite of packs) if (favorite.type === "skills") retry.push("--skills", `${favorite.source}:${favorite.skills.join(",")}`);
+      details.push(`Installer retry: ${displayCommand(retry)}`);
       errors.push(...details); if (!runtime.ui) details.forEach(runtime.log);
+    } finally {
+      for (const path of owned) if (exists(path) && runtime.fingerprint) record.ownedPaths[path] = runtime.fingerprint(path);
     }
-    runtime.save?.(settingsPath(options), record);
     runtime.ui?.progress({ completed, total: plan!.steps.length, failed, label: completed + failed === plan!.steps.length ? "Finished" : "Preparing next operation", elapsedMs: 0 });
+  };
+  try {
+    for (const step of plan!.steps) await installStep(step);
+    if (!failed) await runtime.finish?.(options, coreSource);
+  } catch (error) { saveOwnership(); throw error; }
+  if (failed) saveOwnership();
+  else {
+    if (initial.provided?.includes("--core-only") && options.yes && !options.favorites?.length && scopedSaved)
+      record.options = { ...options, favorites: scopedSaved.options.favorites, packSkills: { ...scopedSaved.options.packSkills } };
+    runtime.save?.(settingsPath(options), record);
   }
-  runtime.save?.(settingsPath(options), record);
-  if (!failed) await runtime.finish?.(options, coreSource);
   const result = [`Summary: ${completed} commands completed; ${plan!.skipped.length} skipped; ${failed} failed.`, ...[...changed].map(path => `Changed path: ${path}`)];
   if (options.hooks && options.scope === InstallScope.Global) result.push("Hook settings may have changed; review each host's /hooks menu. Uninstall retains shared host hook settings.");
   if (!runtime.ui) result.forEach(runtime.log);

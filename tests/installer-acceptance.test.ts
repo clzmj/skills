@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { buildRelease } from "../scripts/build-release";
 import { installer } from "../distribution/installer";
+import { parseOptions, type InstallRecord } from "../scripts/init";
 
 // Boundary acceptance: real CLI/launcher subprocesses, disposable HOME, and a
 // fake Skills CLI which records arguments and makes only fixture skill trees.
@@ -97,6 +98,131 @@ function fixture(name: string) {
   return { base, home, project, bin, env, run, commands, fetchLog };
 }
 
+function seedSettings(f: ReturnType<typeof fixture>, projectDir = f.project) {
+  const config = join(f.home, ".config/clzmj-skills/install.json");
+  const record: InstallRecord = { version: 1, options: parseOptions(["--agents", "codex", "--favorites", "UditAkhourii/adhd", "--skills", "UditAkhourii/adhd:adhd"], [], projectDir), ownedPaths: { [join(f.home, "previous")]: "previous-fingerprint" } };
+  mkdirSync(join(f.home, ".config/clzmj-skills"), { recursive: true });
+  writeFileSync(config, JSON.stringify(record));
+  return { config, record };
+}
+
+test("global update ignores a missing saved project directory", () => {
+  const f = fixture("stale-global-project");
+  seedSettings(f, join(f.base, "missing"));
+  const result = f.run([process.execPath, join(root, "scripts/init.ts"), "--yes", "--update", "--scope", "global"]);
+  expect(result.stderr.toString()).toBe("");
+  expect(result.exitCode).toBe(0);
+  expect(f.commands().length).toBeGreaterThan(0);
+  expect(f.commands().every(command => command.cwd === f.home)).toBe(true);
+});
+
+for (const update of [false, true]) test(`core-only preserves saved favorite selections (update=${update})`, () => {
+  const f = fixture("core-only-" + update), { config, record } = seedSettings(f);
+  const result = f.run([process.execPath, join(root, "scripts/init.ts"), "--yes", "--agents", "codex", "--core-only", ...(update ? ["--update"] : [])]);
+  expect(result.stderr.toString()).toBe("");
+  expect(result.exitCode).toBe(0);
+  const restored: InstallRecord = JSON.parse(readFileSync(config, "utf8"));
+  expect(restored.options.favorites).toEqual(record.options.favorites);
+  expect(restored.options.packSkills).toEqual(record.options.packSkills);
+  expect(f.commands().every(command => command.args[3] === realpathSync(root))).toBe(true);
+});
+
+for (const flags of [["--core-only", "--favorites", "UditAkhourii/adhd"], ["--favorites", "UditAkhourii/adhd", "--core-only"], ["--core-only", "--all-favorites"], ["--all-favorites", "--core-only"], ["--core-only", "--skills", "UditAkhourii/adhd:adhd"], ["--skills", "UditAkhourii/adhd:adhd", "--core-only"]]) test(`rejects conflicting core-only selections: ${flags.join(" ")}`, () => {
+  const f = fixture("conflict-" + flags[0]), { config } = seedSettings(f), before = readFileSync(config, "utf8");
+  const result = f.run([process.execPath, join(root, "scripts/init.ts"), "--yes", "--agents", "codex", ...flags]);
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr.toString()).toContain("--core-only cannot be combined with " + (flags.includes("--skills") ? "--skills" : flags.includes("--all-favorites") ? "--all-favorites" : "--favorites"));
+  expect(readFileSync(config, "utf8")).toBe(before);
+  expect(f.commands()).toEqual([]);
+});
+
+for (const update of [false, true]) test(`unattended core-only tolerates old settings without agents or favorites (update=${update})`, () => {
+  const f = fixture("old-settings-" + update);
+  const { config, record } = seedSettings(f);
+  const { agents: _agents, favorites: _favorites, ...oldOptions } = record.options;
+  writeFileSync(config, JSON.stringify({ ...record, options: oldOptions }));
+  const result = f.run([process.execPath, join(root, "scripts/init.ts"), "--yes", "--core-only", "--agents", "codex", ...(update ? ["--update"] : [])]);
+  expect(result.stderr.toString()).toBe("");
+  expect(result.exitCode).toBe(0);
+  const restored: InstallRecord = JSON.parse(readFileSync(config, "utf8"));
+  expect(restored.options.favorites).toBeUndefined();
+  expect(restored.options.packSkills).toEqual(oldOptions.packSkills);
+  expect(restored.ownedPaths[join(f.home, "previous")]).toBe("previous-fingerprint");
+  expect(f.commands().length).toBeGreaterThan(0);
+});
+
+for (const coreOnly of [false, true]) test(`partial failure records ownership and keeps every selection (core-only=${coreOnly})`, () => {
+  const f = fixture("failed-settings-" + coreOnly), { config, record } = seedSettings(f);
+  const result = f.run([process.execPath, join(root, "scripts/init.ts"), "--yes", "--agents", "codex", "claude-code", "--method", "copy", ...(coreOnly ? ["--core-only"] : [])], { FIXTURE_FAIL_AGENT: "claude-code" });
+  expect(result.exitCode).toBe(1);
+  expect(f.commands()).toHaveLength(2);
+  const restored: InstallRecord = JSON.parse(readFileSync(config, "utf8"));
+  expect(restored.options).toEqual(record.options);
+  expect(restored.ownedPaths[join(f.home, "previous")]).toBe("previous-fingerprint");
+  for (const path of [".agents/skills/rex", ".agents/skills/python-tooling", ".claude/skills/rex"])
+    expect(restored.ownedPaths[join(f.home, path)]).toMatch(/^[a-f0-9]{64}$/);
+  expect(restored.ownedPaths[join(f.home, ".claude/skills/python-tooling")]).toBeUndefined();
+});
+
+test("first failed install records ownership with empty selections", () => {
+  const f = fixture("first-failure");
+  const result = f.run([process.execPath, join(root, "scripts/init.ts"), "--yes", "--agents", "codex", "--core-only"], { FIXTURE_FAIL_AGENT: "codex" });
+  expect(result.exitCode).toBe(1);
+  const record: InstallRecord = JSON.parse(readFileSync(join(f.home, ".config/clzmj-skills/install.json"), "utf8"));
+  expect(record.options).toMatchObject({ agents: [], core: [], favorites: [], packSkills: {}, projectDir: "", hooks: false });
+  expect(record.ownedPaths[join(f.home, ".agents/skills/rex")]).toMatch(/^[a-f0-9]{64}$/);
+});
+
+test("failed update never claims an existing unowned path", () => {
+  const f = fixture("failed-update-unowned"), { config, record } = seedSettings(f);
+  const path = join(f.home, ".agents/skills/rex");
+  mkdirSync(path, { recursive: true });
+  writeFileSync(join(path, "SKILL.md"), "old local version\n");
+  const result = f.run([process.execPath, join(root, "scripts/init.ts"), "--yes", "--update", "--core-only", "--agents", "codex"], { FIXTURE_FAIL_AGENT: "codex" });
+  expect(result.exitCode).toBe(1);
+  expect(readFileSync(join(path, "SKILL.md"), "utf8")).toBe("fixture rex\n");
+  const restored: InstallRecord = JSON.parse(readFileSync(config, "utf8"));
+  expect(restored.options).toEqual(record.options);
+  expect(restored.ownedPaths[path]).toBeUndefined();
+});
+
+for (const scope of ["global", "project"]) test(`printed retry after first ${scope} failure succeeds`, () => {
+  const f = fixture("retry-hint-" + scope);
+  const failed = f.run([process.execPath, join(root, "scripts/init.ts"), "--yes", "--scope", scope, "--project-dir", f.project, "--agents", "codex", "--core", "rex", "--core-only", "--method", "copy"], { FIXTURE_FAIL_AGENT: "codex" });
+  expect(failed.exitCode).toBe(1);
+  const hint = failed.stdout.toString().split("\n").find(line => line.startsWith("Installer retry"));
+  expect(hint).toBeDefined();
+  const retried = f.run(["/bin/sh", "-c", hint!.slice(hint!.indexOf(": ") + 2)]);
+  expect(retried.stderr.toString()).toBe("");
+  expect(retried.exitCode).toBe(0);
+  expect(f.commands()).toHaveLength(2);
+  for (const command of f.commands()) {
+    expect(command.args.slice(command.args.indexOf("--skill") + 1, command.args.indexOf("-g") > -1 ? command.args.indexOf("-g") : command.args.indexOf("-a"))).toEqual(["rex"]);
+    expect(command.args.includes("--copy")).toBe(true);
+  }
+});
+
+test("project update reports a missing saved project directory", () => {
+  const f = fixture("missing-saved-project");
+  const missing = join(f.base, "deleted-project");
+  const { config, record } = seedSettings(f, missing);
+  record.options.scope = "project";
+  writeFileSync(config, JSON.stringify(record));
+  const result = f.run([process.execPath, join(root, "scripts/init.ts"), "--yes", "--update"]);
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr.toString()).toContain("Project directory must exist and be a directory: " + record.options.projectDir);
+  expect(f.commands()).toEqual([]);
+});
+
+for (const target of ["missing", "file"]) test(`project scope rejects a ${target} directory before installing`, () => {
+  const f = fixture("invalid-project-" + target), project = join(f.base, target);
+  if (target === "file") writeFileSync(project, "not a directory");
+  const result = f.run([process.execPath, join(root, "scripts/init.ts"), "--yes", "--scope", "project", "--project-dir", project, "--agents", "codex", "--core-only"]);
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr.toString()).toContain("Project directory must exist and be a directory: " + project);
+  expect(f.commands()).toEqual([]);
+});
+
 for (const scope of ["global", "project"] as const) for (const method of ["copy", "symlink"] as const) {
   test(`real subprocess ${scope} ${method}: both agents, preserve existing, saved update, launcher`, () => {
     const f = fixture(scope + "-" + method);
@@ -108,7 +234,7 @@ for (const scope of ["global", "project"] as const) for (const method of ["copy"
     const launcher = scope === "global" ? join(f.home, ".local/bin/clzmj-skills") : join(f.project, ".clzmj-skills/bin/clzmj-skills");
     const installedCommands = f.commands().length; expect(installedCommands).toBeGreaterThan(0);
     for (const command of f.commands()) {
-      expect(command.cwd).toBe(f.project);
+      expect(command.cwd).toBe(scope === "global" ? f.home : f.project);
       expect(command.args.slice(command.args.indexOf("--skill") + 1, command.args.indexOf("--skill") + 3)).toEqual(["rex", "python-tooling"]);
       expect(command.args.includes("-g")).toBe(scope === "global");
       if (method === "copy") expect(command.args.includes("--copy")).toBe(true);

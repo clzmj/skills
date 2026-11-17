@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { TerminalBack, TerminalCancelled } from "../scripts/terminal-ui";
 import { readFileSync, mkdtempSync, rmSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { initialize, parseManifest, parseOptions, parseState, buildPlan, resolveCoreSource, detectAgents, skillDirectory, settingsPath, runSubprocess, type PageUI, type Runtime, type Options, type InstallRecord } from "../scripts/init";
 
@@ -194,7 +194,82 @@ describe("safe installer execution", () => {
     expect(calls.every(c => c.command.includes("claude-code") && c.command.includes("--copy"))).toBe(true);
     expect(calls.some(c => c.command.includes("adhd"))).toBe(true);
   });
-  test("saved all-favorites becomes exact selections and narrowing update prunes inherited pack choices", async () => {
+  test("update ignores ownership-only saved choices and honors explicit flags", async () => {
+    const fixture = mock();
+    const empty: Options = { agents: [], core: [], favorites: [], packSkills: {}, projectDir: "", scope: "global", method: "symlink", hooks: false, dryRun: false, yes: false, update: false, help: false };
+    fixture.runtime.load = () => ({ version: 1, options: empty, ownedPaths: {} });
+    await initialize(manifest, parseOptions(["--yes", "--update", "--method", "copy"], ["codex"]), fixture.runtime);
+    expect(fixture.calls).toHaveLength(1);
+    expect(fixture.calls[0].command).toContain("python-tooling");
+    expect(fixture.calls[0].command).toContain("--copy");
+  });
+  test("global plugin checks use home rather than the project directory", async () => {
+    const fixture = mock();
+    await initialize(manifest, options(["--all-favorites"]), fixture.runtime);
+    const inventories = fixture.calls.filter(call => call.capture);
+    expect(inventories).toHaveLength(4);
+    expect(inventories.every(call => call.cwd === homedir())).toBe(true);
+  });
+  for (const update of [false, true]) test(`interactive core-only Enter keeps seeded saved favorites (update=${update})`, async () => {
+    const fixture = mock();
+    const previous = options(["--favorites", "UditAkhourii/adhd", "--skills", "UditAkhourii/adhd:adhd"]);
+    fixture.runtime.load = () => ({ version: 1, options: previous, ownedPaths: {} });
+    fixture.runtime.ui = pages({ review: () => true, multiselect: (title, _rows, defaults) => {
+      if (title === "Favorite packs") expect(defaults).toEqual(previous.favorites!);
+      return defaults;
+    } });
+    await initialize(manifest, parseOptions(["--core-only", ...(update ? ["--update"] : [])], ["codex"]), fixture.runtime);
+    expect(fixture.saved.at(-1)!.record.options.favorites).toEqual(previous.favorites);
+    expect(fixture.saved.at(-1)!.record.options.packSkills).toEqual(previous.packSkills);
+  });
+  for (const update of [false, true]) test(`interactive core-only clear differs from seeded favorites and saves empty choices (update=${update})`, async () => {
+    const fixture = mock();
+    const previous = options(["--favorites", "UditAkhourii/adhd", "--skills", "UditAkhourii/adhd:adhd"]);
+    fixture.runtime.load = () => ({ version: 1, options: previous, ownedPaths: {} });
+    fixture.runtime.ui = pages({ review: () => true, multiselect: (title, _rows, defaults) => {
+      if (title === "Favorite packs") {
+        expect(defaults).toEqual(previous.favorites!);
+        return [];
+      }
+      return defaults;
+    } });
+    await initialize(manifest, parseOptions(["--core-only", ...(update ? ["--update"] : [])], ["codex"]), fixture.runtime);
+    expect(fixture.saved.at(-1)!.record.options.favorites).toEqual([]);
+    expect(fixture.saved.at(-1)!.record.options.packSkills).toEqual({});
+  });
+  test("interactive core-only retry uses the accepted saved favorites", async () => {
+    const fixture = mock();
+    const previous = options(["--favorites", "UditAkhourii/adhd", "--skills", "UditAkhourii/adhd:adhd"]);
+    fixture.runtime.load = () => ({ version: 1, options: previous, ownedPaths: {} });
+    fixture.runtime.ui = pages({ review: () => true });
+    fixture.runtime.run = () => { throw new Error("failed fixture command"); };
+    await expect(initialize(manifest, parseOptions(["--core-only"], ["codex"]), fixture.runtime)).rejects.toThrow("--favorites UditAkhourii/adhd --skills UditAkhourii/adhd:adhd");
+  });
+  test("favorite conflicts use parsed flags rather than a missing option value", () => {
+    expect(() => parseOptions(["--core-only", "--method", "--favorites"])).toThrow("--method requires a value");
+  });
+  test("finish failure keeps selections and records written ownership", async () => {
+    const fixture = mock(), previous = options(["--favorites", "UditAkhourii/adhd"]);
+    fixture.runtime.load = () => ({ version: 1, options: previous, ownedPaths: { previous: "old" } });
+    const chosen = options(["--agents", "codex", "--core", "rex", "--core-only"]), path = resolve(skillDirectory("codex", chosen), "rex");
+    fixture.runtime.run = () => {
+      fixture.existing.add(path);
+      return "";
+    };
+    fixture.runtime.finish = () => { throw new Error("launcher failed"); };
+    await expect(initialize(manifest, chosen, fixture.runtime)).rejects.toThrow("launcher failed");
+    expect(fixture.saved.at(-1)!.record.options).toEqual(previous);
+    expect(fixture.saved.at(-1)!.record.ownedPaths).toEqual({ previous: "old", [path]: "a".repeat(64) });
+  });
+  test("core-only saves favorite choices selected later in the interactive pages", async () => {
+    const fixture = mock(), previous = options(["--favorites", "cloudflare/security-audit-skill"]);
+    fixture.runtime.load = () => ({ version: 1, options: previous, ownedPaths: {} });
+    fixture.runtime.ui = pages({ review: () => true, multiselect: (title, _rows, defaults) => title === "Favorite packs" ? ["UditAkhourii/adhd"] : defaults });
+    await initialize(manifest, parseOptions(["--core-only"], ["codex"]), fixture.runtime);
+    expect(fixture.saved.at(-1)!.record.options.favorites).toEqual(["UditAkhourii/adhd"]);
+    expect(fixture.saved.at(-1)!.record.options.packSkills).toEqual({ "UditAkhourii/adhd": ["adhd"] });
+  });
+  test("saved all-favorites becomes exact selections and core-only update preserves pack choices", async () => {
     const first = mock();
     await initialize(manifest, options(["--all-favorites"]), first.runtime);
     expect(first.saved[0].record.options.favorites).toEqual(manifest.favorites.map((f: any) => f.source));
@@ -203,7 +278,7 @@ describe("safe installer execution", () => {
     await initialize(manifest, parseOptions(["--yes", "--update", "--core-only", "--core", "rex", "--method", "symlink", "--agents", "codex"]), second.runtime);
     expect(second.calls).toHaveLength(1);
     expect(second.calls[0].command).not.toContain("--copy");
-    expect(second.saved[0].record.options).toMatchObject({ favorites: [], packSkills: {}, core: ["rex"], agents: ["codex"], method: "symlink" });
+    expect(second.saved[0].record.options).toMatchObject({ favorites: first.saved[0].record.options.favorites, packSkills: first.saved[0].record.options.packSkills, core: ["rex"], agents: ["codex"], method: "symlink" });
   });
   test("hosted source validation only accepts the current extracted release", () => {
     const release = new URL("../", import.meta.url).pathname.replace(/\/$/, "");
@@ -257,6 +332,8 @@ describe("terminal page flow and asynchronous work", () => {
   });
   test("Ctrl-C during work aborts later steps and preserves only completed ownership", async () => {
     const fixture = mock(); let polls = 0, cancelled = false, finished = false;
+    const previous = options(["--favorites", "UditAkhourii/adhd"]);
+    fixture.runtime.load = () => ({ version: 1, options: previous, ownedPaths: {} });
     const chosen = options(["--core", "rex"]); const first = resolve(skillDirectory("codex", chosen), "rex");
     fixture.runtime.ui = pages({ pollCancel() { if (++polls === 3) throw new TerminalCancelled(); } });
     fixture.runtime.cancel = () => { cancelled = true; };
@@ -264,6 +341,7 @@ describe("terminal page flow and asynchronous work", () => {
     fixture.runtime.run = async () => { if (!fixture.existing.has(first)) fixture.existing.add(first); else await new Promise(resolve => setTimeout(resolve, 250)); return ""; };
     await expect(initialize(manifest, chosen, fixture.runtime)).rejects.toThrow("Installation cancelled");
     expect(cancelled).toBe(true); expect(finished).toBe(false); expect(fixture.saved[0].record.ownedPaths).toEqual({ [first]: "a".repeat(64) });
+    expect(fixture.saved[0].record.options).toEqual(previous);
   });
   test("async child pipes drain concurrently, bounded errors retain exit status, and timers run", async () => {
     let ticks = 0; const timer = setInterval(() => ticks++, 25);
