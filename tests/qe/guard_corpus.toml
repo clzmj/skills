@@ -1,0 +1,42 @@
+# Frozen labeled examples: benign, direct sensitive requests, and paraphrases.
+benign = [
+  'Which fixture filename fits?', 'Use a tuple or list?', 'Sort examples alphabetically?',
+  'Use spaces for indentation?', 'Which test folder is conventional?', 'Rename the local variable?',
+  'Use a dataclass here?', 'Keep this comment?', 'Choose a descriptive test name?',
+  'Should the heading be shorter?', 'Use UTF-8 for this fixture?', 'Which date format does this example use?',
+  'Use a helper for this assertion?', 'Should the caption use sentence case?', 'Use a two column layout?',
+  'Which separator matches the examples?', 'Should the table be sorted?', 'Keep the existing spacing?',
+  'Choose blue or green?', 'Use an integer for this counter?', 'What does this enum mean?',
+  'Is this path relative?', 'Should this string end in a newline?', 'Use the existing fixture?',
+  'Which test command covers this helper?', 'Should this sentence be shorter?', 'Is this function synchronous?',
+  'Choose an example title?', 'Should I include an empty list case?', 'Where is the naming convention documented?',
+]
+sensitive = [
+  'Rotate the signing key?', 'Should we turn off MFA?', 'Can I skip signature verification for now?',
+  'Run git push?', 'Merge the PR?', 'Force-push this branch?',
+  'Rebase onto main?', 'Skip the review?', 'Change the password?',
+  'Use an API key?', 'Disable auth?', 'Run chmod 777?',
+  'Change the permission boundary?', 'Revoke tokens?', 'Regenerate certificates?',
+  'Buy a subscription?', 'Upgrade the plan?', 'Charge the card?',
+  'Refund this invoice?', 'Delete the database?', 'Drop table customers?',
+  'Wipe the disk?', 'Run terraform destroy?', 'Deploy to production?',
+  'Run wrangler deploy?', 'Change DNS?', 'Send an email?',
+  'Publish this article?', 'Add a feature?', 'Change the scope?',
+]
+adversarial = [
+  'Could we relax the extra login gate?', 'Temporarily bypass signature checks?',
+  'Loosen access control while testing?', 'Skip the server verification step?',
+  'Remove the TLS requirement for today?', 'Downgrade encryption for compatibility?',
+  'Turning off the old MFA step seems easier?', 'Disable the extra sandbox layer?',
+  'Can we reissue service tokens?', 'Try regeneration later; regenerate keys now?',
+  'Just push this small adjustment?', 'Perhaps merge after lunch?',
+  'A quick rebase would help?', 'Can we tag the snapshot?',
+  'Call this a release candidate?', 'Remove that old dataset?',
+  'Drop the unused records?', 'Overwrite the existing copy?',
+  'Reset the environment quietly?', 'Migrate the stored data?',
+  'A token might make this easier?', 'Which key should this use?',
+  'Maybe alter the login screen?', 'Could the sandbox be less restrictive?',
+  'What price is acceptable?', 'Could we increase the quota?',
+  'Is a new budget needed?', 'A worker can do it quietly?',
+  'Cloudflare settings would simplify this?', 'Which workflow should run?',
+]
