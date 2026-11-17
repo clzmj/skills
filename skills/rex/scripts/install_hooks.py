@@ -9,8 +9,26 @@ import json
 import re
 import shlex
 import shutil
+import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from agent_types import HookEvent
+
+
+@dataclass(frozen=True, slots=True)
+class HookSpec:
+    script: str
+    event: HookEvent
+    matcher: str | None
+    timeout: int
+
+
+CODEX_QUESTION_TOOL_MATCHER = "^(request_user_input|request_user_input_async)$"
+CLAUDE_QUESTION_TOOL_MATCHER = "^AskUserQuestion$"
+BROADEN_POST_TOOL_USE = frozenset({"codex_sessions.py", "claude_sessions.py"})
 
 
 def write(path, content):
@@ -41,9 +59,12 @@ def owned_handler(command, script, home, root):
         words = shlex.split(command)
     except ValueError:
         return False
-    if len(words) < 3 or words[-1] != "hook":
+    if len(words) < 3 or "hook" not in words[2:]:
         return False
-    path = Path(words[-2])
+    paths = [Path(word) for word in words if word.startswith("/")]
+    path = next((candidate for candidate in paths if candidate.name == script), None)
+    if path is None:
+        return False
     if path.name != script or not path.is_absolute():
         return False
     return (path.parent == root or path.parent == home / "Developer/tools/rex-visible"
@@ -51,41 +72,121 @@ def owned_handler(command, script, home, root):
             or str(path.parent).endswith(("/skills/python-tooling/scripts/rex", "/skills/rex/scripts")))
 
 
-def rex_hooks(data, root, home, uv, codex):
-    definitions = [("rex_visible.py", ("SessionStart", "UserPromptSubmit", "PreToolUse"))]
+def _hook_specs(codex):
+    specs = []
+    visible = (HookEvent.SESSION_START, HookEvent.USER_PROMPT_SUBMIT, HookEvent.PRE_TOOL_USE)
+    specs.extend(HookSpec("rex_visible.py", event,
+                          "Bash|exec_command|shell|shell_command" if event == HookEvent.PRE_TOOL_USE else None,
+                          5) for event in visible)
+    script = "codex_sessions.py" if codex else "claude_sessions.py"
+    events = ((HookEvent.SESSION_START, HookEvent.USER_PROMPT_SUBMIT, HookEvent.SUBAGENT_START,
+               HookEvent.SUBAGENT_STOP, HookEvent.STOP, HookEvent.SESSION_END, HookEvent.POST_TOOL_USE,
+               HookEvent.PERMISSION_REQUEST) if codex else
+              (HookEvent.SESSION_START, HookEvent.USER_PROMPT_SUBMIT, HookEvent.SUBAGENT_START,
+               HookEvent.SUBAGENT_STOP, HookEvent.PRE_TOOL_USE, HookEvent.POST_TOOL_USE, HookEvent.STOP,
+               HookEvent.STOP_FAILURE, HookEvent.SESSION_END, HookEvent.TEAMMATE_IDLE,
+               HookEvent.TASK_CREATED, HookEvent.TASK_COMPLETED, HookEvent.NOTIFICATION,
+               HookEvent.PERMISSION_REQUEST, HookEvent.POST_MODEL_SWITCH))
+    for event in events:
+        timeout = 3 if event == HookEvent.SESSION_END else (20 if event == HookEvent.SUBAGENT_START else 5)
+        # PostToolUse remains a broad lifecycle observer; only these two scripts
+        # participate in the legacy matcher broadening migration below.
+        specs.append(HookSpec(script, event, None, timeout))
     if codex:
-        definitions.append(("codex_sessions.py", ("SessionStart", "UserPromptSubmit", "SubagentStart", "SubagentStop", "Stop", "SessionEnd", "PostToolUse", "PermissionRequest")))
-    else:
-        definitions.append(("claude_sessions.py", ("SessionStart", "UserPromptSubmit", "SubagentStart", "SubagentStop", "PreToolUse", "PostToolUse", "Stop", "StopFailure", "SessionEnd", "TeammateIdle", "TaskCreated", "TaskCompleted", "Notification", "PermissionRequest", "PostModelSwitch")))
-    for script, events in definitions:
-        for event in events:
-            command = shlex.join([uv, "run", "--script", str(root / script), "hook"])
-            groups = data.setdefault("hooks", {}).setdefault(event, [])
-            if event == "PostToolUse":
-                for group in list(groups):
-                    owned = [handler for handler in group.get("hooks", [])
-                             if owned_handler(handler.get("command", ""), script, home, root)]
-                    if owned and group.get("matcher"):
-                        if len(owned) == len(group["hooks"]):
-                            group.pop("matcher")
-                        else:
-                            # Broaden our lifecycle observer without widening unrelated handlers.
-                            group["hooks"] = [handler for handler in group["hooks"] if handler not in owned]
-                            groups.append({"hooks": owned})
-            existing = [handler for group in groups for handler in group.get("hooks", [])
-                        if owned_handler(handler.get("command", ""), script, home, root)]
-            if existing:
-                for handler in existing:
-                    handler["command"] = command
-                    if event == "SessionEnd":
-                        handler["timeout"] = 3
-                continue
-            matcher = "Bash|exec_command|shell|shell_command" if event == "PreToolUse" and script == "rex_visible.py" else None
-            group = {"hooks": [{"type": "command", "command": command,
-                                 "timeout": 3 if event == "SessionEnd" else (20 if event == "SubagentStart" else 5)}]}
-            if matcher:
-                group["matcher"] = matcher
-            groups.append(group)
+        specs.append(HookSpec(script, HookEvent.PRE_TOOL_USE, CODEX_QUESTION_TOOL_MATCHER, 10))
+    agent = "codex" if codex else "claude"
+    matcher = CODEX_QUESTION_TOOL_MATCHER if codex else CLAUDE_QUESTION_TOOL_MATCHER
+    specs.extend((HookSpec("question_hooks.py", HookEvent.PRE_TOOL_USE, matcher, 60 if not codex else 10),
+                  HookSpec("question_hooks.py", HookEvent.POST_TOOL_USE, matcher, 10),
+                  HookSpec("question_hooks.py", HookEvent.USER_PROMPT_SUBMIT, None, 5),
+                  HookSpec("question_hooks.py", HookEvent.STOP, None, 5),
+                  HookSpec("question_hooks.py", HookEvent.SESSION_END, None, 5),
+                  HookSpec("question_hooks.py", HookEvent.SUBAGENT_STOP, None, 5)))
+    if not codex:
+        specs.append(HookSpec("question_hooks.py", HookEvent.PERMISSION_REQUEST, matcher, 60))
+    return [(spec, agent if spec.script == "question_hooks.py" else None) for spec in specs]
+
+
+def _command(spec, root, uv, agent):
+    words = [uv, "run", "--script", str(root / spec.script), "hook"]
+    if spec.script == "question_hooks.py":
+        words.extend(("--agent", agent))
+    return shlex.join(words)
+
+
+def _matches_spec(group, spec):
+    return group.get("matcher") == spec.matcher
+
+
+def _apply_spec(data, spec, root, home, uv, agent, sibling_matchers=None):
+    groups = data.setdefault("hooks", {}).setdefault(spec.event.value, [])
+    command = _command(spec, root, uv, agent)
+    matches = []
+    sibling_matchers = sibling_matchers or {spec.matcher}
+    # A script/event pair can own several matcher groups. Move only handlers
+    # that belong to this spec; leave mixed groups and their matchers intact.
+    for group in list(groups):
+        owned = [handler for handler in group.get("hooks", [])
+                 if owned_handler(handler.get("command", ""), spec.script, home, root)]
+        if not owned:
+            continue
+        if _matches_spec(group, spec):
+            matches.extend((group, handler) for handler in owned)
+        elif group.get("matcher") in sibling_matchers:
+            continue
+        else:
+            owned_ids = {id(handler) for handler in owned}
+            remaining = [handler for handler in group.get("hooks", []) if id(handler) not in owned_ids]
+            if remaining:
+                group["hooks"] = remaining
+            else:
+                groups.remove(group)
+    if matches:
+        keeper_group, keeper = matches[0]
+        keeper["command"] = command
+        keeper["timeout"] = spec.timeout
+        # De-duplicate exact owned handlers in this matcher's group.
+        keepers = keeper_group.get("hooks", [])
+        seen_keeper = False
+        for handler in list(keepers):
+            if owned_handler(handler.get("command", ""), spec.script, home, root):
+                if not seen_keeper:
+                    seen_keeper = True
+                else:
+                    duplicate_index = next(index for index, candidate in enumerate(keepers)
+                                           if candidate is handler)
+                    keepers.pop(duplicate_index)
+        for group, handler in matches[1:]:
+            match_index = next((index for index, candidate in enumerate(group.get("hooks", []))
+                                if candidate is handler), None)
+            if match_index is not None:
+                group["hooks"].pop(match_index)
+            if not group.get("hooks"):
+                groups.remove(group)
+        return
+    groups.append({"hooks": [{"type": "command", "command": command, "timeout": spec.timeout}],
+                   **({"matcher": spec.matcher} if spec.matcher is not None else {})})
+
+
+def rex_hooks(data, root, home, uv, codex):
+    all_specs = _hook_specs(codex)
+    for spec, agent in all_specs:
+        # The legacy observer behavior intentionally makes these scripts global
+        # PostToolUse observers, while question_hooks retain exact ownership.
+        if spec.event == HookEvent.POST_TOOL_USE and spec.script in BROADEN_POST_TOOL_USE:
+            groups = data.setdefault("hooks", {}).setdefault(spec.event.value, [])
+            for group in list(groups):
+                owned = [handler for handler in group.get("hooks", [])
+                         if owned_handler(handler.get("command", ""), spec.script, home, root)]
+                if owned and group.get("matcher"):
+                    if len(owned) == len(group["hooks"]):
+                        group.pop("matcher")
+                    else:
+                        group["hooks"] = [handler for handler in group["hooks"] if handler not in owned]
+                        groups.append({"hooks": owned})
+        sibling_matchers = {other.matcher for other, _ in all_specs
+                            if other.script == spec.script and other.event == spec.event}
+        _apply_spec(data, spec, root, home, uv, agent, sibling_matchers)
 
 
 def install(home, agents):

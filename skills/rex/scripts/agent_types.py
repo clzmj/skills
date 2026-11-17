@@ -38,6 +38,7 @@ class InputKind(StrEnum):
     QUESTION = "question"
     TRUST = "trust"
     OTHER = "other"
+    QUESTION_DIGEST = "question_digest"
 
 
 class AgentKind(StrEnum):

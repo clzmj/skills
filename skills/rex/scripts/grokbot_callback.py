@@ -18,7 +18,9 @@ import tempfile
 import time
 import uuid
 from collections import OrderedDict, deque
+from collections.abc import Mapping
 from contextlib import closing, contextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
@@ -26,6 +28,19 @@ from typing import Any, NotRequired, TypedDict, cast
 from urllib.parse import urlsplit
 
 from agent_types import AgentKind, Event, HookEvent, InputKind
+from question_model import (
+    ASSUMPTION_PREFIX,
+    DIGEST_SCHEMA,
+    DIGEST_UNTRUSTED_FIELDS,
+    EVENTS_DIR,
+    FLAG_ENV,
+    CodexQuestionField,
+    DigestEnvelope,
+    DigestMetadata,
+    QuestionTool,
+)
+from question_guard import scan_assumptions
+from question_redact import redact
 import rex_visible as rex
 
 CONFIG = Path.home() / ".config/agent-tooling/grokbot-callback.env"
@@ -123,6 +138,13 @@ class TestPayload(TypedDict):
     task_id: str
     requester: str
     untrusted: list[str]
+
+
+class AssumptionEvent(TypedDict):
+    task_id: str
+    text: str
+    batch_id: str | None
+    metadata: NotRequired[DigestMetadata]
 
 
 class Envelope(TypedDict):
@@ -349,9 +371,37 @@ def git_metadata(cwd):
                        head_sha=git("rev-parse", "HEAD"))
 
 
-def input_request(data):
+@dataclass(frozen=True, slots=True)
+class ValidatedQuestion:
+    text: str
+    raw: Mapping[str, object]
+
+
+def validate_question_input(value: object) -> tuple[ValidatedQuestion, ...] | None:
+    """Salvage valid native items without coercing non-string question fields."""
+    if not isinstance(value, dict) or not isinstance(value.get(CodexQuestionField.QUESTIONS), list):
+        return None
+    questions = []
+    for item in value[CodexQuestionField.QUESTIONS]:
+        if not isinstance(item, dict):
+            continue
+        text = next((item[key] for key in (CodexQuestionField.QUESTION, CodexQuestionField.TITLE) if isinstance(item.get(key), str)), None)
+        if text is not None:
+            questions.append(ValidatedQuestion(text, item))
+    return tuple(questions) or None
+
+
+def input_request(data, agent=AgentKind.CODEX) -> tuple[InputKind, str] | None:
     name = data.get("hook_event_name")
     notification = data.get("notification_type", "")
+    tool = data.get("tool_name")
+    question_tool = tool in tuple(QuestionTool)
+    if os.environ.get(FLAG_ENV) == "1" and question_tool:
+        return None  # The question hook owns registration and delivery.
+    if agent == AgentKind.CODEX and name == HookEvent.PRE_TOOL_USE and tool in (QuestionTool.CODEX_BLOCKING, QuestionTool.CODEX_ASYNC):
+        questions = validate_question_input(data.get("tool_input"))
+        prompt = "\n".join(q.text for q in questions or () if q.text.strip())
+        return (InputKind.QUESTION, prompt[:1000]) if prompt else None
     if name == HookEvent.PERMISSION_REQUEST:
         kind = InputKind.APPROVAL
     elif name == HookEvent.NOTIFICATION and notification == NotificationType.ELICITATION_DIALOG:
@@ -369,10 +419,17 @@ def input_request(data):
     return kind, prompt[:1000]
 
 
+def resumes_input(data) -> bool:
+    """Async tool acceptance is not an answer; wait for later host activity."""
+    return (data.get("hook_event_name") in (HookEvent.PRE_TOOL_USE, HookEvent.POST_TOOL_USE)
+            and not (data.get("hook_event_name") == HookEvent.POST_TOOL_USE
+                     and data.get("tool_name") == QuestionTool.CODEX_ASYNC))
+
+
 def input_blocked(agent, data):
     """Keep adapter lifecycle writes from reopening a terminal callback session."""
     path = rex.STATE / "grokbot-callback.sqlite3"
-    if not input_request(data) or not data.get("session_id") or not path.exists():
+    if not input_request(data, agent) or not data.get("session_id") or not path.exists():
         return False
     try:
         with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)) as db:
@@ -526,7 +583,7 @@ def notify(agent, data, members=()):
 def _notify(agent, data, members):
     agent = AgentKind(agent)
     name = data.get("hook_event_name")
-    request = input_request(data)
+    request = input_request(data, agent)
     if name not in (HookEvent.SESSION_START, HookEvent.USER_PROMPT_SUBMIT, HookEvent.SUBAGENT_START, HookEvent.SUBAGENT_STOP, HookEvent.STOP, HookEvent.STOP_FAILURE, HookEvent.SESSION_END, HookEvent.POST_TOOL_USE, HookEvent.PRE_TOOL_USE) and not request:
         return
     session = data.get("session_id")
@@ -607,7 +664,7 @@ def _notify(agent, data, members):
         event: Event | None = None
         if request:
             event, item["status"] = Event.NEEDS_INPUT, Status.WAITING
-        elif name in (HookEvent.PRE_TOOL_USE, HookEvent.POST_TOOL_USE) and item["status"] == Status.WAITING:
+        elif resumes_input(data) and item["status"] == Status.WAITING:
             item["status"] = Status.RUNNING
         elif name == HookEvent.USER_PROMPT_SUBMIT:
             event, item["status"] = (Event.LINEAGE if item["parent"] else Event.HEARTBEAT), Status.RUNNING
@@ -639,18 +696,56 @@ def _notify(agent, data, members):
                                       for row in sessions.values() if row["root"] == item["root"] and row["parent"] and row["task_id"] == item["task_id"]])
         if request:
             envelope.update(kind=request[0], prompt_text=request[1], request_key=request_identity(data))
-        # One canonical spool per event keeps the first prompt and survives a dead worker.
-        delivery = delivery_key(envelope)
-        spool = rex.STATE / ("grokbot-pending-" + delivery)
-        if spool.exists() or (rex.STATE / ("grokbot-sent-" + delivery)).exists():
-            return
-        write_spool(spool, envelope)
-    subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "deliver", str(spool)],
+    created = spool(envelope)
+    if created is not None and event == Event.RUN_FINISHED and os.environ.get(FLAG_ENV) == "1":
+        try:
+            source_metadata = envelope["metadata"]
+            record_assumptions(
+                envelope["task_id"],
+                final_message(agent, data, limit=None),
+                DigestMetadata(requester=envelope["requester"], repo=source_metadata["repo"], branch=source_metadata["branch"]),
+            )
+        except Exception:  # noqa: BLE001, S110 - optional L0 reporting must not affect completion delivery.
+            pass
+
+
+def record_assumptions(task_id: str, text: str, metadata: DigestMetadata | None = None) -> None:
+    """Write leaf event files; the ledger ingests them on its next tick or hook."""
+    for line in text.splitlines():
+        if not line.startswith(ASSUMPTION_PREFIX) or not scan_assumptions(line):
+            continue
+        directory = rex.STATE / EVENTS_DIR
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        event = AssumptionEvent(task_id=task_id, text=redact(line).text, batch_id=None)
+        if metadata is not None:
+            event["metadata"] = metadata
+        path = directory / (str(uuid.uuid4()) + ".json")
+        temporary = path.with_suffix(".tmp")
+        try:
+            with os.fdopen(private_fd(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL), "w") as stream:
+                json.dump(event, stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def spool(envelope: Envelope | DigestEnvelope) -> Path | None:
+    """Publish a canonical private spool and start its detached delivery worker."""
+    rex.state_dir()
+    key = delivery_key(envelope)
+    path = rex.STATE / ("grokbot-pending-" + key)
+    if path.exists() or (rex.STATE / ("grokbot-sent-" + key)).exists():
+        return None
+    write_spool(path, envelope)
+    subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "deliver", str(path)],
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                      start_new_session=True, close_fds=True)
+    return path
 
 
-def write_spool(path: Path, envelope: Envelope):
+def write_spool(path: Path, envelope: Envelope | DigestEnvelope):
     """Publish atomically; tempfile creates the file with mode 0600, even at umask 0."""
     temporary = None
     try:
@@ -666,9 +761,9 @@ def write_spool(path: Path, envelope: Envelope):
             temporary.unlink(missing_ok=True)
 
 
-def final_message(agent, data):
+def final_message(agent, data, limit: int | None = 2000):
     if "last_assistant_message" in data:
-        return str(data["last_assistant_message"] or "")[:2000]
+        return str(data["last_assistant_message"] or "")[:limit]
     path = data.get("transcript_path")
     if not path:
         return ""
@@ -711,7 +806,7 @@ def final_message(agent, data):
                     message = text
     except OSError:
         pass
-    return message[:2000]
+    return message[:limit]
 
 
 def payload(envelope) -> Payload:
@@ -744,7 +839,8 @@ def post(body):
     url, name, value = config()
     # Apply current safety metadata to cached legacy payloads as well as new ones.
     outgoing = body.copy()
-    outgoing["untrusted"] = [field for field in UNTRUSTED_FIELDS if field in body]
+    fields = DIGEST_UNTRUSTED_FIELDS if body.get("schema") == DIGEST_SCHEMA else UNTRUSTED_FIELDS
+    outgoing["untrusted"] = [field for field in fields if field in body]
     encoded = json.dumps(outgoing).encode()
     status = 0
     for _ in range(3):
@@ -801,8 +897,8 @@ def deliver(path):
             path.unlink(missing_ok=True)
             return True
         fields = DeliveryFields(key=key, event=envelope.get("event", Event.RUN_FINISHED), task_id=envelope.get("task_id", ""),
-                                agent_session_id=envelope.get("lineage", {}).get("agent_session_id") or envelope["data"]["session_id"],
-                                rex_session=envelope["rex_session"], rex_block=envelope["rex_block"])
+                                agent_session_id=envelope.get("lineage", {}).get("agent_session_id") or envelope.get("data", {}).get("session_id", ""),
+                                rex_session=envelope.get("rex_session", ""), rex_block=envelope.get("rex_block", ""))
         try:
             # Freeze payload on first attempt: retries preserve task metadata and text.
             if "body" not in envelope:
@@ -896,8 +992,8 @@ def health() -> Health:
     for key, (path, envelope) in spools.items():
         row = receipts.get(key, {})
         item = DeliveryRecord(key=key, spool=str(path), event=envelope.get("event", Event.RUN_FINISHED),
-                              agent_session_id=envelope.get("lineage", {}).get("agent_session_id") or envelope["data"]["session_id"],
-                              task_id=envelope.get("task_id", ""), rex_session=envelope["rex_session"], rex_block=envelope["rex_block"],
+                              agent_session_id=envelope.get("lineage", {}).get("agent_session_id") or envelope.get("data", {}).get("session_id", ""),
+                              task_id=envelope.get("task_id", ""), rex_session=envelope.get("rex_session", ""), rex_block=envelope.get("rex_block", ""),
                               outcome=row.get("outcome", envelope.get("delivery_outcome", Outcome.PENDING)))
         (failed if item["outcome"] in (Outcome.DELIVERY_FAILED, Outcome.CONFIG_INVALID) else pending).append(item)
     failed.extend(history.values())
