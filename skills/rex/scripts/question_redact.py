@@ -56,7 +56,7 @@ PATTERNS: Final = (
     (
         RedactionRule.ASSIGNMENT,
         re.compile(
-            r"(?:password|passwd|pwd|passphrase|secret|token|api[_-]?key|private[_-]?key)(?:[_-]\w+)*[\"']?\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|\S+)",
+            r"(?:(?:password|passwd|pwd|passphrase)(?:[_-](?:prod|production|staging|stage|dev|development|test))?|secret(?:[_-](?:access[_-]key|key(?:[_-]base)?))?|token(?:[_-]key)?|api[_-]?key|private[_-]?key)[\"']?\s*[:=]\s*(?:\"[^\"\r\n]*(?:\"|(?=[\r\n]|\Z))|'[^'\r\n]*(?:'|(?=[\r\n]|\Z))|\S+)",
             re.I,
         ),
     ),
