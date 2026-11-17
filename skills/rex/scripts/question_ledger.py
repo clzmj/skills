@@ -179,6 +179,7 @@ def redacted_audit_detail(detail: str) -> str:
         "call",
         "fallback_of",
         "digest",
+        "related_to",
     }
 
     def clean(value: object, key: str = "") -> object:
@@ -663,7 +664,7 @@ class Ledger:
                     self.audit(
                         AuditKind.CONTEXT,
                         asker.task,
-                        f"related_to={related}; context only",
+                        encoded({"related_to": related, "context_only": True}),
                         str(batch.id),
                     )
             for question in batch.questions:
@@ -961,7 +962,7 @@ class Ledger:
             self.audit(
                 AuditKind.OUTBOUND,
                 batch.asker.task,
-                f"{outbound.id}: {outbound.state}",
+                encoded({"outbound_id": str(outbound.id), "state": outbound.state}),
                 str(batch.id),
             )
 
@@ -1075,7 +1076,7 @@ class Ledger:
                 self.audit(
                     AuditKind.OUTBOUND,
                     batch.asker.task,
-                    f"{claim.outbound}: {state}",
+                    encoded({"outbound_id": claim.outbound, "state": state}),
                     str(batch.id),
                 )
             return bool(changed)
@@ -1141,7 +1142,7 @@ class Ledger:
             self.audit(
                 AuditKind.BOX_NOTE,
                 batch.asker.task,
-                f"{note.delivery_id}: attempt {note.attempt}",
+                encoded({"delivery_id": note.delivery_id, "attempt": note.attempt}),
                 str(batch.id),
             )
 
@@ -1243,7 +1244,7 @@ class Ledger:
                 self.audit(
                     AuditKind.CLEARANCE,
                     batch.asker.task,
-                    f"{takeover}: {by}",
+                    encoded({"takeover_id": takeover, "by": by}),
                     str(batch.id),
                 )
 

@@ -1,12 +1,30 @@
 import tempfile
 import unittest
 from pathlib import Path
+from uuid import UUID
 
 import question_ledger as ledger
 from test_question_ledger import asker, classification, native_call, outbound, question
 
 
 class AuditTests(unittest.TestCase):
+    def test_outbound_audit_preserves_high_entropy_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with ledger.Ledger(Path(directory) / "ledger.db") as store:
+                batch = store.open_or_attach(
+                    asker(), (question(),), native_call("call-1"), classification()
+                ).batch
+                message = ledger.replace(
+                    outbound(batch),
+                    id=ledger.m.OutboundId(
+                        UUID("01234567-89ab-cdef-0123-456789abcdef")
+                    ),
+                )
+                store.put_outbound(message)
+                self.assertIn(
+                    str(message.id), store.audit_events(batch.asker.task)[-1].detail
+                )
+
     def test_audits_flush_only_after_outer_commit_and_direct_audits_work(self):
         with tempfile.TemporaryDirectory() as directory:
             with ledger.Ledger(Path(directory) / "ledger.db") as store:
