@@ -32,6 +32,12 @@ from question_guard import CATEGORY_FLOORS
 MAX_PROMPT_BYTES = 24 * 1024
 MAX_CONCURRENT_ANSWERERS = 2
 MIN_USEFUL_SECONDS = 15.0
+# Fixed per-call ceilings keep calibration and production argv identical after
+# observed p95 reservations change. Reservations remain measured, not multiplied.
+CLAUDE_MAX_BUDGET_USD = {
+    m.Model.HAIKU: Decimal("0.02"),
+    m.Model.SONNET: Decimal("0.15"),
+}
 ROOT = Path(__file__).parent
 ESSENTIAL_ENV = frozenset(("PATH", "HOME", "LANG", "TMPDIR"))
 VENDOR_AUTH = {
@@ -403,12 +409,12 @@ def build_command(config: ModelConfig, *, executable: str = "claude") -> list[st
         "none",
         "--max-turns",
         str(bounds.max_turns),
+        "--max-budget-usd",
+        str(CLAUDE_MAX_BUDGET_USD[config.model]),
         "--tools",
         "Read,Grep,Glob",
         "--allowedTools",
         "Read Grep Glob",
-        "--disallowedTools",
-        "Bash Edit Write NotebookEdit WebFetch WebSearch Agent Task SendMessage ToolSearch Skill AskUserQuestion",
         "--strict-mcp-config",
         "--mcp-config",
         '{"mcpServers":{}}',

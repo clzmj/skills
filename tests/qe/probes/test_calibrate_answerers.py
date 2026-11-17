@@ -13,6 +13,40 @@ from . import calibrate_answerers as calibration
 
 
 class CalibrationGuards(unittest.TestCase):
+    def test_subscription_auth_required_before_any_subprocess(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "not-created"
+            argv = [
+                "calibrate_answerers.py",
+                "--run",
+                "--output-dir",
+                str(output),
+                "--receipt",
+                str(Path(directory) / "receipt.json"),
+            ]
+            for auth in (
+                {},
+                {"ANTHROPIC_API_KEY": "fake", "CLAUDE_CODE_OAUTH_TOKEN": "fake"},
+            ):
+                with (
+                    self.subTest(auth=auth),
+                    patch.object(sys, "argv", argv),
+                    patch.dict(os.environ, auth, clear=True),
+                    patch.object(calibration.subprocess, "Popen") as popen,
+                    patch.object(calibration.subprocess, "run") as run,
+                    patch.object(
+                        calibration.subprocess, "check_output"
+                    ) as check_output,
+                    redirect_stderr(StringIO()),
+                    self.assertRaises(SystemExit) as raised,
+                ):
+                    calibration.main()
+                self.assertEqual(raised.exception.code, 2)
+                popen.assert_not_called()
+                run.assert_not_called()
+                check_output.assert_not_called()
+                self.assertFalse(output.exists())
+
     def test_missing_opt_in_or_active_qe_never_starts_calibration(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "not-created"

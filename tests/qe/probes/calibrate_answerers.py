@@ -56,6 +56,7 @@ class Sample(TypedDict):
     model: str
     ordinal: int
     max_turns: int
+    max_budget_usd: str
     wall_clock_s: int
     prompt_bytes: int
     num_turns: int | None
@@ -76,6 +77,8 @@ class Sample(TypedDict):
     tokens: int | None
     usd: str | None
     model_ids: list[str]
+    structured_output_present: bool
+    api_key_source: str | None
 
 
 def main() -> int:
@@ -97,6 +100,10 @@ def main() -> int:
         )
     if os.environ.get("GROKBOT_QE") == "1":
         parser.error("GROKBOT_QE must remain off during calibration")
+    if os.environ.get("ANTHROPIC_API_KEY") or not os.environ.get(
+        "CLAUDE_CODE_OAUTH_TOKEN"
+    ):
+        parser.error("Calibration requires subscription OAuth only")
     os.umask(0o077)
     scripts = args.repo.resolve() / "skills/rex/scripts"
     sys.path.insert(0, str(scripts))
@@ -157,7 +164,7 @@ def main() -> int:
         m.QuestionId(uuid4()),
         m.NativeCallId("p12-isolated-call"),
         m.Untrusted(
-            "Which indentation convention should this isolated repository use? Read or Grep README.md before answering. Include the entire exact Calibration marker line from that file as evidence.quote at its real line. The marker is deliberately absent from this prompt; do not guess. Also cite the repository convention. Choose an offered option and return the complete answerer schema.",
+            "Which indentation convention should this isolated repository use? Read or Grep README.md before answering. Include the entire exact Calibration marker line from that file as evidence.quote at its real line. Use repository-relative evidence paths: README.md, never an absolute path. The marker is deliberately absent from this prompt; do not guess. Also cite the repository convention. Choose an offered option and return the complete answerer schema.",
             m.UntrustedSource.AGENT,
         ),
         None,
@@ -263,7 +270,12 @@ def main() -> int:
             (m.Model.SONNET, m.EscalationLevel.L2_NORMAL, 240),
         ):
             bounds = m.InvocationBounds(
-                24 * 1024, 4, None, timedelta(seconds=wall), 0, Decimal(0)
+                24 * 1024,
+                4,
+                None,
+                timedelta(seconds=wall),
+                0,
+                a.CLAUDE_MAX_BUDGET_USD[model],
             )
             config = a.ModelConfig(model, True, True, bounds, True, True)
             argv = a.build_command(config)
@@ -361,6 +373,7 @@ def main() -> int:
                     "model": model.value,
                     "ordinal": ordinal,
                     "max_turns": 4,
+                    "max_budget_usd": str(a.CLAUDE_MAX_BUDGET_USD[model]),
                     "wall_clock_s": wall,
                     "prompt_bytes": prompt_bytes,
                     "num_turns": raw.get("num_turns")
@@ -414,13 +427,24 @@ def main() -> int:
                     if isinstance(raw, dict)
                     and isinstance(raw.get("modelUsage", {}), dict)
                     else [],
+                    "structured_output_present": isinstance(raw, dict)
+                    and isinstance(raw.get("structured_output"), dict),
+                    # Only known metadata labels are safe to publish, never arbitrary
+                    # vendor strings or authentication values.
+                    "api_key_source": raw.get("apiKeySource")
+                    if isinstance(raw, dict)
+                    and raw.get("apiKeySource")
+                    in ("oauth", "claude.ai", "subscription", "none")
+                    else "unrecognized"
+                    if isinstance(raw, dict) and "apiKeySource" in raw
+                    else None,
                 }
                 samples.append(sample)
                 print(json.dumps(sample), flush=True)
                 (output_dir / "summary.json").write_text(
                     json.dumps({"samples": samples}, indent=2) + "\n"
                 )
-                if ordinal == 1 and not checked:
+                if not checked:
                     raise SystemExit(1)
     summary = {
         "schema": "qe.p12-observed-read-calibration/1",
@@ -436,6 +460,7 @@ def main() -> int:
         "repository_head": repo_head,
         "source_sha256": source_hashes,
         "max_turns": 4,
+        "auth_method": "Configured subscription OAuth via CLAUDE_CODE_OAUTH_TOKEN; ANTHROPIC_API_KEY absent; no --bare; envelope auth source recorded separately when present",
         "prompt_bytes": prompt_bytes,
         "p95_method": "empirical nearest rank; n=20 per actual model family; rank 19; no headroom",
         "samples": samples,
@@ -456,6 +481,8 @@ def main() -> int:
         cost_values = sorted(
             Decimal(usd) for s in usage_samples if (usd := s["usd"]) is not None
         )
+        wall_values = sorted(s["elapsed_ms"] for s in usage_samples)
+        p50_index = max(0, __import__("math").ceil(0.50 * len(usage_samples)) - 1)
         p95_index = max(0, __import__("math").ceil(0.95 * len(usage_samples)) - 1)
         summary["models"][model] = {
             "sample_count": len(selected),
@@ -469,8 +496,16 @@ def main() -> int:
                 {model_id for s in selected for model_id in s.get("model_ids", [])}
             ),
             "p95_rank_1_based": p95_index + 1 if usage_samples else None,
+            "p50_tokens_observed": token_values[p50_index] if usage_samples else None,
+            "p50_usd_observed": str(cost_values[p50_index]) if usage_samples else None,
+            "p50_elapsed_ms_observed": wall_values[p50_index]
+            if usage_samples
+            else None,
             "p95_tokens_observed": token_values[p95_index] if usage_samples else None,
             "p95_usd_observed": str(cost_values[p95_index]) if usage_samples else None,
+            "p95_elapsed_ms_observed": wall_values[p95_index]
+            if usage_samples
+            else None,
         }
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     args.receipt.resolve().write_text(json.dumps(summary, indent=2) + "\n")

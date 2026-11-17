@@ -24,7 +24,7 @@ class CapabilityTests(unittest.TestCase):
         configs = a.load_models()
         for model in (Model.HAIKU, Model.SONNET):
             config = configs[model]
-            self.assertFalse(config.enabled)
+            self.assertTrue(config.enabled)
             self.assertTrue(
                 config.bounded
                 and config.tools_validated
@@ -85,10 +85,10 @@ class CapabilityTests(unittest.TestCase):
     def test_reservations_match_representative_read_bearing_calibration(self):
         fixture = (
             Path(__file__).parents[3]
-            / "tests/qe/hooks/claude-p12-read-bearing-calibration.json"
+            / "tests/qe/hooks/claude-p12-oauth-calibration.json"
         )
         raw = json.loads(fixture.read_text())
-        self.assertEqual(raw["sample_count"], 6)
+        self.assertEqual(raw["sample_count"], 40)
         self.assertEqual(raw["max_turns"], 4)
         self.assertEqual(raw["prompt_bytes"], 24512)
         configs = a.load_models()
@@ -110,22 +110,26 @@ class CapabilityTests(unittest.TestCase):
             self.assertEqual(sample["validation_failures"], [])
             self.assertEqual(sample["prompt_bytes"], 24512)
             self.assertEqual(sample["max_turns"], 4)
+            self.assertEqual(
+                Decimal(sample["max_budget_usd"]), a.CLAUDE_MAX_BUDGET_USD[model]
+            )
+            self.assertTrue(sample["structured_output_present"])
             reported = {actual: {} for actual in sample["model_ids"]}
             self.assertTrue(a.model_family_matches({"modelUsage": reported}, model))
         for model in (Model.HAIKU, Model.SONNET):
             samples = [sample for sample in raw["samples"] if sample["model"] == model]
-            self.assertEqual(len(samples), 3)
+            self.assertEqual(len(samples), 20)
             bounds = configs[model].bounds
             assert bounds is not None
             self.assertEqual(
                 bounds.reserve_tokens,
-                max(sample["tokens"] for sample in samples),
+                sorted(sample["tokens"] for sample in samples)[18],
             )
             self.assertEqual(
                 bounds.reserve_usd,
-                max(Decimal(sample["usd"]) for sample in samples),
+                sorted(Decimal(sample["usd"]) for sample in samples)[18],
             )
-            self.assertEqual(metadata[model]["reservation_samples"], 3)
+            self.assertEqual(metadata[model]["reservation_samples"], 20)
             self.assertEqual(metadata[model]["reservation_method"], "nearest_rank_p95")
             self.assertEqual(
                 metadata[model]["observed_tokens"],
@@ -225,6 +229,43 @@ class InvocationTests(unittest.TestCase):
     def stub(self, body):
         self.script.write_text("#!/usr/bin/env python3\n" + body)
         self.script.chmod(0o700)
+
+    def test_command_uses_read_allowlist_and_model_budget_ceiling(self):
+        for model, ceiling in ((m.Model.HAIKU, "0.02"), (m.Model.SONNET, "0.15")):
+            with self.subTest(model=model):
+                argv = a.build_command(replace(self.config, model=model))
+                self.assertEqual(argv[argv.index("--tools") + 1], "Read,Grep,Glob")
+                self.assertNotIn("--disallowedTools", argv)
+                self.assertEqual(argv[argv.index("--max-turns") + 1], "2")
+                self.assertEqual(argv[argv.index("--max-budget-usd") + 1], ceiling)
+                self.assertNotIn("--bare", argv)
+
+    def test_only_structured_output_supplies_answer_usage_stays_in_envelope(self):
+        for structured in (True, False):
+            with self.subTest(structured=structured):
+                payload = {
+                    "subtype": "success",
+                    "modelUsage": {"claude-haiku-5-5": {}},
+                    "result": json.dumps(output()),
+                    "usage": {"input_tokens": 7, "output_tokens": 3},
+                    "total_cost_usd": ".001",
+                }
+                if structured:
+                    payload["structured_output"] = output()
+                    payload["result"] = "This field is not the schema-checked answer."
+                self.stub("import json\nprint(" + repr(json.dumps(payload)) + ")\n")
+                result = self.runner.invoke(
+                    batch(self.root), m.EscalationLevel.L1_CHEAP, "Choose tabs."
+                )
+                self.assertEqual(
+                    result.outcome,
+                    m.AttemptOutcome.ANSWERED
+                    if structured
+                    else m.AttemptOutcome.FAILED,
+                )
+                self.assertEqual(
+                    result.attempts[0].usage, m.Usage(7, 3, Decimal(".001"))
+                )
 
     def test_ordinal_roundtrip_and_schema(self):
         raw = output()
