@@ -56,11 +56,12 @@ class BriefInvalid(ValueError):
 
 def normalize(text: str) -> str:
     # Match-only: Cf stripping also removes ZWJ/ZWNJ; never store this normalized text.
-    text = "".join(
-        char
-        for char in unicodedata.normalize("NFKC", text)
-        if unicodedata.category(char) != "Cf"
-    )
+    if not text.isascii():
+        text = "".join(
+            char
+            for char in unicodedata.normalize("NFKC", text)
+            if unicodedata.category(char) != "Cf"
+        )
     return " ".join(text.lower().split())
 
 
