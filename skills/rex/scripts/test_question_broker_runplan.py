@@ -324,6 +324,52 @@ class RunPlanTests(unittest.TestCase):
                 [wanted],
             )
 
+    def test_sync_survives_retention_between_listing_and_cursor_lookup(self):
+        self.store.put_registration(registration(self.batch))
+        self.store.transition(str(self.batch.id), m.BatchState.STALE)
+        self.store.db.execute(
+            "UPDATE batch SET updated_at=? WHERE id=?",
+            (
+                (datetime.now(timezone.utc) - timedelta(days=31)).isoformat(),
+                str(self.batch.id),
+            ),
+        )
+        with ledger.Ledger(self.store.path) as writer:
+            writer.db.execute("PRAGMA busy_timeout=0")
+            attempted = []
+
+            def retain_before_cursor(action, table, column, *_):
+                if (
+                    action == sqlite3.SQLITE_READ
+                    and table == "registration"
+                    and column == "ROWID"
+                    and not attempted
+                ):
+                    attempted.append(True)
+                    try:
+                        writer.retain()
+                    except sqlite3.OperationalError as error:
+                        if "locked" not in str(error):
+                            raise
+                return sqlite3.SQLITE_OK
+
+            self.store.db.set_authorizer(retain_before_cursor)
+            try:
+                result = self.broker.run_plan(
+                    plan(m.PlanAction.SYNC, dict(tasks=[], cursor=None, plan_ids=[]))
+                )
+            finally:
+                self.store.db.set_authorizer(None)
+            self.assertTrue(attempted)
+            self.assertTrue(m.parse_result(result)["ok"])
+            payload = result["payload"]
+            assert payload is not None
+            self.assertEqual(
+                [item["batch_id"] for item in payload["registrations"]],
+                [str(self.batch.id)],
+            )
+            self.assertEqual(writer.retain(), 1)
+
     def test_sync_cursor_survives_acknowledging_previous_page(self):
         expected = []
         for index in range(12):

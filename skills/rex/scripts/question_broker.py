@@ -730,6 +730,14 @@ class Broker:
     def sync(
         self, body: m.SyncBody, result: m.Result, *, include_status: bool = True
     ) -> m.SyncPayload:
+        # Keep every listing and its cursor lookup in the same snapshot. Retention
+        # must not remove a listed row before its rowid is read.
+        with self.store.transaction():
+            return self._sync(body, result, include_status=include_status)
+
+    def _sync(
+        self, body: m.SyncBody, result: m.Result, *, include_status: bool
+    ) -> m.SyncPayload:
         status = self.status(body["tasks"][0] if len(body["tasks"]) == 1 else None)
         if body["tasks"]:
             allowed = {
