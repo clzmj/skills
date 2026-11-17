@@ -361,6 +361,7 @@ class RunPlanTests(unittest.TestCase):
             writer.db.execute("PRAGMA busy_timeout=0")
             attempted = []
 
+            # The authorizer sees the rowid() cursor lookup as a ROWID read.
             def retain_before_cursor(action, table, column, *_):
                 if (
                     action == sqlite3.SQLITE_READ
