@@ -53,7 +53,7 @@ class QuestionWorkerRace(unittest.TestCase):
         def worker():
             try:
                 with ledger.Ledger(fixture.store.path) as store:
-                    broker.Broker(store).worker(str(initial.id), spool_digest=False)
+                    broker.Broker(store).worker(str(initial.id))
             except Exception as error:
                 errors.append(error)
 

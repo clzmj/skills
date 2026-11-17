@@ -129,7 +129,9 @@ def lifecycle_hook(data):
         raise TypeError("Claude hook input must be a JSON object")
     name = data.get("hook_event_name", "")
     callback = store.grokbot_callback
-    if callback.input_request(data, AgentKind.CLAUDE) and callback.input_blocked(AgentKind.CLAUDE, data):
+    if callback.input_request(data, AgentKind.CLAUDE) and callback.input_blocked(
+        AgentKind.CLAUDE, data
+    ):
         return {}
     session = native_id(data.get("session_id"))
     root = identity(session)

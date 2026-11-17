@@ -217,8 +217,11 @@ class QuestionWireTests(unittest.TestCase):
             )
         )
         with patch.dict(os.environ, {"GROKBOT_QE": "1"}):
-            self.assertIsNone(callback.input_request(data, AgentKind.CODEX))
-            self.assertIsNone(
+            self.assertEqual(
+                callback.input_request(data, AgentKind.CODEX),
+                (InputKind.QUESTION, "Choose?\nNext?"),
+            )
+            self.assertIsNotNone(
                 callback.input_request(
                     {
                         "hook_event_name": HookEvent.PERMISSION_REQUEST,
