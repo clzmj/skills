@@ -823,10 +823,12 @@ class Ledger:
             batch = self.get_batch(batch_id)
             dispatched = bool(
                 self.db.execute(
-                    "SELECT 1 FROM outbound WHERE batch=? AND purpose=? AND state IN (?,?,?)",
+                    "SELECT 1 FROM outbound WHERE batch=? AND purpose=? AND state IN (?,?,?,?,?)",
                     (
                         batch_id,
                         m.OutboundPurpose.ANSWER,
+                        m.DeliveryState.CLAIMED,
+                        m.DeliveryState.DISPATCH_UNCERTAIN,
                         m.DeliveryState.DISPATCHED,
                         m.DeliveryState.OBSERVED,
                         m.DeliveryState.APPLIED,
@@ -844,13 +846,14 @@ class Ledger:
                 (floor, batch_id),
             )
             self.db.execute(
-                "UPDATE outbound SET state=?,suppress_cause=? WHERE batch=? AND purpose=? AND state IN (?,?,?)",
+                "UPDATE outbound SET state=?,suppress_cause=? WHERE batch=? AND purpose=? AND state IN (?,?)",
                 (
                     m.DeliveryState.SUPPRESSED,
                     m.SuppressCause.BOX_OWNED,
                     batch_id,
                     m.OutboundPurpose.ANSWER,
-                    *UNDISPATCHED,
+                    m.DeliveryState.PENDING,
+                    m.DeliveryState.DISPATCH_FAILED,
                 ),
             )
             if self.get_batch(batch_id).state == m.BatchState.BOX_OWNED:
@@ -1185,11 +1188,17 @@ class Ledger:
             if row and hmac.compare_digest(
                 row[0], hashlib.sha256(token.encode()).hexdigest()
             ):
-                self.db.execute(
-                    "UPDATE box_note SET acked_rev=resolution_rev WHERE delivery_id=?",
-                    (outbound,),
+                return bool(
+                    self.db.execute(
+                        "UPDATE box_note SET acked_rev=resolution_rev WHERE delivery_id=? AND state IN (?,?,?)",
+                        (
+                            outbound,
+                            m.BoxNoteState.SENT,
+                            m.BoxNoteState.ECHOED,
+                            m.BoxNoteState.UNKNOWN,
+                        ),
+                    ).rowcount
                 )
-                return True
             return False
 
     def notice(
@@ -1547,6 +1556,28 @@ class Ledger:
                 self.db.execute("DELETE FROM batch WHERE id=?", (str(batch.id),))
                 removed += 1
             cutoff = (at - timedelta(days=365)).isoformat()
+            # A durable result makes contenders on either inode replay rather than route.
+            # Leave unresolved, expired, and currently held locks alone.
+            for row in self.db.execute(
+                "SELECT plan_id FROM plan_seen WHERE result_b64 IS NOT NULL AND at>=?",
+                (cutoff,),
+            ):
+                name = f"qe-plan-{row[0]}"
+                if Path(name).name != name:
+                    continue
+                path = self.path.parent / name
+                try:
+                    fd = os.open(path, os.O_RDWR)
+                except FileNotFoundError:
+                    continue
+                try:
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        continue
+                    path.unlink(missing_ok=True)
+                finally:
+                    os.close(fd)
             self.db.execute("DELETE FROM plan_seen WHERE at<?", (cutoff,))
             self.db.execute("DELETE FROM box_note WHERE at<?", (cutoff,))
         return removed

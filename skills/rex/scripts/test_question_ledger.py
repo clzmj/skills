@@ -6,6 +6,7 @@
 """Public ledger seams: transactions, state transitions and durable claims."""
 
 import json
+import fcntl
 import os
 import sqlite3
 import tempfile
@@ -461,6 +462,69 @@ class LedgerTests(unittest.TestCase):
                     self.store.ack(str(message.id), message.ack_token), allowed
                 )
 
+    def test_box_note_ack_requires_possible_delivery(self):
+        m = ledger.m
+        batch = self.store.open_or_attach(
+            asker(), (question(),), native_call("call-1"), classification()
+        ).batch
+        for index, state in enumerate(m.BoxNoteState, 1):
+            with self.subTest(state=state):
+                note = m.BoxNote(
+                    m.DeliveryId(f"delivery-{index}"),
+                    m.SendAttempt(1),
+                    m.PlanId(f"plan-{index}"),
+                    batch.id,
+                    batch.rev,
+                    m.ResolutionRev(index),
+                    m.DeliveryPurpose.ANSWER,
+                    batch.asker.actor,
+                    None,
+                    "text",
+                    m.digest("text"),
+                    m.file_digest(b"token"),
+                    m.EscalationLevel.L3_PRINCIPAL,
+                    state,
+                    None,
+                    ledger.now(),
+                )
+                self.store.put_box_note(note)
+                allowed = state in {
+                    m.BoxNoteState.SENT,
+                    m.BoxNoteState.ECHOED,
+                    m.BoxNoteState.UNKNOWN,
+                }
+                self.assertEqual(
+                    self.store.ack(str(note.delivery_id), "token"), allowed
+                )
+                row = self.store.db.execute(
+                    "SELECT acked_rev FROM box_note WHERE delivery_id=?",
+                    (str(note.delivery_id),),
+                ).fetchone()
+                self.assertEqual(row[0], index if allowed else None)
+
+    def test_retain_cleans_only_unlocked_completed_plan_locks(self):
+        for plan, result in (
+            ("complete", "result"),
+            ("locked", "result"),
+            ("pending", None),
+        ):
+            self.store.db.execute(
+                "INSERT INTO plan_seen VALUES(?,?,?,?,?)",
+                (plan, "send", "digest", result, ledger.now().isoformat()),
+            )
+            (self.path.parent / f"qe-plan-{plan}").touch()
+        missing = self.path.parent / "qe-plan-missing"
+        missing.touch()
+        with (self.path.parent / "qe-plan-locked").open("r+") as locked:
+            fcntl.flock(locked, fcntl.LOCK_EX)
+            self.store.retain()
+            self.assertFalse((self.path.parent / "qe-plan-complete").exists())
+            self.assertTrue((self.path.parent / "qe-plan-locked").exists())
+            self.assertTrue((self.path.parent / "qe-plan-pending").exists())
+            self.assertTrue(missing.exists())
+        self.store.retain()
+        self.assertFalse((self.path.parent / "qe-plan-locked").exists())
+
     def test_ingest_events_replay_after_unlink_failure_is_deduplicated(self):
         event_id = str(uuid4())
         path = self.path.parent / (event_id + ".json")
@@ -661,6 +725,34 @@ class LedgerTests(unittest.TestCase):
             ).fetchone()[0],
             ledger.m.DeliveryState.SUPPRESSED,
         )
+
+    def test_ownership_preserves_possible_dispatch(self):
+        m = ledger.m
+        for state in (
+            m.DeliveryState.CLAIMED,
+            m.DeliveryState.DISPATCH_UNCERTAIN,
+            m.DeliveryState.DISPATCHED,
+            m.DeliveryState.OBSERVED,
+            m.DeliveryState.APPLIED,
+        ):
+            with self.subTest(state=state):
+                opened = self.store.open_or_attach(
+                    asker(turn=str(uuid4())),
+                    (question(str(uuid4())),),
+                    native_call(str(uuid4())),
+                    classification(),
+                )
+                answer = ledger.replace(outbound(opened.batch), state=state)
+                self.store.put_outbound(answer)
+                self.assertTrue(
+                    self.store.take_ownership(
+                        str(opened.batch.id), m.EscalationLevel.L3_PRINCIPAL
+                    )
+                )
+                row = self.store.db.execute(
+                    "SELECT state FROM outbound WHERE id=?", (str(answer.id),)
+                ).fetchone()
+                self.assertEqual(row[0], state)
 
     def test_progress_floor_raise_is_copied_to_later_snapshot_and_due_state(self):
         opened = self.store.open_or_attach(
