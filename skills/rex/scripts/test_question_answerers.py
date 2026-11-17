@@ -262,7 +262,7 @@ class InvocationTests(unittest.TestCase):
         self.assertEqual(len(result.attempts), 1)
         security.assert_called_once_with(
             [
-                "security",
+                "/usr/bin/security",
                 "find-generic-password",
                 "-s",
                 a.CLAUDE_OAUTH_KEYCHAIN_SERVICE,
@@ -320,6 +320,34 @@ class InvocationTests(unittest.TestCase):
             )
         self.assertEqual(result.reason, m.EscalationReason.NO_ANSWERER)
         security.assert_not_called()
+
+    def test_non_printable_oauth_is_unavailable_before_reservation(self):
+        for token in ("bad\x01token", "\x01\x7f", "caf\u00e9", "bad\ntoken"):
+            for explicit in (False, True):
+                with (
+                    self.subTest(token=repr(token), explicit=explicit),
+                    patch.dict(
+                        os.environ,
+                        {"CLAUDE_CODE_OAUTH_TOKEN": token} if explicit else {},
+                        clear=True,
+                    ),
+                    patch.object(platform, "system", return_value="Darwin"),
+                    patch.object(
+                        a.subprocess,
+                        "run",
+                        return_value=subprocess.CompletedProcess(
+                            [], 0, token + "\n", ""
+                        ),
+                    ),
+                    patch.object(a.subprocess, "Popen", side_effect=OSError) as launch,
+                ):
+                    result = self.runner.invoke(
+                        batch(self.root), m.EscalationLevel.L1_CHEAP, "Choose tabs."
+                    )
+                self.assertEqual(result.reason, m.EscalationReason.NO_ANSWERER)
+                self.assertEqual(result.attempts, ())
+                launch.assert_not_called()
+                self.assertFalse(self.store.reservations)
 
     def test_explicit_oauth_precedes_keychain_and_never_forwards_api_key(self):
         with (

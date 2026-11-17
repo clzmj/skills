@@ -450,14 +450,17 @@ def answerer_environment(kind: m.AnswererKind) -> dict[str, str] | None:
     env = {
         k: v for k, v in os.environ.items() if k in ESSENTIAL_ENV | VENDOR_AUTH[kind]
     }
-    if kind != m.AnswererKind.CLAUDE_PRINT or env.get("CLAUDE_CODE_OAUTH_TOKEN"):
+    if kind != m.AnswererKind.CLAUDE_PRINT:
         return env
+    if "CLAUDE_CODE_OAUTH_TOKEN" in env and env["CLAUDE_CODE_OAUTH_TOKEN"]:
+        token = env["CLAUDE_CODE_OAUTH_TOKEN"]
+        return env if token.isascii() and token.isprintable() else None
     if platform.system() != "Darwin":
         return None
     try:
         result = subprocess.run(
             [
-                "security",
+                "/usr/bin/security",
                 "find-generic-password",
                 "-s",
                 CLAUDE_OAUTH_KEYCHAIN_SERVICE,
@@ -474,7 +477,12 @@ def answerer_environment(kind: m.AnswererKind) -> dict[str, str] | None:
         # Subprocess diagnostics may contain secrets; expose no error text.
         return None
     token = result.stdout.rstrip("\r\n")
-    if result.returncode != 0 or not token:
+    if (
+        result.returncode != 0
+        or not token
+        or not token.isascii()
+        or not token.isprintable()
+    ):
         return None
     env["CLAUDE_CODE_OAUTH_TOKEN"] = token
     return env
@@ -509,6 +517,7 @@ class Answerers:
         on_wait: Callable[[], None] | None = None,
         pass_fds: tuple[int, ...] = (),
         deadline: float | None = None,
+        resolve_environment: Callable[[], dict[str, str] | None] | None = None,
     ) -> AnswerAttempt:
         if level not in (m.EscalationLevel.L1_CHEAP, m.EscalationLevel.L2_NORMAL):
             raise ValueError("answerers only support L1/L2")
@@ -569,6 +578,16 @@ class Answerers:
             return AnswerAttempt(
                 model, m.AttemptOutcome.REJECTED, m.EscalationReason.ANSWER_REJECTED
             )
+        # ponytail: CLAUDE_PRINT is hard-coded until Codex has validated bounds.
+        env = (
+            resolve_environment()
+            if resolve_environment is not None
+            else answerer_environment(m.AnswererKind.CLAUDE_PRINT)
+        )
+        if env is None:
+            return AnswerAttempt(
+                model, m.AttemptOutcome.FAILED, m.EscalationReason.NO_ANSWERER
+            )
         with answerer_slot(self.slots_dir) as acquired:
             if acquired is None:
                 return AnswerAttempt(
@@ -583,6 +602,7 @@ class Answerers:
                     on_wait,
                     (*pass_fds, acquired),
                     deadline,
+                    env,
                 )
             except _WaitCallbackFailed as exc:
                 raise exc.error.with_traceback(exc.error.__traceback__) from None
@@ -596,17 +616,11 @@ class Answerers:
         on_wait: Callable[[], None] | None,
         pass_fds: tuple[int, ...],
         deadline: float | None,
+        env: dict[str, str],
     ) -> AnswerAttempt:
         bounds = config.bounds
         assert bounds is not None
         results = []
-        # ponytail: CLAUDE_PRINT is hard-coded until Codex has validated bounds.
-        kind = m.AnswererKind.CLAUDE_PRINT
-        env = answerer_environment(kind)
-        if env is None:
-            return AnswerAttempt(
-                config.model, m.AttemptOutcome.FAILED, m.EscalationReason.NO_ANSWERER
-            )
         argv = build_command(config, executable=self.executable)
         deadline_s = min(bounds.wall_clock.total_seconds(), 90 if level == 1 else 240)
         for ordinal in (1, 2):

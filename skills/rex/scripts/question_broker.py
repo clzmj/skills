@@ -22,6 +22,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from enum import IntEnum, StrEnum
+from functools import cache
 from pathlib import Path
 from typing import Callable, Final, Generator, TypedDict, TypeVar, cast
 from uuid import UUID, uuid4
@@ -1343,6 +1344,11 @@ class Broker:
 
     def worker(self, batch_id: str) -> m.QuestionBatch:
         """Classify before registration; local answers never cross a committed L3 floor."""
+
+        @cache
+        def resolve_environment() -> dict[str, str] | None:
+            return answerers.answerer_environment(m.AnswererKind.CLAUDE_PRINT)
+
         # Six-minute worker: leave two route calls and ledger work.
         deadline = time.monotonic() + 285
         with self.worker_lock(batch_id, wait=0) as acquired:
@@ -1519,6 +1525,7 @@ class Broker:
                         on_wait=classify_wait,
                         pass_fds=(acquired,),
                         deadline=deadline,
+                        resolve_environment=resolve_environment,
                     )
                     output = result.output
                     if (

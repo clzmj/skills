@@ -133,6 +133,35 @@ class WorkerLadder(ClassificationAdmission):
             0,
         )
 
+    def test_worker_reuses_keychain_environment_for_l1_and_l2(self):
+        first, second = self.payload(), self.payload()
+        first["answers"][0]["confidence"] = 0.8
+        run = subprocess.run
+
+        def read_keychain(argv, **kwargs):
+            if argv[0] in ("security", "/usr/bin/security"):
+                return subprocess.CompletedProcess(argv, 0, "stub-oauth\n", "")
+            return run(argv, **kwargs)
+
+        with (
+            patch.dict(os.environ, {m.FLAG_ENV: "1"}, clear=True),
+            patch.object(platform, "system", return_value="Darwin"),
+            patch(
+                "question_answerers.subprocess.run",
+                side_effect=read_keychain,
+            ) as security,
+        ):
+            result = self.run_worker([first, second])
+        self.assertEqual(result.state, m.BatchState.RESOLVED_LOCAL)
+        self.assertEqual(self.log.read_text().splitlines(), ["haiku", "sonnet"])
+        self.assertEqual(
+            sum(
+                call.args[0][0] in ("security", "/usr/bin/security")
+                for call in security.call_args_list
+            ),
+            1,
+        )
+
     def test_box_ack_between_eligibility_and_resolution_finishes_worker(self):
         import json
         import question_delivery as delivery
