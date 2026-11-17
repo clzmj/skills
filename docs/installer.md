@@ -113,6 +113,7 @@ Global installs run from the user home directory and ignore saved `projectDir`.
 Project scope requires an existing directory; a missing directory error names
 the path. Unattended `--core-only` keeps saved favorites and pack selections;
 confirmed interactive choices, including clearing favorites, are saved instead.
+Interactive `--core-only` retry hints use the saved favorites accepted on that page.
 Combining `--core-only` with `--favorites` or `--all-favorites` is rejected.
 Successful runs save selections after launcher registration.
 Failed or cancelled runs keep all prior selections and only record owned paths

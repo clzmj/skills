@@ -40,6 +40,7 @@ const coreSkills: Skill[] = [
   { name: "rex", description: "Visible terminal work and conversational agent coordination" },
   { name: "python-tooling", description: "Python environments, dependency management, formatting and checks" },
 ];
+const defaultOptions: Options = { agents: [], dryRun: false, hooks: false, scope: InstallScope.Global, projectDir: "", method: "symlink", core: coreSkills.map(s => s.name), favorites: [], packSkills: {}, yes: false, update: false, help: false };
 const namePattern = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 const pathExists = (path: string) => { try { lstatSync(path); return true; } catch (error: any) { if (error.code === "ENOENT") return false; throw error; } };
 const cli = (agent: Agent) => agent === "codex" ? "codex" : "claude";
@@ -47,9 +48,8 @@ export const settingsPath = (options: Pick<Options, "scope" | "projectDir">) => 
   ? resolve(options.projectDir, ".clzmj-skills/install.json") : resolve(homedir(), ".config/clzmj-skills/install.json");
 
 export function parseOptions(args: string[], detected: Agent[] = [], cwd = process.cwd()): Options {
-  const conflicting = ["--favorites", "--all-favorites"].find(flag => args.includes(flag));
-  if (args.includes("--core-only") && conflicting) throw new Error(`--core-only cannot be combined with ${conflicting}`);
-  const options: Options = { agents: [...detected], dryRun: false, hooks: false, scope: InstallScope.Global, projectDir: cwd, method: "symlink", core: coreSkills.map(s => s.name), favorites: [], packSkills: {}, yes: false, update: false, help: false, provided: [...args] };
+  const options: Options = { ...defaultOptions, agents: [...detected], core: [...defaultOptions.core], favorites: [], packSkills: {}, projectDir: cwd, provided: [...args] };
+  const flags = new Set<string>();
   const list = (index: number): [string[], number] => {
     const values: string[] = [];
     while (args[index + 1] && !args[index + 1].startsWith("-")) values.push(...args[++index].split(",").filter(Boolean));
@@ -58,6 +58,7 @@ export function parseOptions(args: string[], detected: Agent[] = [], cwd = proce
   };
   for (let i = 0; i < args.length; i++) {
     const flag = args[i];
+    flags.add(flag);
     if (flag === "--dry-run") options.dryRun = true;
     else if (flag === "--yes" || flag === "-y") options.yes = true;
     else if (flag === "--help" || flag === "-h") options.help = true;
@@ -88,6 +89,8 @@ export function parseOptions(args: string[], detected: Agent[] = [], cwd = proce
       }
     } else throw new Error(`Unknown argument: ${flag}`);
   }
+  const conflicting = ["--favorites", "--all-favorites"].find(flag => flags.has(flag));
+  if (flags.has("--core-only") && conflicting) throw new Error(`--core-only cannot be combined with ${conflicting}`);
   if (options.scope === InstallScope.Project && !args.includes("--project-dir") && options.yes) throw new Error("Unattended project installs require --project-dir /absolute/directory");
   return options;
 }
@@ -300,6 +303,10 @@ export async function initialize(manifest: unknown, initial: Options, runtime: R
     const flags: [string[], keyof Options][] = [[["--agents"], "agents"], [["--core"], "core"], [["--core-only", "--all-favorites", "--favorites"], "favorites"], [["--skills"], "packSkills"], [["--hooks", "--no-hooks"], "hooks"], [["--scope"], "scope"], [["--project-dir"], "projectDir"], [["--method"], "method"]];
     for (const [names, key] of flags) if (names.some(flag => initial.provided?.includes(flag))) (options as any)[key] = key === "packSkills" ? { ...saved.options.packSkills, ...initial.packSkills } : initial[key];
   }
+  if (initial.provided?.includes("--core-only") && !options.yes && !options.dryRun && saved) {
+    options.favorites = saved.options.favorites?.slice();
+    options.packSkills = { ...saved.options.packSkills };
+  }
   const exists = runtime.exists ?? pathExists;
   let plan: ReturnType<typeof buildPlan>;
   let selected: Favorite[];
@@ -378,7 +385,7 @@ export async function initialize(manifest: unknown, initial: Options, runtime: R
   if (runtime.prepare) { coreSource = await activity(runtime, "Preparing verified release", () => runtime.prepare!(options, coreSource)); plan = buildPlan(selected!, options, states!, coreSource, exists); }
   const scopedSaved = runtime.load?.(settingsPath(options));
   const record: InstallRecord = { version: 1, options, ownedPaths: { ...(scopedSaved?.ownedPaths ?? {}) } };
-  const empty: Options = { agents: [], core: [], favorites: [], packSkills: {}, projectDir: "", scope: InstallScope.Global, method: "symlink", hooks: false, dryRun: false, yes: false, update: false, help: false };
+  const empty: Options = { ...defaultOptions, core: [] };
   const saveOwnership = () => runtime.save?.(settingsPath(options), { ...record, options: scopedSaved?.options ?? empty });
   let completed = 0, failed = 0;
   const changed = new Set<string>(), errors: string[] = [];

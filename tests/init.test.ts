@@ -210,14 +210,43 @@ describe("safe installer execution", () => {
     expect(inventories).toHaveLength(4);
     expect(inventories.every(call => call.cwd === homedir())).toBe(true);
   });
-  test("core-only honors clearing favorites in the interactive pages", async () => {
+  for (const update of [false, true]) test(`interactive core-only Enter keeps seeded saved favorites (update=${update})`, async () => {
     const fixture = mock();
-    const previous = options(["--favorites", "UditAkhourii/adhd"]);
+    const previous = options(["--favorites", "UditAkhourii/adhd", "--skills", "UditAkhourii/adhd:adhd"]);
     fixture.runtime.load = () => ({ version: 1, options: previous, ownedPaths: {} });
-    fixture.runtime.ui = pages({ review: () => true, multiselect: (title, _rows, defaults) => title === "Favorite packs" ? [] : defaults });
-    await initialize(manifest, parseOptions(["--core-only"], ["codex"]), fixture.runtime);
+    fixture.runtime.ui = pages({ review: () => true, multiselect: (title, _rows, defaults) => {
+      if (title === "Favorite packs") expect(defaults).toEqual(previous.favorites!);
+      return defaults;
+    } });
+    await initialize(manifest, parseOptions(["--core-only", ...(update ? ["--update"] : [])], ["codex"]), fixture.runtime);
+    expect(fixture.saved.at(-1)!.record.options.favorites).toEqual(previous.favorites);
+    expect(fixture.saved.at(-1)!.record.options.packSkills).toEqual(previous.packSkills);
+  });
+  for (const update of [false, true]) test(`interactive core-only clear differs from seeded favorites and saves empty choices (update=${update})`, async () => {
+    const fixture = mock();
+    const previous = options(["--favorites", "UditAkhourii/adhd", "--skills", "UditAkhourii/adhd:adhd"]);
+    fixture.runtime.load = () => ({ version: 1, options: previous, ownedPaths: {} });
+    fixture.runtime.ui = pages({ review: () => true, multiselect: (title, _rows, defaults) => {
+      if (title === "Favorite packs") {
+        expect(defaults).toEqual(previous.favorites!);
+        return [];
+      }
+      return defaults;
+    } });
+    await initialize(manifest, parseOptions(["--core-only", ...(update ? ["--update"] : [])], ["codex"]), fixture.runtime);
     expect(fixture.saved.at(-1)!.record.options.favorites).toEqual([]);
     expect(fixture.saved.at(-1)!.record.options.packSkills).toEqual({});
+  });
+  test("interactive core-only retry uses the accepted saved favorites", async () => {
+    const fixture = mock();
+    const previous = options(["--favorites", "UditAkhourii/adhd", "--skills", "UditAkhourii/adhd:adhd"]);
+    fixture.runtime.load = () => ({ version: 1, options: previous, ownedPaths: {} });
+    fixture.runtime.ui = pages({ review: () => true });
+    fixture.runtime.run = () => { throw new Error("failed fixture command"); };
+    await expect(initialize(manifest, parseOptions(["--core-only"], ["codex"]), fixture.runtime)).rejects.toThrow("--favorites UditAkhourii/adhd --skills UditAkhourii/adhd:adhd");
+  });
+  test("favorite conflicts use parsed flags rather than a missing option value", () => {
+    expect(() => parseOptions(["--core-only", "--method", "--favorites"])).toThrow("--method requires a value");
   });
   test("finish failure keeps selections and records written ownership", async () => {
     const fixture = mock(), previous = options(["--favorites", "UditAkhourii/adhd"]);
