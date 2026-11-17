@@ -216,6 +216,10 @@ class DecisionTests(BoxTest):
             reconciles=card.gen,
             by="jim",
         )
+        self.assertIn(
+            box.BoxReport.CARD_CAP_REACHED,
+            [r.kind for r in self.box.show(value["batch_id"])["reports"]],
+        )
         self.box.card_posted("fixture", "jim", card.gen, "card", by="jim")
         self.box.card_close("fixture", "jim", card.gen, by="jim")
         self.assertEqual(
