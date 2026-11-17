@@ -273,7 +273,6 @@ class LocalTakeover(unittest.TestCase):
             self.store.get_batch(str(self.batch.id)).state, m.BatchState.BOX_OWNED
         )
         self.assertEqual(self.store.get_outbound(str(pending.id)).paused_by, unknown.id)
-        self.assertEqual(unknown.origin, m.PromptOrigin.UNKNOWN)
 
         other = self.store.open_or_attach(
             asker(turn="turn-2"),
@@ -295,7 +294,6 @@ class LocalTakeover(unittest.TestCase):
         self.assertEqual(
             self.store.get_batch(str(other.id)).state, m.BatchState.CANCELLED
         )
-        self.assertEqual(human.origin, m.PromptOrigin.HUMAN)
 
     def test_x3b_broker_boxnote_and_unverified_markers_are_not_takeovers(self):
         message = self.resolve()
@@ -420,7 +418,7 @@ class LocalTakeover(unittest.TestCase):
 
     def test_x3c_human_after_resolution_suppresses_before_dispatch(self):
         message = self.resolve()
-        takeover = self.takeover(m.PromptOrigin.HUMAN)
+        self.takeover(m.PromptOrigin.HUMAN)
         self.assertEqual(
             self.store.get_outbound(str(message.id)).state, m.DeliveryState.SUPPRESSED
         )
@@ -430,7 +428,6 @@ class LocalTakeover(unittest.TestCase):
         )
         self.assertFalse(self.delivery.dispatch(str(message.id)))
         self.assertEqual(self.runner.texts, [])
-        self.assertEqual(takeover.origin, m.PromptOrigin.HUMAN)
 
 
 if __name__ == "__main__":

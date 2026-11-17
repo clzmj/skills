@@ -210,10 +210,16 @@ class Delivery:
                     return False
                 else:
                     # PreToolUse can start a worker before PermissionRequest
-                    # records its waiter. Leave that hook the full inline window.
+                    # records its waiter. Reserve the window only until one has
+                    # registered; an expired or dead waiter releases it early.
                     if (
                         batch.asker.agent is m.AgentKind.CLAUDE
                         and ledger.now() < batch.opened_at + m.INLINE_WAIT
+                        and self.store.db.execute(
+                            "SELECT 1 FROM inline_waiter WHERE batch=? LIMIT 1",
+                            (str(message.batch),),
+                        ).fetchone()
+                        is None
                     ):
                         return False
                     # Pick the effective route under the claim transaction;

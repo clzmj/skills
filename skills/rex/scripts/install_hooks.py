@@ -9,12 +9,10 @@ import json
 import re
 import shlex
 import shutil
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 from agent_types import HookEvent
 
 
@@ -59,12 +57,13 @@ def owned_handler(command, script, home, root):
         words = shlex.split(command)
     except ValueError:
         return False
-    if len(words) < 3 or "hook" not in words[2:]:
+    try:
+        hook_index = words.index("hook", 2)
+    except ValueError:
         return False
-    paths = [Path(word) for word in words if word.startswith("/")]
-    path = next((candidate for candidate in paths if candidate.name == script), None)
-    if path is None:
+    if hook_index == 0:
         return False
+    path = Path(words[hook_index - 1])
     if path.name != script or not path.is_absolute():
         return False
     return (path.parent == root or path.parent == home / "Developer/tools/rex-visible"
