@@ -55,7 +55,12 @@ class BriefInvalid(ValueError):
 
 
 def normalize(text: str) -> str:
-    return " ".join(unicodedata.normalize("NFKC", text).lower().split())
+    text = "".join(
+        char
+        for char in unicodedata.normalize("NFKC", text)
+        if unicodedata.category(char) != "Cf"
+    )
+    return " ".join(text.lower().split())
 
 
 def _contains_phrase(text: str, phrase: str) -> bool:
@@ -290,7 +295,9 @@ def derive_floor(
     elif hits:
         floor = max(floor, EscalationLevel.L3_PRINCIPAL)
     if classification is None or (
-        not classification.delegable or classification.sensitive_topics
+        not classification.classified
+        or not classification.delegable
+        or classification.sensitive_topics
     ):
         floor = max(floor, EscalationLevel.L3_PRINCIPAL)
     return Classification(
@@ -299,6 +306,7 @@ def derive_floor(
         classification.sensitive_topics if classification else (),
         tuple(dict.fromkeys(hits)),
         floor,
+        classified=classification.classified if classification else False,
     )
 
 

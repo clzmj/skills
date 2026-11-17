@@ -17,6 +17,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 import question_ledger as ledger
+import question_guard
 from question_model import BatchState
 
 
@@ -380,6 +381,93 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(saved["fallback_of"], detail["fallback_of"])
         self.assertEqual(saved["usage"], detail["usage"])
         self.assertNotIn("fixture-secret", saved["rationale"]["text"])
+
+    def test_classified_flag_round_trips_through_ledger(self):
+        unclassified = question_guard.derive_floor((question("unclassified"),), rules=())
+        classified = question_guard.derive_floor(
+            (question("classified"),), classification=classification(), rules=()
+        )
+        for call_id, result, expected in (
+            ("unclassified", unclassified, False),
+            ("classified", classified, True),
+        ):
+            batch = self.store.open_or_attach(
+                asker(actor=call_id, turn=call_id),
+                (question(call_id),),
+                native_call(call_id, actor=call_id, turn=call_id),
+                result,
+            ).batch
+            if not expected:
+                self.assertFalse(
+                    self.store.get_batch(str(batch.id)).classification.classified
+                )
+                stored = json.loads(
+                    self.store.db.execute(
+                        "SELECT classification_json FROM batch WHERE id=?",
+                        (str(batch.id),),
+                    ).fetchone()[0]
+                )
+                stored.pop("classified")
+                stored["floor"] = int(ledger.m.EscalationLevel.L1_CHEAP)
+                self.store.db.execute(
+                    "UPDATE batch SET classification_json=? WHERE id=?",
+                    (ledger.encoded(stored), str(batch.id)),
+                )
+            self.assertEqual(
+                self.store.get_batch(str(batch.id)).classification.classified, expected
+            )
+            if not expected:
+                self.assertGreaterEqual(
+                    self.store.get_batch(str(batch.id)).classification.floor,
+                    ledger.m.EscalationLevel.L3_PRINCIPAL,
+                )
+
+    def test_audit_detail_is_capped_per_line(self):
+        detail = {
+            "batch_id": "01234567-89ab-cdef-0123-456789abcdef",
+            "content_digest": "0123456789abcdef" * 4,
+            "answers": [
+                {"answer_id": str(uuid4()), "text": "answer " + "x" * 600}
+                for _ in range(8)
+            ],
+        }
+        self.store.audit(ledger.AuditKind.ATTEMPT, "task", ledger.encoded(detail))
+        saved = self.store.audit_events("task")[0].detail
+        self.assertLessEqual(len(saved), 500)
+
+    def test_post_commit_audit_write_failure_logs_and_continues(self):
+        original_open = os.open
+        failed = False
+
+        def open_once(path, *args, **kwargs):
+            nonlocal failed
+            if str(path).endswith("question-audit.lock") and not failed:
+                failed = True
+                raise OSError("audit unavailable")
+            return original_open(path, *args, **kwargs)
+
+        with patch.object(ledger.os, "open", side_effect=open_once), self.assertLogs(
+            ledger.__name__, level="ERROR"
+        ) as logs:
+            with self.store.transaction():
+                self.store.db.execute(
+                    "INSERT INTO budget VALUES(?,?,0,0,0,'0','0')",
+                    (ledger.m.BudgetScope.TASK, "committed-task"),
+                )
+                self.store.audit(ledger.AuditKind.NOTICE, "task", "first")
+                self.store.audit(ledger.AuditKind.NOTICE, "task", "second")
+
+        self.assertTrue(failed)
+        self.assertEqual(len(logs.output), 1)
+        self.assertEqual(
+            self.store.db.execute(
+                "SELECT count(*) FROM budget WHERE key='committed-task'"
+            ).fetchone()[0],
+            1,
+        )
+        self.assertEqual(
+            [event.detail for event in self.store.audit_events("task")], ["second"]
+        )
 
     def test_all_unknown_takeovers_must_be_cleared_before_claim(self):
         m = ledger.m
