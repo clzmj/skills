@@ -574,7 +574,7 @@ class Ledger:
             raise ValueError("classification must be complete")
         with self.transaction():
             row = self.db.execute(
-                "SELECT rev,context,mac_floor,box_floor,state FROM batch WHERE id=?",
+                "SELECT rev,context,mac_floor,box_floor,state,task FROM batch WHERE id=?",
                 (batch_id,),
             ).fetchone()
             if row is None or row["state"] in TERMINAL:
@@ -586,6 +586,13 @@ class Ledger:
                     "UPDATE batch SET mac_floor=max(mac_floor,?) WHERE id=?",
                     (classification.floor, batch_id),
                 )
+                if classification.floor > max(row["mac_floor"], row["box_floor"] or 0):
+                    self.audit(
+                        AuditKind.CONTEXT,
+                        row["task"],
+                        f"Floor {classification.floor} from source revision r{expected_rev} carried floor-only to current revision r{row['rev']}; current proof unchanged",
+                        batch_id,
+                    )
                 return False
             if row["rev"] != expected_rev or row["context"] != context:
                 return False

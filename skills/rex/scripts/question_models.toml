@@ -1,37 +1,38 @@
-# Initial empirical nearest-rank p95 from five P12 bounded Haiku runs.
-# n=5 is small, with heterogeneous prompts/turn counts, including a turn-limit
-# failure; this is not an estimate guaranteed to cover the population p95.
-# Input totals include cache creation/read tokens. Re-measure after 50 attempts.
-# Strict CLI inventory calibration is recorded in the Sonnet evidence fixture.
+# Initial empirical nearest-rank p95 over three representative read-bearing
+# samples per Claude model, with a 24,512-byte production prompt and max_turns=4.
+# All runs used dontAsk, strict read tools, empty MCP, and matched actual family.
+# Input totals include cache creation/read tokens. Small n=3 is not a population
+# tail guarantee; re-measure after 50 attempts. Historical P12 probes are retained
+# as evidence but do not define current reservations.
 # Calibrated capabilities only; GROKBOT_QE remains off until operator activation.
 [models.haiku]
 enabled = true
 bounded = true
-max_turns = 2
+max_turns = 4
 reservation_validated = true
 tools_validated = true
-reserve_tokens = 112148
-reserve_usd = "0.008049849999999999"
-reservation_samples = 5
+reserve_tokens = 34311
+reserve_usd = "0.00397892"
+reservation_samples = 3
 reservation_method = "nearest_rank_p95"
-observed_tokens = [72722, 73436, 73844, 112148, 73039]
-observed_usd = ["0.00525471", "0.00552734", "0.008049849999999999", "0.00582593", "0.005089770000000001"]
-evidence = "tests/qe/hooks/claude-p12-{exact,json,result,scope,stdin}*.json; docs/qe/question-delivery-evidence.md P12"
+observed_tokens = [34160, 34311, 34302]
+observed_usd = ["0.00397892", "0.00136951", "0.00138325"]
+evidence = "tests/qe/hooks/claude-p12-read-bearing-calibration.json; docs/qe/question-delivery-evidence.md P12"
 
 # Initial n=3 empirical nearest-rank p95; small sample, re-measure at 50 attempts.
 [models.sonnet]
 enabled = true
 bounded = true
-max_turns = 2
+max_turns = 4
 reservation_validated = true
 tools_validated = true
-reserve_tokens = 10213
-reserve_usd = "0.041172"
+reserve_tokens = 32035
+reserve_usd = "0.054965799999999995"
 reservation_samples = 3
 reservation_method = "nearest_rank_p95"
-observed_tokens = [10213, 10212, 10199]
-observed_usd = ["0.041172", "0.0177251", "0.0176731"]
-evidence = "tests/qe/hooks/claude-p12-sonnet-calibration.json; docs/qe/question-delivery-evidence.md P12"
+observed_tokens = [31998, 32013, 32035]
+observed_usd = ["0.054965799999999995", "0.018982", "0.0193538"]
+evidence = "tests/qe/hooks/claude-p12-read-bearing-calibration.json; docs/qe/question-delivery-evidence.md P12"
 
 [models.gpt-6-luna]
 enabled = false

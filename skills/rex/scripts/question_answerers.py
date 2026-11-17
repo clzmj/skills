@@ -15,6 +15,7 @@ import fcntl
 import json
 import math
 import os
+import re
 from pathlib import Path
 import signal
 import subprocess
@@ -381,6 +382,67 @@ def answerer_slot(directory: Path) -> Generator[int | None, None, None]:
     yield None
 
 
+def build_command(config: ModelConfig, *, executable: str = "claude") -> list[str]:
+    """Return the exact production CLI profile, without starting a process."""
+    bounds = config.bounds
+    if bounds is None or bounds.max_turns is None:
+        raise ValueError("command requires invocation turn bounds")
+    schema = (ROOT / "answerer_output.v1.json").read_text()
+    # tools restricts the available inventory; allowedTools alone only grants permissions.
+    return [
+        executable,
+        "-p",
+        "--model",
+        config.model.value,
+        "--no-session-persistence",
+        "--output-format",
+        "json",
+        "--json-schema",
+        schema,
+        "--permission-mode",
+        "dontAsk",
+        "--permission-prompts",
+        "none",
+        "--max-turns",
+        str(bounds.max_turns),
+        "--tools",
+        "Read,Grep,Glob",
+        "--allowedTools",
+        "Read Grep Glob",
+        "--disallowedTools",
+        "Bash Edit Write NotebookEdit WebFetch WebSearch Agent Task SendMessage ToolSearch Skill AskUserQuestion",
+        "--strict-mcp-config",
+        "--mcp-config",
+        '{"mcpServers":{}}',
+    ]
+
+
+def model_family_matches(raw: object, model: m.Model) -> bool:
+    """Validate every CLI-reported actual model against the requested family.
+
+    Missing usage identity is unvalidatable. Multiple reported models are
+    accepted only when every one belongs to the explicitly requested family.
+    """
+    family = {m.Model.HAIKU: "haiku", m.Model.SONNET: "sonnet"}.get(model)
+    if family is None or not isinstance(raw, dict):
+        return False
+    reported = raw.get("modelUsage")
+    if not isinstance(reported, dict) or not reported:
+        return False
+    pattern = rf"claude-{family}-[0-9]+(?:[-.][0-9]+)*"
+    return all(
+        isinstance(key, str) and re.fullmatch(pattern, key) is not None
+        for key in reported
+    )
+
+
+def answerer_environment(kind: m.AnswererKind) -> dict[str, str]:
+    """Return the scrubbed production environment, including approved OS identity."""
+    return {
+        k: v for k, v in os.environ.items() if k in ESSENTIAL_ENV | VENDOR_AUTH[kind]
+    }
+
+
 class Answerers:
     def __init__(
         self,
@@ -502,39 +564,8 @@ class Answerers:
         assert bounds is not None
         results = []
         kind = m.AnswererKind.CLAUDE_PRINT
-        env = {
-            k: v
-            for k, v in os.environ.items()
-            if k in ESSENTIAL_ENV | VENDOR_AUTH[kind]
-        }
-        schema = (ROOT / "answerer_output.v1.json").read_text()
-        # tools restricts the available inventory; allowedTools alone only grants permissions.
-        argv = [
-            self.executable,
-            "-p",
-            "--model",
-            config.model.value,
-            "--no-session-persistence",
-            "--output-format",
-            "json",
-            "--json-schema",
-            schema,
-            "--permission-mode",
-            "plan",
-            "--permission-prompts",
-            "none",
-            "--max-turns",
-            str(bounds.max_turns),
-            "--tools",
-            "Read,Grep,Glob",
-            "--allowedTools",
-            "Read Grep Glob",
-            "--disallowedTools",
-            "Bash Edit Write NotebookEdit WebFetch WebSearch Agent Task SendMessage ToolSearch Skill AskUserQuestion",
-            "--strict-mcp-config",
-            "--mcp-config",
-            '{"mcpServers":{}}',
-        ]
+        env = answerer_environment(kind)
+        argv = build_command(config, executable=self.executable)
         deadline_s = min(bounds.wall_clock.total_seconds(), 90 if level == 1 else 240)
         for ordinal in (1, 2):
             _notify_wait(on_wait)
@@ -615,6 +646,9 @@ class Answerers:
                         or raw.get("subtype") != "success"
                     ):
                         raise ValueError("answerer failed")
+                    if not model_family_matches(raw, config.model):
+                        reason = m.EscalationReason.MODEL_MISMATCH
+                        raise ValueError("missing or mismatched actual model family")
                     output = parse_answerer_output(raw["structured_output"], batch)
             except (
                 OSError,
@@ -635,7 +669,9 @@ class Answerers:
                     process.wait()
                 self.store.settle_budget(reservation, usage=usage)
             outcome = (
-                m.AttemptOutcome.ANSWERED
+                m.AttemptOutcome.REJECTED
+                if reason == m.EscalationReason.MODEL_MISMATCH
+                else m.AttemptOutcome.ANSWERED
                 if output is not None
                 else m.AttemptOutcome.FAILED
             )
@@ -648,6 +684,10 @@ class Answerers:
                     outcome,
                 )
             )
+            if reason == m.EscalationReason.MODEL_MISMATCH:
+                return AnswerAttempt(
+                    config.model, outcome, reason, attempts=tuple(results)
+                )
             if reason == m.EscalationReason.TIMEOUT and output is None:
                 # A timeout may retry only if the worker can afford a full fresh
                 # per-level invocation window; never reset its absolute deadline.

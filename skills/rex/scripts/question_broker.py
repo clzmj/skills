@@ -1129,8 +1129,25 @@ class Broker:
         reason: m.EscalationReason | None = None,
         local: m.Resolution | None = None,
         raised: m.FloorRaise | None = None,
+        recommendations: list[m.DigestRecommendation] | None = None,
     ) -> None:
         with self.store.transaction():
+            current = self.store.get_batch(str(batch.id))
+            if any(
+                hit.trigger is m.GuardTrigger.SECRET_PRESENT
+                for hit in current.classification.hits
+            ):
+                recommendations = []
+            elif recommendations is None:
+                latest = self.store.db.execute(
+                    "SELECT json FROM progress WHERE batch=? AND batch_rev=? ORDER BY seq DESC LIMIT 1",
+                    (str(batch.id), batch.rev),
+                ).fetchone()
+                recommendations = (
+                    m.parse_register_progress(json.loads(latest[0]))["recommendations"]
+                    if latest
+                    else []
+                )
             if local is None:
                 row = self.store.db.execute(
                     "SELECT json FROM resolution WHERE batch=? AND batch_rev=? ORDER BY rev DESC LIMIT 1",
@@ -1157,7 +1174,7 @@ class Broker:
                     batch_rev=batch.rev,
                     seq=seq,
                     escalated=reason,
-                    recommendations=[],
+                    recommendations=recommendations,
                     local_resolution=local.rev if local else None,
                     local_level=local.by.level if local else None,
                     floor_raise=raised,
@@ -1650,6 +1667,53 @@ class Broker:
                             ),
                         )
                     register()
+                    if (
+                        level is m.EscalationLevel.L2_NORMAL
+                        and rejection is not None
+                        and output.answers
+                    ):
+                        by_question = {
+                            answer.question: answer for answer in output.answers
+                        }
+                        active = [q for q in batch.questions if q.retired_rev is None]
+                        rationale_budget = max(
+                            1,
+                            (m.QUESTION_TEXT_MAX - 8 * len(active))
+                            // max(1, len(active)),
+                        )
+                        confidence = [
+                            answer.confidence.value
+                            for answer in output.answers
+                            if answer.confidence is not None
+                        ]
+                        self.ladder_progress(
+                            current,
+                            recommendations=[
+                                m.DigestRecommendation(
+                                    level=level,
+                                    model=result.model,
+                                    verdict=output.verdict,
+                                    choices=[
+                                        list(by_question[q.id].choice)
+                                        if q.id in by_question
+                                        else []
+                                        for q in active
+                                    ],
+                                    rationale=cap_text(
+                                        "\n".join(
+                                            f"{index}. {cap_text(by_question[q.id].rationale.text, rationale_budget)}"
+                                            for index, q in enumerate(active, 1)
+                                            if q.id in by_question
+                                        ),
+                                        m.QUESTION_TEXT_MAX,
+                                    )
+                                    or "",
+                                    confidence=min(confidence)
+                                    if len(confidence) == len(output.answers)
+                                    else None,
+                                )
+                            ],
+                        )
                     if (
                         current.state in {m.BatchState.BOX_OWNED, m.BatchState.BLOCKED}
                         or current.classification.floor >= 3

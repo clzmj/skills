@@ -12,6 +12,7 @@ from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
 import tempfile
+import tomllib
 import re
 from unittest.mock import patch
 import question_model as m
@@ -21,103 +22,113 @@ from test_question_ledger import asker, question
 class CapabilityTests(unittest.TestCase):
     def test_calibrated_models_have_bounds_codex_remains_refused(self):
         configs = a.load_models()
-        for config in configs.values():
-            if config.enabled:
-                self.assertTrue(
-                    config.bounded
-                    and config.tools_validated
-                    and config.reservation_validated
-                )
-        self.assertFalse(
-            configs[Model.GPT_LUNA].enabled or configs[Model.GPT_SOL].enabled
-        )
-        self.assertEqual(configs[Model.HAIKU].bounds.reserve_tokens, 112148)
-        self.assertEqual(configs[Model.SONNET].bounds.reserve_tokens, 10213)
-        self.assertEqual(configs[Model.SONNET].bounds.reserve_usd, Decimal("0.041172"))
-        self.assertFalse(configs[Model.GPT_LUNA].bounded)
+        for model in (Model.HAIKU, Model.SONNET):
+            config = configs[model]
+            self.assertTrue(
+                config.enabled
+                and config.bounded
+                and config.tools_validated
+                and config.reservation_validated
+            )
+            self.assertEqual(config.bounds.max_turns, 4)
+        for model in (Model.GPT_LUNA, Model.GPT_SOL):
+            self.assertFalse(configs[model].enabled or configs[model].bounded)
 
     def test_configuration_rejects_truthy_flags_and_invalid_numbers(self):
         source = (a.ROOT / "question_models.toml").read_text()
-        invalid = (
-            source.replace("enabled = false", 'enabled = "false"', 1),
-            source.replace("bounded = true", 'bounded = "true"', 1),
-            source.replace(
-                "reservation_validated = false", 'reservation_validated = "false"', 1
-            ),
-            source.replace("tools_validated = false", 'tools_validated = "false"', 1),
-            source.replace("max_turns = 2", "max_turns = true", 1),
-            source.replace("max_turns = 2", "max_turns = 0", 1),
-            source.replace("max_turns = 2", "max_turns = -1", 1),
-            source.replace("max_turns = 2\n", "", 1),
-            source.replace("reserve_tokens = 112148", "reserve_tokens = true", 1),
-            source.replace("reserve_tokens = 112148", "reserve_tokens = -1", 1),
-            source.replace(
-                'reserve_usd = "0.008049849999999999"', 'reserve_usd = "NaN"', 1
-            ),
-            source.replace(
-                'reserve_usd = "0.008049849999999999"', 'reserve_usd = "-1"', 1
-            ),
-            source.replace(
-                'reserve_usd = "0.008049849999999999"', "reserve_usd = 0.01", 1
-            ),
-            source.replace("enabled = false", "enabled = true", 1),
-            source.replace("[models.sonnet]", "[models.unknown]", 1),
-            source[: source.index("[models.sonnet]")],
-            source.replace("enabled = false", "enabled = false\nunknown = true", 1),
-            re.sub(
-                r"observed_tokens = \[.*?\]",
-                "observed_tokens = [true]",
+
+        def mutate(field, value):
+            changed, count = re.subn(
+                rf"^{re.escape(field)} = .*?$",
+                f"{field} = {value}",
                 source,
                 count=1,
-            ),
-            re.sub(
-                r"observed_usd = \[.*?\]", 'observed_usd = ["NaN"]', source, count=1
-            ),
+                flags=re.M,
+            )
+            self.assertEqual(count, 1)
+            self.assertNotEqual(changed, source)
+            return changed
+
+        invalid = (
+            mutate("enabled", '"false"'),
+            mutate("bounded", '"true"'),
+            mutate("reservation_validated", '"false"'),
+            mutate("tools_validated", '"false"'),
+            mutate("max_turns", "true"),
+            mutate("max_turns", "0"),
+            mutate("max_turns", "-1"),
+            re.sub(r"^max_turns = .*?\n", "", source, count=1, flags=re.M),
+            mutate("reserve_tokens", "true"),
+            mutate("reserve_tokens", "-1"),
+            mutate("reserve_usd", '"NaN"'),
+            mutate("reserve_usd", '"-1"'),
+            mutate("reserve_usd", "0.01"),
+            mutate("tools_validated", "false"),
+            source.replace("[models.sonnet]", "[models.unknown]", 1),
+            source[: source.index("[models.sonnet]")],
+            mutate("enabled", "true\nunknown = true"),
+            mutate("observed_tokens", "[true]"),
+            mutate("observed_usd", '["NaN"]'),
         )
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "models.toml"
             for candidate in invalid:
                 with self.subTest(candidate=candidate):
+                    self.assertNotEqual(candidate, source)
                     path.write_text(candidate)
                     with self.assertRaises(ValueError):
                         a.load_models(path)
 
-    def test_initial_reservations_match_five_recorded_samples(self):
-        fixture_root = Path(__file__).parents[3] / "tests/qe/hooks"
-        tokens, costs = [], []
-        for name in (
-            "claude-p12-exact-result.json",
-            "claude-p12-json-result.json",
-            "claude-p12-result.json",
-            "claude-p12-scope-result.json",
-            "claude-p12-stdin-result.json",
-        ):
-            raw = json.loads((fixture_root / name).read_text(), parse_float=Decimal)
-            usage = a.parse_usage(raw)
-            self.assertIsNotNone(usage)
-            tokens.append(usage.input_tokens + usage.output_tokens)
-            costs.append(usage.usd)
-        config = a.load_models()[m.Model.HAIKU]
-        self.assertEqual(config.bounds.reserve_tokens, sorted(tokens)[4])
-        self.assertEqual(config.bounds.reserve_usd, sorted(costs)[4])
-
-    def test_sonnet_reservations_match_recorded_calibration_without_enabling_calls(
-        self,
-    ):
+    def test_reservations_match_representative_read_bearing_calibration(self):
         fixture = (
             Path(__file__).parents[3]
-            / "tests/qe/hooks/claude-p12-sonnet-calibration.json"
+            / "tests/qe/hooks/claude-p12-read-bearing-calibration.json"
         )
         raw = json.loads(fixture.read_text())
-        config = a.load_models()[m.Model.SONNET]
-        self.assertEqual(
-            config.bounds.reserve_tokens,
-            max(sample["tokens"] for sample in raw["samples"]),
-        )
-        self.assertEqual(
-            config.bounds.reserve_usd,
-            max(Decimal(sample["usd"]) for sample in raw["samples"]),
-        )
+        self.assertEqual(raw["sample_count"], 6)
+        self.assertEqual(raw["max_turns"], 4)
+        self.assertEqual(raw["prompt_bytes"], 24512)
+        configs = a.load_models()
+        metadata = tomllib.loads((a.ROOT / "question_models.toml").read_text())[
+            "models"
+        ]
+        for sample in raw["samples"]:
+            model = Model(sample["model"])
+            self.assertEqual(sample["exit_code"], 0)
+            self.assertEqual(sample["subtype"], "success")
+            self.assertFalse(sample["timed_out"])
+            self.assertTrue(
+                sample["successful_evidence"]
+                and sample["model_family_valid"]
+                and sample["marker_evidence_valid"]
+            )
+            self.assertIsNone(sample["parse_failure"])
+            self.assertIsNone(sample["local_rejection"])
+            self.assertEqual(sample["validation_failures"], [])
+            self.assertEqual(sample["prompt_bytes"], 24512)
+            self.assertEqual(sample["max_turns"], 4)
+            reported = {actual: {} for actual in sample["model_ids"]}
+            self.assertTrue(a.model_family_matches({"modelUsage": reported}, model))
+        for model in (Model.HAIKU, Model.SONNET):
+            samples = [sample for sample in raw["samples"] if sample["model"] == model]
+            self.assertEqual(len(samples), 3)
+            self.assertEqual(
+                configs[model].bounds.reserve_tokens,
+                max(sample["tokens"] for sample in samples),
+            )
+            self.assertEqual(
+                configs[model].bounds.reserve_usd,
+                max(Decimal(sample["usd"]) for sample in samples),
+            )
+            self.assertEqual(metadata[model]["reservation_samples"], 3)
+            self.assertEqual(metadata[model]["reservation_method"], "nearest_rank_p95")
+            self.assertEqual(
+                metadata[model]["observed_tokens"],
+                [sample["tokens"] for sample in samples],
+            )
+            self.assertEqual(
+                metadata[model]["observed_usd"], [sample["usd"] for sample in samples]
+            )
 
 
 def batch(cwd):
@@ -238,6 +249,7 @@ class InvocationTests(unittest.TestCase):
     def test_success_is_ephemeral_other_vendor_scrubbed_and_inline_schema(self):
         payload = {
             "subtype": "success",
+            "modelUsage": {"claude-haiku-5-5": {}},
             "structured_output": output(),
             "usage": {
                 "input_tokens": 2,
@@ -248,7 +260,7 @@ class InvocationTests(unittest.TestCase):
             "total_cost_usd": ".001",
         }
         self.stub(
-            'import json, os, sys\nassert "--no-session-persistence" in sys.argv\nassert json.loads(sys.argv[sys.argv.index("--json-schema")+1])["type"]=="object"\nassert sys.argv[sys.argv.index("--tools")+1]=="Read,Grep,Glob"\nassert "GROKBOT_CALLBACK" not in os.environ\nassert "REX_SESSION" not in os.environ\nassert "OTHER_SECRET" not in os.environ\nassert "UNRELATED_SETTING" not in os.environ\nassert os.environ["USER"]=="qe-test-user"\nassert os.environ["LOGNAME"]=="qe-test-login"\nassert "--strict-mcp-config" in sys.argv\nassert sys.argv[sys.argv.index("--permission-mode")+1]=="plan"\nprint('
+            'import json, os, sys\nassert "--no-session-persistence" in sys.argv\nassert json.loads(sys.argv[sys.argv.index("--json-schema")+1])["type"]=="object"\nassert sys.argv[sys.argv.index("--tools")+1]=="Read,Grep,Glob"\nassert "GROKBOT_CALLBACK" not in os.environ\nassert "REX_SESSION" not in os.environ\nassert "OTHER_SECRET" not in os.environ\nassert "UNRELATED_SETTING" not in os.environ\nassert os.environ["USER"]=="qe-test-user"\nassert os.environ["LOGNAME"]=="qe-test-login"\nassert "--strict-mcp-config" in sys.argv\nassert sys.argv[sys.argv.index("--permission-mode")+1]=="dontAsk"\nprint('
             + repr(json.dumps(payload))
             + ")\n"
         )
@@ -514,3 +526,79 @@ class InvocationTests(unittest.TestCase):
             )
         self.assertEqual(result.reason, m.EscalationReason.TIMEOUT)
         self.assertEqual(len(result.attempts), 2)
+
+    def test_actual_subprocess_argv_matches_public_production_builder(self):
+        expected = a.build_command(self.config, executable=str(self.script))
+        payload = {
+            "subtype": "success",
+            "modelUsage": {"claude-haiku-5-5": {}},
+            "structured_output": output(),
+            "usage": {"input_tokens": 2, "output_tokens": 3},
+            "total_cost_usd": ".001",
+        }
+        self.stub(
+            "import sys\nassert sys.argv == "
+            + repr(expected)
+            + "\nprint("
+            + repr(json.dumps(payload))
+            + ")\n"
+        )
+        result = self.runner.invoke(
+            batch(self.root), m.EscalationLevel.L1_CHEAP, "Choose tabs."
+        )
+        self.assertEqual(result.outcome, m.AttemptOutcome.ANSWERED)
+        self.assertEqual(len(result.attempts), 1)
+
+    def test_model_family_requires_every_actual_key_to_match_requested_family(self):
+        cases = (
+            ({}, False),
+            ({"modelUsage": {}}, False),
+            ({"modelUsage": []}, False),
+            ({"modelUsage": {"": {}}}, False),
+            ({"modelUsage": {"claude-sonnet-5-5": {}}}, False),
+            ({"modelUsage": {"claude-haiku-5-5": {}, "claude-sonnet-5-5": {}}}, False),
+            ({"modelUsage": {"claude-haiku-garbage": {}}}, False),
+            ({"modelUsage": {"claude-haiku-5-5": {}}}, True),
+        )
+        for raw, expected in cases:
+            with self.subTest(raw=raw):
+                self.assertIs(a.model_family_matches(raw, m.Model.HAIKU), expected)
+        self.assertTrue(
+            a.model_family_matches(
+                {"modelUsage": {"claude-sonnet-5-5": {}}}, m.Model.SONNET
+            )
+        )
+        self.assertFalse(
+            a.model_family_matches(
+                {"modelUsage": {"claude-sonnet-5-5": {}}}, m.Model.GPT_SOL
+            )
+        )
+
+    def test_missing_or_substituted_model_refused_once_and_usage_settled(self):
+        for reported in (
+            None,
+            {},
+            {"claude-sonnet-5-5": {}},
+            {"claude-haiku-5-5": {}, "claude-sonnet-5-5": {}},
+        ):
+            self.store.reservations.clear()
+            self.store.settlements.clear()
+            payload = {
+                "subtype": "success",
+                "structured_output": output(),
+                "usage": {"input_tokens": 2, "output_tokens": 3},
+                "total_cost_usd": ".001",
+            }
+            if reported is not None:
+                payload["modelUsage"] = reported
+            self.stub("print(" + repr(json.dumps(payload)) + ")\n")
+            result = self.runner.invoke(
+                batch(self.root), m.EscalationLevel.L1_CHEAP, "Choose tabs."
+            )
+            self.assertEqual(result.outcome, m.AttemptOutcome.REJECTED)
+            self.assertEqual(result.reason, m.EscalationReason.MODEL_MISMATCH)
+            self.assertEqual(len(result.attempts), 1)
+            self.assertEqual(len(self.store.reservations), 1)
+            self.assertEqual(
+                self.store.settlements, [("1", m.Usage(2, 3, Decimal(".001")))]
+            )

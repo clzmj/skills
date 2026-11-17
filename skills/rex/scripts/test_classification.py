@@ -45,7 +45,7 @@ class WorkerLadder(ClassificationAdmission):
             f"raw=json.loads(Path({str(self.data)!r}).read_text())\n"
             f"with Path({str(self.log)!r}).open('a') as f: f.write(sys.argv[sys.argv.index('--model')+1]+'\\n')\n"
             "if isinstance(raw,list): raw=raw[0 if sys.argv[sys.argv.index('--model')+1]=='haiku' else 1]\n"
-            "print(json.dumps({'subtype':'success','structured_output':raw,'usage':{'input_tokens':1,'output_tokens':1},'total_cost_usd':0.001}))\n"
+            "print(json.dumps({'subtype':'success','structured_output':raw,'usage':{'input_tokens':1,'output_tokens':1},'total_cost_usd':0.001,'modelUsage':{'claude-'+sys.argv[sys.argv.index('--model')+1]+'-5-5':{}}}))\n"
         )
         self.script.chmod(0o700)
         bounds = m.InvocationBounds(
@@ -352,6 +352,13 @@ class WorkerLadder(ClassificationAdmission):
         (progress,) = [p for p in self.store.due_progress() if p["batch_rev"] == 2]
         self.assertEqual(progress["floor_raise"]["floor"], 4)
         self.assertEqual(self.log.read_text().splitlines(), ["haiku"])
+        provenance = [
+            event.detail
+            for event in self.store.audit_events(result.asker.task)
+            if "source revision r1" in event.detail
+        ]
+        self.assertEqual(len(provenance), 1)
+        self.assertIn("current revision r2", provenance[0])
 
     def test_stale_classification_raises_retained_questions_without_prior_registration(
         self,
@@ -365,3 +372,126 @@ class WorkerLadder(ClassificationAdmission):
         self.stale_classification_case(retire_old=True)
         (batch,) = self.store.batches()
         self.assertEqual(sum(q.retired_rev is not None for q in batch.questions), 1)
+
+    def test_local_dispatch_precedes_digest_coalescing(self):
+        import json
+        import question_broker as broker
+        from unittest.mock import patch
+
+        self.data.write_text(json.dumps(self.payload()))
+        self.detect()
+        (batch,) = self.store.batches()
+        sleep = broker.time.sleep
+        coalesced = []
+
+        def wait(seconds):
+            if seconds == broker.DIGEST_COALESCE.total_seconds():
+                answers = [
+                    o
+                    for o in self.store.outbounds(str(batch.id))
+                    if o.purpose is m.OutboundPurpose.ANSWER
+                ]
+                self.assertEqual(
+                    [o.state for o in answers], [m.DeliveryState.DISPATCHED]
+                )
+                coalesced.append(True)
+            else:
+                sleep(seconds)
+
+        with (
+            patch.object(broker.time, "sleep", side_effect=wait),
+            patch.object(self.worker, "digest", return_value=[]) as digest,
+        ):
+            result = self.worker.worker(str(batch.id), spool_digest=True)
+        self.assertEqual(result.state, m.BatchState.RESOLVED_LOCAL)
+        self.assertEqual(coalesced, [True])
+        digest.assert_called_once_with(batch.asker.task)
+
+    def test_bounded_l2_recommendation_survives_escalation_and_later_progress(self):
+        first, second = self.payload(), self.payload()
+        first["answers"][0]["confidence"] = 0.8
+        second["answers"][0]["confidence"] = 0.7
+        second["answers"][0]["rationale"] = "Use the existing convention. " * 200
+        result = self.run_worker([first, second])
+        self.assertEqual(result.state, m.BatchState.BOX_OWNED)
+        (progress,) = self.store.due_progress()
+        self.assertEqual(len(progress["recommendations"]), 1)
+        recommendation = progress["recommendations"][0]
+        self.assertEqual(recommendation["model"], m.Model.SONNET)
+        self.assertEqual(recommendation["level"], m.EscalationLevel.L2_NORMAL)
+        self.assertEqual(recommendation["choices"], [[0]])
+        self.assertEqual(recommendation["confidence"], 0.7)
+        self.assertIn("Use the existing convention.", recommendation["rationale"])
+        self.assertLessEqual(
+            len(recommendation["rationale"].encode(m.UTF8)), m.QUESTION_TEXT_MAX
+        )
+        self.worker.ladder_progress(result)
+        (later,) = self.store.due_progress()
+        self.assertEqual(later["recommendations"], progress["recommendations"])
+
+        quarantined = guard.derive_floor(
+            result.questions,
+            classification=result.classification,
+            previous_floor=result.classification.floor,
+            secret_present=True,
+        )
+        self.store.apply_classification(
+            str(result.id), result.rev, result.context, quarantined
+        )
+        self.worker.ladder_progress(self.store.get_batch(str(result.id)))
+        (quarantine_progress,) = self.store.due_progress()
+        self.assertEqual(quarantine_progress["recommendations"], [])
+
+    def test_reversed_l2_answers_keep_canonical_choices_and_bounded_wire_frame(self):
+        import copy
+        import json
+        from uuid import uuid4
+        import question_broker as broker
+
+        first = self.payload()
+        second_answer = copy.deepcopy(first["answers"][0])
+        second_answer.update(
+            question=2, choice=[1], rationale="Second convention advice. " * 300
+        )
+        first["answers"][0]["rationale"] = "First convention advice. " * 300
+        first["answers"] = [second_answer, first["answers"][0]]
+        second = copy.deepcopy(first)
+        for answer in first["answers"]:
+            answer["confidence"] = 0.8
+        for answer in second["answers"]:
+            answer["confidence"] = 0.7
+        self.data.write_text(json.dumps([first, second]))
+        self.detect(
+            tool_input={
+                "questions": [
+                    {
+                        "id": str(i),
+                        "question": "Which indentation?",
+                        "options": [{"label": "Tabs"}, {"label": "Spaces"}],
+                    }
+                    for i in (1, 2)
+                ]
+            }
+        )
+        (batch,) = self.store.batches()
+        result = self.worker.worker(str(batch.id), spool_digest=False)
+        (entry,) = self.store.due_registrations()
+        (progress,) = self.store.due_progress()
+        (advice,) = progress["recommendations"]
+        self.assertEqual(advice["choices"], [[0], [1]])
+        self.assertIn("First convention advice.", advice["rationale"])
+        self.assertIn("Second convention advice.", advice["rationale"])
+        envelope = self.worker.digest_envelope(
+            str(uuid4()),
+            result.asker.task,
+            [entry],
+            [progress],
+            [],
+            self.worker.clock().isoformat(),
+        )
+        self.assertLessEqual(len(m.canonical(envelope)), broker.DIGEST_MAX)
+        self.detect(tool_use_id="later-revision")
+        current = self.store.get_batch(str(batch.id))
+        self.worker.ladder_progress(current)
+        latest = [p for p in self.store.due_progress() if p["batch_rev"] == current.rev]
+        self.assertEqual(latest[0]["recommendations"], [])

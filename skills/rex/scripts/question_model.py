@@ -327,7 +327,7 @@ class Model(StrEnum):
     GPT_LUNA = "gpt-6-luna"
     GPT_SOL = "gpt-6.1-sol"
     HAIKU = "haiku"
-    SONNET = "sonnet"  # GPT names: COORDINATION.md:27-29; Claude aliases ASSUMED (P12)
+    SONNET = "sonnet"  # Claude aliases: P12; runtime validates actual model families.
 
 
 class Verdict(StrEnum):
@@ -342,6 +342,7 @@ class EscalationReason(StrEnum):
     NO_EVIDENCE = "no_evidence"
     TIMEOUT = "timeout"
     ANSWERER_FAILED = "answerer_failed"
+    MODEL_MISMATCH = "model_mismatch"
     BUDGET_EXHAUSTED = "budget_exhausted"
     ANSWER_REJECTED = "answer_rejected"
     UNBOUNDED_ANSWERER = "unbounded_answerer"
