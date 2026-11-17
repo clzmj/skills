@@ -34,7 +34,7 @@ class RedactionRule(StrEnum):
 
 
 REDACTED: Final = "[REDACTED]"
-URL_USERINFO: Final = re.compile(r"([a-z][a-z0-9+.-]*://)[^/\s]+@", re.I)
+URL_USERINFO: Final = re.compile(r"([a-z][a-z0-9+.-]*://)[^/?#\s]+@", re.I)
 TOKEN: Final = re.compile(r"\S{32,}")
 PATTERNS: Final = (
     (
@@ -56,7 +56,7 @@ PATTERNS: Final = (
     (
         RedactionRule.ASSIGNMENT,
         re.compile(
-            r"(?:password|passwd|pwd|passphrase|secret|token|api[_-]?key)[\"']?\s*[:=]\s*\S+",
+            r"(?:password|passwd|pwd|passphrase|secret|token|api[_-]?key|private[_-]?key)(?:[_-]\w+)*[\"']?\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|\S+)",
             re.I,
         ),
     ),
