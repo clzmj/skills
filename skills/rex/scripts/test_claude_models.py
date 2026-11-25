@@ -11,6 +11,7 @@ from pathlib import Path
 import claude_models
 import install_claude_agents
 import question_answerers
+import question_model as m
 from claude_models import ClaudeEffort, ClaudeModel, ClaudeRole
 
 AGENTS = Path(__file__).resolve().parents[1] / "claude-agents"
@@ -19,6 +20,10 @@ AGENT_ROLES = {
     "rex-worker.md": ClaudeRole.NORMAL,
     "rex-deep-worker.md": ClaudeRole.HARD,
     "rex-reviewer.md": ClaudeRole.REVIEW,
+}
+ANSWERER_ROLES = {
+    m.Model.HAIKU: ClaudeRole.MECHANICAL,
+    m.Model.SONNET: ClaudeRole.NORMAL,
 }
 READ_ONLY_TOOLS = {"Read", "Grep", "Glob"}
 OWNED = "# managed-by: agent-tooling rex"
@@ -104,17 +109,22 @@ class AgentDefinitionTests(unittest.TestCase):
 
 
 class LaunchTemplateTests(unittest.TestCase):
-    def test_every_claude_answerer_launches_a_role_model(self):
-        role_models = {claude_models.resolve(role) for role in ClaudeRole}
+    def test_every_claude_answerer_launches_its_role_model(self):
         configs = question_answerers.load_models(
             Path(__file__).with_name("question_models.toml")
         )
-        claude = [c for c in configs.values() if c.model in question_answerers.CLAUDE_MAX_BUDGET_USD]
-        self.assertTrue(claude)
-        for config in claude:
-            with self.subTest(config.model):
-                argv = question_answerers.build_command(config)
-                self.assertIn(argv[argv.index("--model") + 1], role_models)
+        claude = {
+            key: config
+            for key, config in configs.items()
+            if key in question_answerers.CLAUDE_MAX_BUDGET_USD
+        }
+        self.assertEqual(set(claude), set(ANSWERER_ROLES))
+        for key, role in ANSWERER_ROLES.items():
+            with self.subTest(key):
+                argv = question_answerers.build_command(claude[key])
+                self.assertEqual(
+                    argv[argv.index("--model") + 1], claude_models.resolve(role)
+                )
 
 
 class InstallerTests(unittest.TestCase):

@@ -15,6 +15,7 @@ malformed table, raises; there is no default model.
 import tomllib
 from dataclasses import dataclass
 from enum import StrEnum
+from functools import cache
 from pathlib import Path
 
 CONFIG = Path(__file__).resolve().with_name("claude_models.toml")
@@ -60,11 +61,15 @@ def load(path: Path = CONFIG) -> dict[ClaudeRole, RoleModel]:
     return table
 
 
+# Read once per process; load() stays uncached for explicit paths.
+_table = cache(load)
+
+
 def resolve(role: ClaudeRole | str) -> ClaudeModel:
     """Model alias for the role; the result is a str."""
-    return load()[ClaudeRole(role)].model
+    return _table()[ClaudeRole(role)].model
 
 
 def effort(role: ClaudeRole | str) -> ClaudeEffort:
     """Effort level for the role; the result is a str."""
-    return load()[ClaudeRole(role)].effort
+    return _table()[ClaudeRole(role)].effort

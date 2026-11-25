@@ -18,6 +18,8 @@ The hooks inspect commands and record lifecycle events. They never launch model 
 
 `install_hooks.py` installs them into `~/.claude/agents` whenever `--agents` includes `claude-code`, so `bun run install:rex` and the hosted installer's `--hooks` do too. To install them alone, run `uv run --script scripts/install_claude_agents.py` from this skill; `--dry-run` previews and `--target DIR` changes the destination. Only files carrying the `# managed-by: agent-tooling rex` line are replaced (after a backup); a same-named file without it is skipped and reported, and `--force` replaces it. Delete that line to keep your own edits. A project-level `.claude/agents` file with the same name still takes precedence. Rerunning with unchanged content writes nothing.
 
+After install: run `/agents` and confirm `rex-mechanical-worker`, `rex-worker`, `rex-deep-worker`, `rex-reviewer` load.
+
 ## Grok Bot callbacks
 
 Callbacks are opt-in. Configure `~/.config/agent-tooling/grokbot-callback.env`
