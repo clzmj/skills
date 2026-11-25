@@ -125,9 +125,9 @@ CREATE TABLE IF NOT EXISTS dispatch_attempt (outbound TEXT NOT NULL REFERENCES o
 CREATE TABLE IF NOT EXISTS inline_waiter (batch TEXT NOT NULL, event TEXT NOT NULL, hook_pid INTEGER NOT NULL,
  deadline TEXT NOT NULL, PRIMARY KEY(batch,event));
 CREATE TABLE IF NOT EXISTS notice (id TEXT PRIMARY KEY, kind TEXT NOT NULL, task TEXT NOT NULL, batch TEXT,
- detail TEXT NOT NULL, created_at TEXT NOT NULL, spooled INTEGER NOT NULL DEFAULT 0);
+ detail TEXT NOT NULL, created_at TEXT NOT NULL, spooled INTEGER NOT NULL DEFAULT 0, metadata_json TEXT);
 CREATE TABLE IF NOT EXISTS digest (id TEXT PRIMARY KEY, task TEXT NOT NULL, register_json TEXT NOT NULL,
- progress_json TEXT NOT NULL, notices_json TEXT NOT NULL, spooled_at TEXT NOT NULL);
+ progress_json TEXT NOT NULL, notices_json TEXT NOT NULL, spooled_at TEXT NOT NULL, metadata_json TEXT);
 CREATE TABLE IF NOT EXISTS budget (scope TEXT NOT NULL, key TEXT NOT NULL, attempts INTEGER NOT NULL,
  tokens_reserved INTEGER NOT NULL, tokens_spent INTEGER NOT NULL, usd_reserved TEXT NOT NULL, usd_spent TEXT NOT NULL,
  PRIMARY KEY(scope,key));
@@ -258,6 +258,7 @@ class L0Event:
     task_id: str
     text: str
     batch_id: str | None
+    metadata: m.DigestMetadata | None = None
 
     @classmethod
     def parse(cls, value: object) -> L0Event:
@@ -272,7 +273,13 @@ class L0Event:
             or (batch is not None and not isinstance(batch, str))
         ):
             raise ValueError("invalid event")
-        return cls(m.parse_identity(task, "task_id"), text, batch)
+        raw_metadata = value.get("metadata")
+        metadata = (
+            m.parse_record(m.DigestMetadata, raw_metadata)
+            if raw_metadata is not None
+            else None
+        )
+        return cls(m.parse_identity(task, "task_id"), text, batch, metadata)
 
 
 @dataclass(frozen=True, slots=True)
@@ -320,6 +327,15 @@ class Ledger:
             for statement in DDL.split(";"):
                 if statement.strip():
                     self.db.execute(statement)
+            for table in ("notice", "digest"):
+                columns = {
+                    row["name"]
+                    for row in self.db.execute(f"PRAGMA table_info({table})")
+                }
+                if "metadata_json" not in columns:
+                    self.db.execute(
+                        f"ALTER TABLE {table} ADD COLUMN metadata_json TEXT"
+                    )
             states = ",".join(f"'{state.value}'" for state in sorted(OPEN_FOR_ATTACH))
             self.db.execute(
                 f"CREATE UNIQUE INDEX IF NOT EXISTS batch_one_open ON batch(actor,turn) WHERE state IN ({states})"
@@ -721,7 +737,16 @@ class Ledger:
     ) -> m.QuestionBatch:
         with self.transaction():
             batch = self.get_batch(batch_id)
-            check_transition(batch.state, target)
+            # A newly attached revision can cross the wire count cap after
+            # ownership. This narrow safety block must not reopen delivery or
+            # broaden the ordinary transition table (§5.6.1 / §6.5).
+            cap_block = (
+                batch.state is m.BatchState.BOX_OWNED
+                and target is m.BatchState.BLOCKED
+                and block_cause is m.BlockCause.TOO_LARGE
+            )
+            if not cap_block:
+                check_transition(batch.state, target)
             if target == m.BatchState.BLOCKED and block_cause is None:
                 raise ValueError("a blocked batch requires a cause")
             result = replace(batch, state=target)
@@ -918,13 +943,17 @@ class Ledger:
             WHERE p.seq=r.progress_seq AND p.seq>r.acked_progress_seq ORDER BY p.rowid""")
         return tuple(m.parse_register_progress(json.loads(row[0])) for row in rows)
 
-    def registration_sent(self, batch_id: str, rev: int) -> None:
+    def registration_sent(
+        self, batch_id: str, rev: int, *, at: datetime | None = None
+    ) -> None:
         with self.transaction():
             self.db.execute(
-                "UPDATE registration SET state=?,tries=tries+1,last_sent_at=?,overdue=(tries+1>=?) WHERE batch=? AND batch_rev=?",
+                "UPDATE registration SET state=CASE WHEN state=? THEN ? ELSE ? END,tries=tries+1,last_sent_at=?,overdue=(tries+1>=?) WHERE batch=? AND batch_rev=?",
                 (
+                    m.RegistrationState.ACKED,
+                    m.RegistrationState.ACKED,
                     m.RegistrationState.SENT,
-                    now().isoformat(),
+                    (at or now()).isoformat(),
                     m.REGISTER_MAX_TRIES,
                     batch_id,
                     rev,
@@ -1225,13 +1254,14 @@ class Ledger:
         batch: str | None = None,
         *,
         notice_id: m.NoticeId | None = None,
+        metadata: m.DigestMetadata | None = None,
     ) -> str:
         from question_redact import redact
 
         notice_key = str(notice_id or uuid4())
         with self.transaction():
             inserted = self.db.execute(
-                "INSERT OR IGNORE INTO notice VALUES(?,?,?,?,?,?,?)",
+                "INSERT OR IGNORE INTO notice(id,kind,task,batch,detail,created_at,spooled,metadata_json) VALUES(?,?,?,?,?,?,?,?)",
                 (
                     notice_key,
                     kind,
@@ -1240,6 +1270,7 @@ class Ledger:
                     redact(detail).text[:500],
                     now().isoformat(),
                     False,
+                    encoded(metadata) if metadata is not None else None,
                 ),
             )
             if inserted.rowcount:
@@ -1389,6 +1420,7 @@ class Ledger:
                     value.text,
                     value.batch_id,
                     notice_id=notice_id,
+                    metadata=value.metadata,
                 )
                 path.unlink()
                 count += 1

@@ -129,7 +129,9 @@ def lifecycle_hook(data):
         raise TypeError("Claude hook input must be a JSON object")
     name = data.get("hook_event_name", "")
     callback = store.grokbot_callback
-    if callback.input_request(data) and callback.input_blocked(AgentKind.CLAUDE, data):
+    if callback.input_request(data, AgentKind.CLAUDE) and callback.input_blocked(
+        AgentKind.CLAUDE, data
+    ):
         return {}
     session = native_id(data.get("session_id"))
     root = identity(session)
@@ -186,7 +188,7 @@ def lifecycle_hook(data):
                 db.execute("UPDATE members SET state=?,updated=? WHERE provider=? AND native_session=? AND state IN (?,?,?)", (MemberState.ENDED, time.time(), AgentKind.CLAUDE, session, *active_states))
     elif name == HookEvent.STOP_FAILURE:
         store.state(team, actor, MemberState.BLOCKED)
-    elif callback.input_request(data):
+    elif callback.input_request(data, AgentKind.CLAUDE):
         store.state(team, actor, MemberState.WAITING)
     text = data.get("last_assistant_message") or ""
     if name == HookEvent.TEAMMATE_IDLE:

@@ -226,6 +226,29 @@ def attempt(batch, ordinal=1, outcome=ledger.m.AttemptOutcome.FAILED):
 
 
 class LedgerTests(unittest.TestCase):
+    def test_nested_transaction_commits_only_with_outer_and_rolls_back_together(self):
+        with ledger.Ledger(self.store.path) as observer:
+            with self.store.transaction():
+                batch = self.store.open_or_attach(
+                    asker(), (question(),), native_call("call-1"), classification()
+                ).batch
+                with self.store.transaction():
+                    self.store.take_ownership(str(batch.id), batch.classification.floor)
+                self.assertEqual(observer.batches(), ())
+            self.assertEqual(
+                observer.get_batch(str(batch.id)).state, BatchState.BOX_OWNED
+            )
+            with (
+                self.assertRaisesRegex(RuntimeError, "rollback"),
+                self.store.transaction(),
+            ):
+                with self.store.transaction():
+                    self.store.transition(str(batch.id), BatchState.STALE)
+                raise RuntimeError("rollback")
+            self.assertEqual(
+                observer.get_batch(str(batch.id)).state, BatchState.BOX_OWNED
+            )
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
