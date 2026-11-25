@@ -14,28 +14,27 @@ Use the controller's native Agent/subagent and messaging tools. Codex native IDs
 
 For Claude, hooks register session/subagent activity automatically. Use `claude_sessions.py status --team TASK`, `open --team TASK --session SESSION [--agent AGENT]`, or `note --team TASK --session SESSION [--agent AGENT] --state STATE --text TEXT` for read-only views and local progress. An explicit `join --team TASK --session SESSION --agent AGENT --parent-agent PARENT` refines provisional session-level hook parentage only when the immediate parent is known. An independent session uses `join` without `--agent`; use `--parent-session SESSION [--parent-agent AGENT]` to record its known caller. New background sessions can inherit only a provisional session-level parent from the controller environment until this explicit registration.
 
-Claude coordinates through native Agent/SendMessage when available. Background sessions use the installed CLI's supported `claude agents --json --all`, `logs`, and `attach` interfaces. Use the background ID reported by that inventory for `attach`; it can differ from the native session ID. With the verified Claude Code 2.1.322 background controller, use a configured agent the controller can discover or omit `--agent`; foreground transient `--agents` definitions may not carry into a background launch. Team features stay opt-in; Rex does not enable them, launch Claude, write native mailboxes, or deliver Claude messages through Codex queues. Record unavailable controller capabilities honestly. Preserve each host's model choices and permissions; use explicit economical Claude models for Claude launches rather than Codex model names.
+Claude coordinates through native Agent/SendMessage when available. Background sessions use the installed CLI's supported `claude agents --json --all`, `logs`, and `attach` interfaces. Use the background ID reported by that inventory for `attach`; it can differ from the native session ID. With the verified Claude Code 2.1.322 background controller, use a configured agent the controller can discover or omit `--agent`; foreground transient `--agents` definitions may not carry into a background launch. Team features stay opt-in; Rex does not enable them, launch Claude, write native mailboxes, or deliver Claude messages through Codex queues. Record unavailable controller capabilities honestly. Preserve the human-selected root model and permissions; choose every other Claude model from the role table below.
 
 Stop events with background tasks or scheduled wakeups remain waiting. Teammate hooks without an agent ID remain unattributed; the adapter never marks the root idle on their behalf. Child transcripts are shown only from an explicit child transcript path. Claude parent edges inferred only from the shared session are labeled provisional, not an asserted immediate nesting relationship.
 
-## Economical model routing
+## Claude roles and models
 
-Choose a supported model by task; these routes apply to Codex, not Claude. Use direct tools for deterministic work:
+Every Claude launch, subagent and workflow stage names its model by role. The user default in `~/.claude/settings.json` is never relied on. [claude_models.toml](claude_models.toml) is the source of truth; use direct tools for deterministic work.
 
-| Model | Starting effort | Work |
-| --- | --- | --- |
-| `gpt-6-luna` | low | Clear edits, lookups, triage, routine tests; medium for bounded reasoning or coordination |
-| `gpt-6.1-terra` | low or medium | Scoped code fixes, visual reasoning, computer use with a defined outcome, concise writing |
-| `gpt-6.1-sol` | low or medium | Ambiguous implementation, cross-module reasoning, complex reviews |
-| `gpt-6-astra` | medium | Exceptional analysis or architecture where unresolved uncertainty or a failed Sol approach justifies the extra usage |
+| Role | Model | Effort | Subagent | Work |
+| --- | --- | --- | --- | --- |
+| `mechanical` | haiku | low | `mechanical-worker` | Renames, formatting, bumps, small mechanical edits, lookups |
+| `normal` | sonnet | medium | `worker` | Normal implementation, most subagent work |
+| `hard` | opus | high | `deep-worker` | Hard design or debugging, risky diffs (security, data model) |
+| `review` | opus | high | `reviewer` | Fresh read-only reviews (`Read`, `Grep`, `Glob` only) |
 
-These are task routes, not a mandatory escalation ladder. Start with the lightest route likely to pass the acceptance checks. Escalate for concrete difficulty or a verification gap; carry the evidence forward rather than repeating exploration. Preserve the human-selected root model and native permission scope.
+- Subagents: spawn one of the definitions above (installed from [claude-agents](../claude-agents) by `install_claude_agents.py`). For built-in or plugin agent types, pass the `model` parameter; the definition's or session's default may differ from the policy. A per-invocation `model` overrides the definition, so pass it only to change role deliberately.
+- Workflows and agent teams: name the model for each stage or teammate. Unnamed workflow agents use the session model.
+- Sessions, including `--bg`: pass `--model` and `--effort`, taken from `claude_models.resolve(role)` and `claude_models.effort(role)`.
+- `CLAUDE_CODE_SUBAGENT_MODEL` only fills in when neither the invocation nor the definition names a model. Leave `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` unset: it discards both. `CLAUDE_CODE_EFFORT_LEVEL` overrides every effort above.
 
-For Luna/low use `focused_worker` with `fork_turns="none"` and a compact handoff. For Terra or Astra use `agent_type="default"` with explicit `model`, `reasoning_effort`, and `fork_turns="none"`; fixed-role profiles can override spawn settings. Increase effort only when evidence warrants it.
-
-Reuse an existing worker only when its model and relevant compact context fit the follow-up; do not keep an expensive old agent merely for convenience. Avoid full-history forks unless the work demonstrably depends on that history. Keep native permission inheritance; independent sessions must match the parent's authorized scope and sandbox. The task coordinator profile is for substantial coordination; focused/complex worker profiles provide economical defaults. These are capability roles, not fixed named team members.
-
-Prefer one worker over coordinator layers for small tasks, and parallelize only independent work with clear ownership. Keep handoffs to the objective, owned paths, constraints, checks, and deliverable. Share large logs as artifacts with short summaries and targeted excerpts. Verify once; repeat only checks that changed or failed. Keep the result concise and record the model and reason for routing in Rex.
+Start with the lightest role likely to pass the acceptance checks; escalate for concrete difficulty or a verification gap and carry the evidence forward. Reuse a worker only when its role and compact context fit the follow-up. Prefer one worker over coordinator layers, parallelize only independent work with clear ownership, and keep handoffs to the objective, owned paths, constraints, checks and deliverable. Verify once. Record the role and reason for routing in Rex.
 
 ## Working together
 

@@ -12,6 +12,12 @@ Jobs and read-only agent views use the existing main agent Rex session. Successf
 
 The hooks inspect commands and record lifecycle events. They never launch model tasks, approve tools, or invoke Computer Use. The agent runs substantial commands through `rex_visible.py run` under ordinary permissions. Codex uses native messaging or supported `codex queue` for independent sessions. Claude uses native Agent/SendMessage; its adapter records read-only lifecycle and transcript views, never Codex queues.
 
+## Claude roles and subagents
+
+`claude_models.toml` maps each role (`mechanical`, `normal`, `hard`, `review`) to a model alias and effort; `claude_models.resolve(role)` and `claude_models.effort(role)` read it and raise on an unknown role. The matching subagent definitions are in [../claude-agents](../claude-agents). See [COORDINATION.md](COORDINATION.md#claude-roles-and-models) for the table and usage.
+
+Install them from this skill with `uv run --script scripts/install_claude_agents.py`; `--dry-run` previews and `--target DIR` changes the destination (default `~/.claude/agents`). It backs up a differing file, leaves unrelated agents and settings alone, and is safe to rerun. `bun run install:rex` runs it before the hook installer; extra arguments reach only the hook installer. The hosted installer's `--hooks` does not run it.
+
 ## Grok Bot callbacks
 
 Callbacks are opt-in. Configure `~/.config/agent-tooling/grokbot-callback.env`
