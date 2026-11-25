@@ -1,0 +1,148 @@
+{
+  "schema": "qe.p12-read-calibration/1",
+  "sample_count": 6,
+  "max_calls": 6,
+  "profile": "question_answerers.build_command + answerer_environment; Broker.ladder_prompt",
+  "schema_sha256": "f1d2d13d12b355bb993b42bd3a5711a72624ad6e6735ed4f7c10a8cdc2a752df",
+  "adapter_sha256": "f7c6ad8ea38bf85d0e3958c7df3392b3a3bb2ad423eb6515c436234823f13ad6",
+  "max_turns": 4,
+  "prompt_bytes": 24512,
+  "p95_method": "empirical nearest rank over three bounded read-bearing samples per model; small sample, no tail guarantee",
+  "samples": [
+    {
+      "model": "haiku",
+      "ordinal": 1,
+      "max_turns": 4,
+      "wall_clock_s": 90,
+      "prompt_bytes": 24512,
+      "num_turns": 3,
+      "exit_code": 0,
+      "timed_out": false,
+      "subtype": "success",
+      "elapsed_ms": 6156,
+      "successful_evidence": true,
+      "marker_evidence_valid": true,
+      "validation_failures": [],
+      "local_rejection": null,
+      "parse_failure": null,
+      "tokens": 35269,
+      "usd": "0.077231",
+      "model_ids": [
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "model": "haiku",
+      "ordinal": 2,
+      "max_turns": 4,
+      "wall_clock_s": 90,
+      "prompt_bytes": 24512,
+      "num_turns": 3,
+      "exit_code": 0,
+      "timed_out": false,
+      "subtype": "success",
+      "elapsed_ms": 6232,
+      "successful_evidence": true,
+      "marker_evidence_valid": true,
+      "validation_failures": [],
+      "local_rejection": null,
+      "parse_failure": null,
+      "tokens": 35298,
+      "usd": "0.026187099999999998",
+      "model_ids": [
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "model": "haiku",
+      "ordinal": 3,
+      "max_turns": 4,
+      "wall_clock_s": 90,
+      "prompt_bytes": 24512,
+      "num_turns": 3,
+      "exit_code": 0,
+      "timed_out": false,
+      "subtype": "success",
+      "elapsed_ms": 5828,
+      "successful_evidence": true,
+      "marker_evidence_valid": true,
+      "validation_failures": [],
+      "local_rejection": null,
+      "parse_failure": null,
+      "tokens": 35247,
+      "usd": "0.025761399999999997",
+      "model_ids": [
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "model": "sonnet",
+      "ordinal": 1,
+      "max_turns": 4,
+      "wall_clock_s": 240,
+      "prompt_bytes": 24512,
+      "num_turns": 3,
+      "exit_code": 0,
+      "timed_out": false,
+      "subtype": "success",
+      "elapsed_ms": 6161,
+      "successful_evidence": true,
+      "marker_evidence_valid": true,
+      "validation_failures": [],
+      "local_rejection": null,
+      "parse_failure": null,
+      "tokens": 35207,
+      "usd": "0.0260865",
+      "model_ids": [
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "model": "sonnet",
+      "ordinal": 2,
+      "max_turns": 4,
+      "wall_clock_s": 240,
+      "prompt_bytes": 24512,
+      "num_turns": 3,
+      "exit_code": 0,
+      "timed_out": false,
+      "subtype": "success",
+      "elapsed_ms": 5811,
+      "successful_evidence": true,
+      "marker_evidence_valid": true,
+      "validation_failures": [],
+      "local_rejection": null,
+      "parse_failure": null,
+      "tokens": 35213,
+      "usd": "0.0258921",
+      "model_ids": [
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "model": "sonnet",
+      "ordinal": 3,
+      "max_turns": 4,
+      "wall_clock_s": 240,
+      "prompt_bytes": 24512,
+      "num_turns": 3,
+      "exit_code": 0,
+      "timed_out": false,
+      "subtype": "success",
+      "elapsed_ms": 6138,
+      "successful_evidence": true,
+      "marker_evidence_valid": true,
+      "validation_failures": [],
+      "local_rejection": null,
+      "parse_failure": null,
+      "tokens": 35191,
+      "usd": "0.0258788",
+      "model_ids": [
+        "claude-sonnet-5-5"
+      ]
+    }
+  ],
+  "profile_status": "historical negative routing evidence; not usable for reservations",
+  "permission_mode": "plan",
+  "usable_for_reservations": false
+}
