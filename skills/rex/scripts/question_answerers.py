@@ -426,7 +426,10 @@ def build_command(config: ModelConfig, *, executable: str = "claude") -> list[st
         # user,project,local. An empty list loads no user, project or local
         # settings, so a repo-controlled .claude/settings.json cannot swap the
         # Max-login token for another credential. --bare is not an option: it
-        # never reads OAuth. Managed (admin) settings still apply.
+        # never reads OAuth. Managed (admin) settings still apply. Negative control
+        # (tests/qe/hooks/claude-p12-setting-sources-negative-control.json,
+        # canary_fires_without_flag: true): without this flag the project
+        # apiKeyHelper runs in -p, so the empty value is what blocks it.
         "--setting-sources",
         "",
     ]

@@ -1,7 +1,7 @@
 {
   "schema": "qe.p12-observed-read-calibration/1",
   "sample_count": 2,
-  "max_calls": 40,
+  "max_calls": 2,
   "profile": "question_answerers.build_command + answerer_environment; Broker.ladder_prompt",
   "calibration_date": "2026-11-25",
   "tool_profile": {
@@ -22,7 +22,7 @@
   "auth_method": "Parent-sourced subscription OAuth via macOS Keychain (explicit CLAUDE_CODE_OAUTH_TOKEN takes precedence); no API-key or token-file fallback; envelope auth source recorded separately when present",
   "prompt_bytes": 24512,
   "project_settings_canary_untouched": true,
-  "p95_method": "empirical nearest rank; n=1 per actual model family; no headroom; cold: unique nonce prefix per call",
+  "p95_method": "n/a (n=1)",
   "samples": [
     {
       "model": "haiku",

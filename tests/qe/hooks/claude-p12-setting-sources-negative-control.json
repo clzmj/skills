@@ -1,0 +1,13 @@
+{
+  "schema": "qe.p12-setting-sources-negative-control/1",
+  "calibration_date": "2026-11-25",
+  "tool_profile": {
+    "cli": "claude",
+    "version": "2.1.332 (Claude Code)"
+  },
+  "repository_head": "a850d1f42b7c01fe34f450545a680c0a64184af0",
+  "calls": 1,
+  "flag_removed": "--setting-sources ''",
+  "exit_code": 1,
+  "canary_fires_without_flag": true
+}

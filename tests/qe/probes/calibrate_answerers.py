@@ -97,6 +97,12 @@ def main() -> int:
         "--samples-per-model", type=int, default=SAMPLES_PER_MODEL, choices=range(1, 21)
     )
     parser.add_argument(
+        "--negative-control",
+        action="store_true",
+        help="Make one Haiku call WITHOUT --setting-sources and record whether the "
+        "project apiKeyHelper canary fires (proves the flag is what blocks it)",
+    )
+    parser.add_argument(
         "--run",
         action="store_true",
         help="Required explicit approval guard for up to 40 serial model calls",
@@ -288,6 +294,47 @@ def main() -> int:
             raise RuntimeError(
                 "Claude CLI version check failed; no calibration started"
             )
+        if args.negative_control:
+            haiku = a.ModelConfig(
+                m.Model.HAIKU,
+                True,
+                True,
+                m.InvocationBounds(
+                    24 * 1024,
+                    4,
+                    None,
+                    timedelta(seconds=90),
+                    0,
+                    a.CLAUDE_MAX_BUDGET_USD[m.Model.HAIKU],
+                ),
+                True,
+                True,
+            )
+            argv = a.build_command(haiku)
+            i = argv.index("--setting-sources")
+            del argv[i : i + 2]
+            assert "--setting-sources" not in argv
+            done = subprocess.run(
+                argv,
+                input=prompt.encode(m.UTF8),
+                capture_output=True,
+                cwd=fixture,
+                env=env,
+                timeout=90,
+            )
+            result = {
+                "schema": "qe.p12-setting-sources-negative-control/1",
+                "calibration_date": date.today().isoformat(),
+                "tool_profile": {"cli": "claude", "version": version.stdout.strip()[:100]},
+                "repository_head": repo_head,
+                "calls": 1,
+                "flag_removed": "--setting-sources ''",
+                "exit_code": done.returncode,
+                "canary_fires_without_flag": canary.exists(),
+            }
+            args.receipt.resolve().write_text(json.dumps(result, indent=2) + "\n")
+            print(json.dumps(result))
+            return 0 if done.returncode == 0 else 1
         for model, level, wall in (
             (m.Model.HAIKU, m.EscalationLevel.L1_CHEAP, 90),
             (m.Model.SONNET, m.EscalationLevel.L2_NORMAL, 240),

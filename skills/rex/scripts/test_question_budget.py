@@ -153,8 +153,11 @@ class BudgetTests(unittest.TestCase):
             # calls, so a USD-p95 call can still exceed the token p95.
             fully_cold = [s for s in pilot["samples"] if s["model"] == name.value]
             self.assertEqual(len(fully_cold), 1)
-            for sample in (samples[len(samples) // 2], *fully_cold):
-                with self.subTest(model=name, usd=sample["usd"]):
+            # Subcases: median nonce call, the largest-token nonce call (Sonnet 26,789
+            # tokens), and the fully cold pilot.
+            largest = max(samples, key=lambda s: s["tokens"])
+            for sample in (samples[len(samples) // 2], largest, *fully_cold):
+                with self.subTest(model=name, usd=sample["usd"], tokens=sample["tokens"]):
                     reservation = self.store.reserve_budget(
                         "task",
                         model=name,

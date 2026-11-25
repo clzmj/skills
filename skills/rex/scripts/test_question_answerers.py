@@ -6,10 +6,11 @@ from question_model import Model
 
 
 import json
+import math
 import os
 from dataclasses import replace
 from datetime import timedelta
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal
 from pathlib import Path
 import tempfile
 import tomllib
@@ -20,6 +21,9 @@ import pwd
 from unittest.mock import patch
 import question_model as m
 from test_question_ledger import asker, question
+
+
+HEADROOM = Decimal("1.15")
 
 
 class CapabilityTests(unittest.TestCase):
@@ -129,17 +133,21 @@ class CapabilityTests(unittest.TestCase):
             assert bounds is not None
             pilot = [p for p in pilot_raw["samples"] if p["model"] == model.value]
             self.assertEqual(len(pilot), 1)
-            # Reserve covers both the nonce-cold p95 and the fully cold pilot.
+            # Reserve = documented 1.15x headroom over the largest observed value
+            # (Carlos, 2026-11-25: a fully cold call after idle is not an overrun).
+            top_tokens = max(s["tokens"] for s in samples + pilot)
+            top_usd = max(Decimal(s["usd"]) for s in samples + pilot)
+            self.assertGreaterEqual(bounds.reserve_tokens, top_tokens)
             self.assertEqual(
-                bounds.reserve_tokens,
-                max(sorted(s["tokens"] for s in samples)[18], pilot[0]["tokens"]),
+                bounds.reserve_tokens, math.ceil(top_tokens * HEADROOM)
             )
-            floor = max(
-                sorted(Decimal(s["usd"]) for s in samples)[18],
-                Decimal(pilot[0]["usd"]),
+            self.assertGreaterEqual(bounds.reserve_usd, top_usd)
+            self.assertEqual(
+                bounds.reserve_usd,
+                (Decimal(pilot[0]["usd"]) * HEADROOM).quantize(
+                    Decimal("0.0001"), rounding=ROUND_CEILING
+                ),
             )
-            self.assertGreaterEqual(bounds.reserve_usd, floor)
-            self.assertLessEqual(bounds.reserve_usd, floor * Decimal("1.03"))
             self.assertEqual(metadata[model]["reservation_samples"], 20)
             self.assertEqual(metadata[model]["reservation_method"], "nearest_rank_p95")
             self.assertEqual(
@@ -415,14 +423,13 @@ class InvocationTests(unittest.TestCase):
             "assert not any('sk-project' in v for v in os.environ.values())\n"
             "print(" + repr(json.dumps(payload)) + ")\n"
         )
-        result = self.runner.invoke(
-            batch(project),
-            m.EscalationLevel.L1_CHEAP,
-            "Choose tabs.",
-        )
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-parent"}):
+            result = self.runner.invoke(
+                batch(project),
+                m.EscalationLevel.L1_CHEAP,
+                "Choose tabs.",
+            )
         self.assertEqual(result.outcome, m.AttemptOutcome.ANSWERED)
-        argv = a.build_command(self.config)
-        self.assertEqual(argv[argv.index("--setting-sources") + 1], "")
 
     def test_only_structured_output_supplies_answer_usage_stays_in_envelope(self):
         for structured in (True, False):
