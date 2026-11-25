@@ -132,6 +132,7 @@ class Payload(GitMetadata):
     finished_at: str
     kind: NotRequired[InputKind]
     delivery_key: NotRequired[str]
+    revision: NotRequired[int]  # run_finished only.
 
 
 class TestPayload(TypedDict):
@@ -168,6 +169,13 @@ class Envelope(TypedDict):
     request_key: NotRequired[str]
     body: NotRequired[Payload]
     delivery_outcome: NotRequired[Outcome]
+    revision: NotRequired[int]  # 1 on a Stop superseding an idle_prompt release.
+
+
+class HeldStop(TypedDict):
+    turn: str
+    last_message: str
+    status: Status
 
 
 class SessionState(TypedDict):
@@ -186,6 +194,10 @@ class SessionState(TypedDict):
     updated_at: NotRequired[str]
     native_turn: NotRequired[str]
     retired_turns: NotRequired[list[str]]
+    blocking: NotRequired[list[str]]  # Task ids listed by the previous Stop (crons excluded), for the stale rule.
+    finished_turn: NotRequired[str]  # Turn that already emitted run_finished.
+    held: NotRequired[HeldStop]  # Root Stop held only by background tasks; idle_prompt sends it.
+    released: NotRequired[str]  # Turn whose run_finished came from idle_prompt; one later Stop may supersede it.
 
 
 class SessionView(TypedDict):
@@ -240,6 +252,13 @@ class RetryResult(TypedDict):
 
 WEBHOOK_EVENTS = (Event.RUN_FINISHED, Event.NEEDS_INPUT)
 TERMINAL_STATUSES = (Status.COMPLETED, Status.FAILED, Status.ENDED)
+ROOT_ONLY_FIELDS = ("blocking", "finished_turn", "held", "released")
+# Any of these means the session moved on, so a held Stop is out of date.
+HELD_RESET_EVENTS = (HookEvent.USER_PROMPT_SUBMIT, HookEvent.PRE_TOOL_USE, HookEvent.POST_TOOL_USE,
+                     HookEvent.STOP, HookEvent.STOP_FAILURE, HookEvent.SESSION_END)
+NOTIFY_EVENTS = frozenset((HookEvent.SESSION_START, HookEvent.USER_PROMPT_SUBMIT, HookEvent.SUBAGENT_START,
+                           HookEvent.SUBAGENT_STOP, HookEvent.STOP, HookEvent.STOP_FAILURE, HookEvent.SESSION_END,
+                           HookEvent.POST_TOOL_USE, HookEvent.PRE_TOOL_USE))
 STATUS_HISTORY_LIMIT = 100
 RECEIPT_MAX_BYTES = 1024 * 1024
 ORPHAN_TMP_AGE_SECONDS = 24 * 60 * 60
@@ -337,8 +356,37 @@ def config():
     return url, name, value.removeprefix(" ")
 
 
+ACTIVE_TASK_STATUSES = ("running", "pending", "in_progress")
+
+
+def fallback_id(entry):
+    """Content id from stable keys only: elapsed time or output size would make every Stop look new."""
+    if isinstance(entry, dict):
+        entry = {key: entry[key] for key in ("command", "description", "type") if key in entry} or entry
+    return hashlib.sha256(json.dumps(entry, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def blockers(data):
+    """Ids of live background work; cron ids carry a "cron:" prefix.
+
+    Dead shells can stay listed `running`. _notify treats a Stop as stale when the previous Stop listed all its task ids.
+    """
+    found = []
+    for task in data.get("background_tasks") or []:
+        if not isinstance(task, dict):
+            found.append("task:" + fallback_id(task))
+            continue
+        status = str(task.get("status") or "running").lower()  # A missing status is unknown, so fail safe.
+        if task.get("type") == "monitor" or status not in ACTIVE_TASK_STATUSES:
+            continue  # Monitors re-wake through UserPromptSubmit.
+        found.append(str(task.get("id") or task.get("name") or "task:" + fallback_id(task)))
+    for cron in data.get("session_crons") or []:
+        found.append("cron:" + str((cron.get("id") if isinstance(cron, dict) else None) or fallback_id(cron)))
+    return found
+
+
 def waiting(data):
-    return bool(data.get("background_tasks") or data.get("session_crons"))
+    return bool(blockers(data))
 
 
 def now():
@@ -556,6 +604,8 @@ def sync_sessions(sessions: dict[str, SessionState], members, current_key=""):
         if existing and existing.get("status") == Status.FAILED and member.get("state") in (MemberState.BLOCKED, MemberState.REPORTED, MemberState.ACCEPTED, MemberState.IDLE):
             status = Status.FAILED
         child = parent.copy()
+        for field in ROOT_ONLY_FIELDS:
+            child.pop(field, None)
         if existing:
             child.update(existing)
         child.update(key=key, id=member.get("native_id") or member.get("native_session") or key,
@@ -589,7 +639,8 @@ def _notify(agent, data, members):
     agent = AgentKind(agent)
     name = data.get("hook_event_name")
     request = input_request(data, agent)
-    if name not in (HookEvent.SESSION_START, HookEvent.USER_PROMPT_SUBMIT, HookEvent.SUBAGENT_START, HookEvent.SUBAGENT_STOP, HookEvent.STOP, HookEvent.STOP_FAILURE, HookEvent.SESSION_END, HookEvent.POST_TOOL_USE, HookEvent.PRE_TOOL_USE) and not request:
+    idle = name == HookEvent.NOTIFICATION and data.get("notification_type") == NotificationType.IDLE_PROMPT
+    if name not in NOTIFY_EVENTS and not request and not idle:
         return
     session = data.get("session_id")
     if not session or (name in (HookEvent.SUBAGENT_START, HookEvent.SUBAGENT_STOP) and not data.get("agent_id")):
@@ -607,6 +658,9 @@ def _notify(agent, data, members):
             return  # Reject before coordination snapshots can overwrite a child's terminal state.
         sync_sessions(sessions, members)
         item = sessions.get(key)
+        if idle and (not item or item["parent"] or item.get("held", {}).get("turn") != item["turn"]
+                     or item.get("finished_turn") == item["turn"]):
+            return
         inherited = os.environ.get("GROKBOT_PARENT_SESSION", "")
         parent_key = actor_key(agent, session) if child else ""
         if not child and inherited:
@@ -618,6 +672,8 @@ def _notify(agent, data, members):
         if not item:
             if parent:
                 item = parent.copy()
+                for field in ROOT_ONLY_FIELDS:
+                    item.pop(field, None)
                 item.update(key=key, id=child or session, agent=agent, parent=parent["key"],
                             depth=parent["depth"] + 1, status=Status.RUNNING, native_turn="", retired_turns=[])
             elif child or inherited or any(m["thread"] == key and m.get("parent") for m in members):
@@ -643,6 +699,8 @@ def _notify(agent, data, members):
             item["task_id"] = os.environ.get("GROKBOT_TASK_ID") or f"{metadata['repo'] or data.get('cwd') or os.getcwd()}:{metadata['branch']}"
             item["requester"] = os.environ["GROKBOT_CALLBACK"]
             item["turn"] = uuid.uuid4().hex
+            item.pop("finished_turn", None)
+            item.pop("released", None)
         native_turn = data.get("turn_id") or data.get("turn-id")
         retired_turns = item.get("retired_turns")
         if not isinstance(retired_turns, list):
@@ -667,23 +725,53 @@ def _notify(agent, data, members):
         item["rex_block"] = os.environ.get("REX_BLOCK") or item["rex_block"]
         failed = name == HookEvent.STOP_FAILURE or data.get("status") in (Status.FAILED, Status.ERROR) or bool(data.get("error"))
         event: Event | None = None
-        if request:
+        held = item.pop("held", None) if idle or request or name in HELD_RESET_EVENTS else None
+        if idle:
+            event, item["status"] = Event.RUN_FINISHED, held["status"]  # `held` is guarded above.
+        elif request:
             event, item["status"] = Event.NEEDS_INPUT, Status.WAITING
-        elif resumes_input(data) and item["status"] == Status.WAITING:
+        elif resumes_input(data) and (item["status"] == Status.WAITING or
+                (item.get("released") == item["turn"] and item["status"] != Status.ENDED)):  # The released turn woke up.
             item["status"] = Status.RUNNING
         elif name == HookEvent.USER_PROMPT_SUBMIT:
             event, item["status"] = (Event.LINEAGE if item["parent"] else Event.HEARTBEAT), Status.RUNNING
         elif name == HookEvent.SUBAGENT_START or (name == HookEvent.SESSION_START and item["parent"]):
             event, item["status"] = Event.LINEAGE, Status.RUNNING
         elif name in (HookEvent.STOP, HookEvent.STOP_FAILURE, HookEvent.SUBAGENT_STOP):
-            item["status"] = Status.WAITING if waiting(data) else Status.FAILED if failed else Status.COMPLETED
-            if not waiting(data):
+            ids = blockers(data)
+            tasks = {ident for ident in ids if not ident.startswith("cron:")}
+            previous = item.get("blocking")
+            # A shell can stay listed `running` after it died. Crons are meant to stay listed, so they never go stale.
+            stale = previous is not None and tasks <= set(previous)
+            hold = len(tasks) < len(ids) or (bool(tasks) and (bool(item["parent"]) or not stale))
+            if tasks:
+                item["blocking"] = sorted(tasks)
+            else:
+                item.pop("blocking", None)
+            item["status"] = Status.WAITING if hold else Status.FAILED if failed else Status.COMPLETED
+            if not hold:
                 event = Event.LINEAGE if item["parent"] else Event.RUN_FINISHED
+            elif not item["parent"] and len(tasks) == len(ids):  # Crons are never released by idle_prompt.
+                # Untruncated: a release also records ASSUMPTION lines from it.
+                item["held"] = HeldStop(turn=item["turn"], last_message=final_message(agent, data, limit=None),
+                                        status=Status.FAILED if failed else Status.COMPLETED)
         elif name == HookEvent.SESSION_END:
             item["status"] = Status.ENDED
             if item["parent"]:
                 event = Event.LINEAGE
         sessions[key] = item
+        superseding = False
+        if event == Event.RUN_FINISHED and not item["parent"]:
+            # One run_finished per user turn, except that one Stop may supersede an idle_prompt release.
+            # delivery_key also dedups; this survives a pruned grokbot-sent-* marker.
+            if item.get("finished_turn") != item["turn"]:
+                item["finished_turn"] = item["turn"]
+                if idle:
+                    item["released"] = item["turn"]
+            elif item.pop("released", None) == item["turn"]:
+                superseding = True
+            else:
+                event = None
         sync_sessions(sessions, members, current_key=key)
         for k, row in sessions.items():
             db.execute("INSERT OR REPLACE INTO sessions VALUES (?,?)", (k, json.dumps(row)))
@@ -695,19 +783,22 @@ def _notify(agent, data, members):
         envelope = Envelope(agent=agent, data=data, turn=item["turn"], requester=item["requester"],
                             task_id=item["task_id"], rex_session=item["rex_session"], rex_block=item["rex_block"],
                             finished_at=now(), event=event, status=item["status"], lineage=lineage(item, sessions),
-                            last_message=final_message(agent, data) if event == Event.RUN_FINISHED else "",
+                            last_message=held["last_message"][:2000] if idle else final_message(agent, data) if event == Event.RUN_FINISHED else "",
                             metadata=metadata or git_metadata(data.get("cwd") or os.getcwd()),
                             children=[ChildSummary(id=row["id"], depth=row["depth"], status=row["status"])
                                       for row in sessions.values() if row["root"] == item["root"] and row["parent"] and row["task_id"] == item["task_id"]])
         if request:
             envelope.update(kind=request[0], prompt_text=request[1], request_key=request_identity(data))
-    created = spool(envelope)
+        if superseding:
+            envelope["revision"] = 1
+        # Inside the transaction: a failed spool write must roll back finished_turn so a later Stop can retry.
+        created = spool(envelope)
     if created is not None and event == Event.RUN_FINISHED and os.environ.get(FLAG_ENV) == "1":
         try:
             source_metadata = envelope["metadata"]
             record_assumptions(
                 envelope["task_id"],
-                final_message(agent, data, limit=None),
+                held["last_message"] if idle else final_message(agent, data, limit=None),
                 DigestMetadata(requester=envelope["requester"], repo=source_metadata["repo"], branch=source_metadata["branch"]),
             )
         except Exception:  # noqa: BLE001, S110 - optional L0 reporting must not affect completion delivery.
@@ -833,6 +924,8 @@ def payload(envelope) -> Payload:
                    last_message=(envelope.get("last_message", str(data.get("last_assistant_message") or ""))[:2000]
                                  if envelope.get("event", Event.RUN_FINISHED) == Event.RUN_FINISHED else ""),
                    finished_at=envelope["finished_at"])
+    if body["event"] == Event.RUN_FINISHED:
+        body["revision"] = envelope.get("revision", 0)
     if "kind" in envelope:
         body["kind"] = InputKind(envelope["kind"])
     return body
@@ -879,6 +972,8 @@ def delivery_key(envelope):
                 envelope.get("status", "") if envelope.get("event") == Event.LINEAGE else ""]
     if envelope.get("event") == Event.NEEDS_INPUT:
         identity.append(envelope.get("request_key") or request_identity(envelope["data"]))
+    if "revision" in envelope:  # Appended only when set, so other keys are unchanged.
+        identity.append(envelope["revision"])
     return hashlib.sha256(json.dumps(identity).encode()).hexdigest()
 
 
