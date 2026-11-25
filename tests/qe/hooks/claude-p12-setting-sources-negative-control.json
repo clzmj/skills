@@ -1,0 +1,15 @@
+{
+  "schema": "qe.p12-setting-sources-negative-control/1",
+  "calibration_date": "2026-11-25",
+  "tool_profile": {
+    "cli": "claude",
+    "version": "2.1.332 (Claude Code)"
+  },
+  "repository_head": "a850d1f42b7c01fe34f450545a680c0a64184af0",
+  "calls": 1,
+  "flag_removed": "--setting-sources ''",
+  "exit_code": 1,
+  "canary_fires_without_flag": true,
+  "probe_sha256": "4cb4c82ef288aa50682f5cbd4ba42a9f977fd82c66a5b537b5a4225edd96b933",
+  "note": "Run from the uncommitted working tree at a850d1f plus the --negative-control probe code, first committed in 5d65164; probe_sha256 is the sha256 of tests/qe/probes/calibrate_answerers.py at 5d65164; it is asserted, not proven, that this matches the uncommitted code that ran. exit_code 1 is the expected hijack result: the canary apiKeyHelper ran and its dummy key was rejected."
+}

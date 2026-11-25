@@ -228,6 +228,26 @@ class QuestionWireTests(unittest.TestCase):
                 )
             )
 
+    def test_claude_question_suppression_needs_no_registration_or_tool_use_id(self):
+        with (
+            tempfile.TemporaryDirectory() as folder,
+            patch.object(callback.rex, "STATE", Path(folder)),
+            patch.dict(os.environ, {"GROKBOT_QE": "1"}),
+        ):
+            for event in (HookEvent.PRE_TOOL_USE, HookEvent.PERMISSION_REQUEST):
+                data = {
+                    "hook_event_name": event,
+                    "session_id": "fixture",
+                    "tool_name": "AskUserQuestion",
+                }
+                with self.subTest(event=event):
+                    self.assertIsNone(callback.input_request(data, AgentKind.CLAUDE))
+                    self.assertFalse(callback.input_blocked(AgentKind.CLAUDE, data))
+            with patch.dict(os.environ, {"GROKBOT_QE": "0"}):
+                request = callback.input_request(data, AgentKind.CLAUDE)
+                assert request is not None
+                self.assertEqual(request[0], InputKind.APPROVAL)
+
     def test_completion_emits_private_redacted_l0_event_only_when_enabled(self):
         with (
             tempfile.TemporaryDirectory() as folder,

@@ -13,6 +13,7 @@ from enum import StrEnum
 from collections.abc import Mapping
 from contextlib import closing
 import json
+import logging
 import os
 from pathlib import Path
 import sqlite3
@@ -31,11 +32,21 @@ import question_ledger as ledger
 import question_model as m
 from question_redact import redact
 
+# Recorded P5 failure: docs/qe/question-delivery-evidence.md, P5 section.
+# Set false if a later probe passes; an absent failure must not block the route.
+# TODO(PR-4): implement deny-plus-pending after resolving the coarse P5 gate;
+# evidence: docs/qe/question-delivery-evidence.md:94-102.
+P5_FAILED: Final = True
+
 END_EVENTS: Final = {
     m.HookEvent.STOP: m.LifecycleKind.TURN_ENDED,
     m.HookEvent.SESSION_END: m.LifecycleKind.SESSION_ENDED,
     m.HookEvent.SUBAGENT_STOP: m.LifecycleKind.SESSION_ENDED,
 }
+
+
+class EnqueueError(Exception):
+    """A detached broker command could not be launched."""
 
 
 class PermissionBehavior(StrEnum):
@@ -249,10 +260,22 @@ def launch(command: str, batch: str | None = None) -> None:
 
 
 def handle(
-    value: object, agent: m.AgentKind, store: ledger.Ledger, *, spawn: bool = True
+    value: object,
+    agent: m.AgentKind,
+    store: ledger.Ledger,
+    *,
+    spawn: bool = True,
+    workers: list[str] | None = None,
 ) -> HookOutput:
     if os.environ.get(m.FLAG_ENV) != "1":
         return {}
+
+    def request_worker(batch: str) -> None:
+        if workers is None:
+            launch(broker.Command.WORKER, batch)
+        else:
+            workers.append(batch)
+
     input = m.parse_hook_input(value, agent)
     state = callback.session_state(agent, input.session, input.child)
     if state is None:
@@ -264,7 +287,10 @@ def handle(
             m.Lifecycle(actor, END_EVENTS[input.event], None, None, None, ledger.now())
         )
         if spawn:
-            launch(broker.Command.TICK)
+            try:
+                launch(broker.Command.TICK)
+            except Exception as exc:
+                raise EnqueueError from exc
         return {}
     if input.event is m.HookEvent.USER_PROMPT_SUBMIT:
         origin = prompt_origin(store, actor, input.session, input.prompt or "")
@@ -303,7 +329,7 @@ def handle(
                     )
                 )
             if spawn:
-                launch(broker.Command.WORKER, str(batch.id))
+                request_worker(str(batch.id))
         return {}
     adapter = codex_questions if agent is m.AgentKind.CODEX else claude_questions
     if (
@@ -465,10 +491,11 @@ def handle(
                 )
             # P5 answer adoption failed. Do not open an unattended parked dialog
             # or impersonate an inline answer; leave the native question visible.
-            elif agent is m.AgentKind.CLAUDE and batch.state in {
-                m.BatchState.OPEN,
-                m.BatchState.ESCALATING,
-            }:
+            elif (
+                P5_FAILED
+                and agent is m.AgentKind.CLAUDE
+                and batch.state in {m.BatchState.OPEN, m.BatchState.ESCALATING}
+            ):
                 store.transition(
                     str(batch.id),
                     m.BatchState.BLOCKED,
@@ -511,8 +538,11 @@ def handle(
                     root_session=lineage["root_session_id"],
                 )
     if spawn:
-        launch(broker.Command.TICK)
-        launch(broker.Command.WORKER, str(batch.id))
+        try:
+            launch(broker.Command.TICK)
+            request_worker(str(batch.id))
+        except Exception as exc:
+            raise EnqueueError from exc
     return {}
 
 
@@ -528,9 +558,12 @@ def main() -> int:
     try:
         value = json.load(sys.stdin)
         with ledger.Ledger(callback.rex.STATE / m.LEDGER_FILE) as store:
-            result = handle(value, m.AgentKind(args.agent), store)
+            workers: list[str] = []
+            result = handle(value, m.AgentKind(args.agent), store, workers=workers)
             # Every hook recovers durable session intents after recording its
-            # own observation. Hooks enqueue work; they never take its lock.
+            # own observation. Check for a live worker before enqueueing one.
+            # Launch at most one worker; other pending batches wait for the
+            # 60-second tick.
             try:
                 input = m.parse_hook_input(value, m.AgentKind(args.agent))
                 actor = callback.actor_key(input.agent, input.session, input.child)
@@ -546,16 +579,26 @@ def main() -> int:
                         m.DeliveryState.DISPATCH_FAILED,
                     ),
                 ).fetchall()
-                for row in pending:
-                    launch(broker.Command.WORKER, row[0])
+                workers.extend(row[0] for row in pending)
+                for batch in dict.fromkeys(workers):
+                    with broker.Broker(store).worker_lock(batch, wait=0) as acquired:
+                        available = acquired is not None
+                    if available:
+                        launch(broker.Command.WORKER, batch)
+                        break
             except Exception:  # noqa: BLE001 - recovery cannot erase an inline decision.
+                logging.getLogger(__name__).error("Question hook recovery failed")
                 try:
                     callback.receipt(callback.Outcome.ENQUEUE_FAILED)
                 except OSError:
                     pass
-    except Exception:  # noqa: BLE001 - a broken hook must leave the native question available.
+    except Exception as exc:  # noqa: BLE001 - a broken hook must leave the native question available.
         try:
-            callback.receipt(callback.Outcome.ENQUEUE_FAILED)
+            callback.receipt(
+                callback.Outcome.ENQUEUE_FAILED
+                if isinstance(exc, EnqueueError)
+                else callback.Outcome.HOOK_ERROR
+            )
         except OSError:
             pass
     print(json.dumps(result))

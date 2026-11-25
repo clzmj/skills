@@ -85,6 +85,7 @@ class Outcome(StrEnum):
     DELIVERY_FAILED = "delivery_failed"
     CONFIG_INVALID = "config_invalid"
     ENQUEUE_FAILED = "enqueue_failed"
+    HOOK_ERROR = "hook_error"
     LOCAL_ONLY = "local_only"
     PENDING = "pending"
     SPOOL_INVALID = "spool_invalid"
@@ -395,9 +396,8 @@ def input_request(data, agent=AgentKind.CODEX) -> tuple[InputKind, str] | None:
     name = data.get("hook_event_name")
     notification = data.get("notification_type", "")
     tool = data.get("tool_name")
-    question_tool = tool in tuple(QuestionTool)
-    if os.environ.get(FLAG_ENV) == "1" and question_tool:
-        return None  # The question hook owns registration and delivery.
+    if os.environ.get(FLAG_ENV) == "1" and tool in tuple(QuestionTool):
+        return None
     if agent == AgentKind.CODEX and name == HookEvent.PRE_TOOL_USE and tool in (QuestionTool.CODEX_BLOCKING, QuestionTool.CODEX_ASYNC):
         questions = validate_question_input(data.get("tool_input"))
         prompt = "\n".join(q.text for q in questions or () if q.text.strip())

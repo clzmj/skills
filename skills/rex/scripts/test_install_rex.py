@@ -39,6 +39,32 @@ class HookConfig(TypedDict):
 
 
 class InstallerTests(unittest.TestCase):
+    def test_script_resolves_agent_types_from_another_cwd(self):
+        script = Path(__file__).with_name("install_hooks.py").resolve()
+        with tempfile.TemporaryDirectory() as folder:
+            result = subprocess.run(
+                ["uv", "run", "--script", str(script), "--help"],
+                cwd=folder,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("usage:", result.stdout)
+
+    def test_foreign_hook_invocation_cannot_be_claimed_by_argument_path(self):
+        home = Path("/test-home")
+        root = home / ".local/share/agent-tooling/rex"
+        self.assertFalse(
+            installer.owned_handler(
+                "uv run /x/codex_sessions.py hook", "codex_sessions.py", home, root
+            )
+        )
+        command = shlex.join(
+            ["uv", "run", "--script", "/x/foreign.py", "hook", str(root / "codex_sessions.py")]
+        )
+        self.assertFalse(installer.owned_handler(command, "codex_sessions.py", home, root))
+
     def test_operator_cli_can_enable_then_disable_both_hosts_without_duplicates(self):
         with tempfile.TemporaryDirectory() as folder:
             home = Path(folder)

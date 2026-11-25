@@ -9,15 +9,130 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, BrokenBarrierError
 from datetime import timedelta
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import question_broker as broker
 import question_guard as guard
+import question_ledger as ledger
 import question_model as m
 import test_question_hooks as hook_fixtures
 
 
 class Registration(hook_fixtures.HookFixture):
+    def test_tick_recovers_all_nonterminal_batches_without_sleeping(self):
+        for index in range(4):
+            self.detect(turn_id=f"turn-{index}", tool_use_id=f"call-{index}")
+        batches = self.store.batches()
+        self.store.transition(str(batches[1].id), m.BatchState.BOX_OWNED)
+        self.store.transition(str(batches[2].id), m.BatchState.ESCALATING)
+        self.store.transition(str(batches[2].id), m.BatchState.RESOLVED_LOCAL)
+        self.store.transition(str(batches[3].id), m.BatchState.STALE)
+        worker = broker.Broker(
+            self.store, clock=lambda: ledger.now() + timedelta(minutes=1)
+        )
+        with (
+            patch.object(worker, "worker", wraps=worker.worker) as recover,
+            patch.object(broker.time, "sleep") as sleep,
+            patch.object(
+                broker.callback, "spool", return_value=self.directory / "fixture-spool"
+            ),
+        ):
+            self.assertTrue(worker.tick())
+        self.assertEqual(
+            recover.call_args_list,
+            [call(str(batch.id), spool_digest=False) for batch in batches[:3]],
+        )
+        sleep.assert_not_called()
+
+    def test_detect_and_worker_spool_digest_without_a_later_hook(self):
+        with patch.object(hook_fixtures.hooks, "launch") as launch:
+            self.detect(spawn=True)
+        self.assertTrue(
+            any(call.args[0] is broker.Command.WORKER for call in launch.call_args_list)
+        )
+        (batch,) = self.store.batches()
+        with (
+            patch.object(broker.time, "sleep") as sleep,
+            patch.object(broker.callback.rex, "STATE", self.directory),
+            patch.object(broker.callback.subprocess, "Popen"),
+            patch.object(
+                broker.routes.RouteRunner,
+                "send",
+                return_value=broker.routes.RouteResult(
+                    broker.routes.RouteOutcome.ACCEPTED, None, m.Route.CODEX_QUEUE
+                ),
+            ),
+            patch.object(
+                broker.callback,
+                "git_metadata",
+                return_value={"repo": "fixture", "branch": "main", "head_sha": ""},
+            ),
+            patch.object(
+                broker.Broker, "tick", side_effect=AssertionError("no later hook")
+            ),
+        ):
+            result = broker.Broker(self.store).worker(str(batch.id))
+        sleep.assert_called_once_with(30)
+        self.assertEqual(result.state, m.BatchState.BOX_OWNED)
+        (path,) = self.directory.glob("grokbot-pending-*")
+        self.assertEqual(
+            json.loads(path.read_text())["body"]["register"][0]["batch_id"],
+            str(batch.id),
+        )
+        self.assertEqual(
+            self.store.db.execute("SELECT count(*) FROM digest").fetchone()[0], 1
+        )
+
+    def test_two_sibling_workers_spool_one_coalesced_digest_without_tick(self):
+        self.detect()
+        self.detect(turn_id="sibling-turn", tool_use_id="sibling-call")
+        barrier, sent = Barrier(2), []
+
+        def coalesce(seconds):
+            self.assertEqual(seconds, 30)
+            barrier.wait(timeout=5)
+
+        def run(batch):
+            with ledger.Ledger(self.store.path) as store:
+                return broker.Broker(store).worker(str(batch.id))
+
+        def spool(envelope):
+            sent.append(json.loads(m.canonical(envelope)))
+            path = self.directory / (
+                "grokbot-pending-" + envelope["body"]["delivery_key"]
+            )
+            path.write_bytes(m.canonical(envelope))
+            return path
+
+        with (
+            patch.object(broker.time, "sleep", side_effect=coalesce),
+            patch.object(broker.callback, "spool", side_effect=spool),
+            patch.object(
+                broker.Broker, "tick", side_effect=AssertionError("no later hook")
+            ),
+            ThreadPoolExecutor(2) as pool,
+        ):
+            list(pool.map(run, self.store.batches()))
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(
+            {entry["batch_id"] for entry in sent[0]["body"]["register"]},
+            {str(batch.id) for batch in self.store.batches()},
+        )
+
+    def test_worker_recovery_does_not_duplicate_progress_or_floor_raise(self):
+        self.detect()
+        (batch,) = self.store.batches()
+        worker = broker.Broker(self.store)
+        worker.worker(str(batch.id), spool_digest=False)
+        initial = self.store.due_progress()
+        self.assertEqual(len(initial), 1)
+        self.assertIsNone(initial[0]["floor_raise"])
+        worker.worker(str(batch.id), spool_digest=False)
+        self.assertEqual(self.store.due_progress(), initial)
+        self.assertEqual(
+            self.store.db.execute("SELECT count(*) FROM progress").fetchone()[0], 1
+        )
+
     def test_ack_before_crash_recovery_keeps_ack_and_counts_saved_frame_once(self):
         self.detect()
         (batch,) = self.store.batches()

@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from dataclasses import replace
@@ -6,6 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
+import question_answerers as answerers
 import question_ledger as ledger
 import question_model as model
 from test_question_ledger import (
@@ -50,6 +52,73 @@ class BudgetTests(unittest.TestCase):
                 (100, 100, "0.10", "0.10"),
             )
 
+    def test_sweep_settles_only_expired_reservations_as_spent(self):
+        at = datetime(2026, 1, 2, 12, tzinfo=timezone.utc)
+        first = self.reserve(at=at)
+        self.store.reserve_budget(
+            "other-task", model=model.Model.SONNET, tokens=50, usd="0.05", at=at
+        )
+
+        self.assertEqual(
+            self.store.sweep_budget_reservations(at=at + ledger.timedelta(minutes=11)),
+            2,
+        )
+        self.assertEqual(
+            self.store.sweep_budget_reservations(at=at + ledger.timedelta(minutes=12)),
+            0,
+        )
+        self.assertEqual(
+            self.store.db.execute(
+                "SELECT settled FROM budget_reservation WHERE id=?", (first,)
+            ).fetchone()[0],
+            1,
+        )
+        for scope, key, tokens in (
+            ("task", "task", 100),
+            ("task", "other-task", 50),
+            ("day", "2026-01-02", 150),
+        ):
+            row = self.store.db.execute(
+                "SELECT * FROM budget WHERE scope=? AND key=?", (scope, key)
+            ).fetchone()
+            self.assertEqual((row["tokens_reserved"], row["tokens_spent"]), (0, tokens))
+            self.assertEqual(Decimal(row["usd_reserved"]), Decimal(0))
+            self.assertEqual(Decimal(row["usd_spent"]), Decimal(tokens) / 1000)
+
+    def test_sweep_does_not_expire_live_or_recent_reservations(self):
+        at = datetime(2026, 1, 2, 12, tzinfo=timezone.utc)
+        reservation = self.reserve(at=at)
+        self.assertEqual(
+            self.store.sweep_budget_reservations(at=at + ledger.timedelta(minutes=9)), 0
+        )
+        self.assertEqual(
+            self.store.sweep_budget_reservations(at=at + ledger.timedelta(minutes=10)),
+            0,
+        )
+        self.assertEqual(
+            self.store.db.execute(
+                "SELECT settled FROM budget_reservation WHERE id=?", (reservation,)
+            ).fetchone()[0],
+            0,
+        )
+
+    def test_tick_sweeps_crashed_worker_budget_even_with_activation_off(self):
+        import os
+        from unittest.mock import patch
+        import question_broker as broker
+
+        at = datetime(2026, 1, 2, 12, tzinfo=timezone.utc)
+        self.reserve(at=at)
+        with patch.dict(os.environ, {model.FLAG_ENV: "0"}):
+            worker = broker.Broker(
+                self.store, clock=lambda: at + ledger.timedelta(minutes=11)
+            )
+            self.assertTrue(worker.tick())
+        row = self.store.db.execute(
+            "SELECT * FROM budget WHERE scope='task'"
+        ).fetchone()
+        self.assertEqual((row["tokens_reserved"], row["tokens_spent"]), (0, 100))
+
     def test_two_overruns_block_same_model_and_day_only(self):
         at = datetime(2026, 1, 2, 12, tzinfo=timezone.utc)
         for usage in (
@@ -63,6 +132,88 @@ class BudgetTests(unittest.TestCase):
         self.assertIsNotNone(
             self.reserve(at=datetime(2026, 1, 3, 12, tzinfo=timezone.utc))
         )
+
+    def test_typical_cold_answerer_call_is_not_an_overrun(self):
+        # Reserves carry 1.15x headroom (Carlos, 2026-11-25): observed cold calls and
+        # a fully cold call 14% above the pilot settle cleanly; 16% above overruns on
+        # tokens (and on USD for Sonnet; Haiku's USD rounding leaves ~16.7%).
+        hooks = Path(__file__).parents[3] / "tests/qe/hooks"
+        receipt = json.loads((hooks / "claude-p12-oauth-calibration.json").read_text())
+        pilot = json.loads((hooks / "claude-p12-fully-cold-pilot.json").read_text())
+        configs = answerers.load_models()
+        at = datetime(2026, 1, 2, 12, tzinfo=timezone.utc)
+
+        def overrun(name, bounds, tokens, output_tokens, usd):
+            reservation = self.store.reserve_budget(
+                "task",
+                model=name,
+                tokens=bounds.reserve_tokens,
+                usd=bounds.reserve_usd,
+                at=at,
+            )
+            assert reservation is not None
+            self.store.settle_budget(
+                reservation,
+                usage=model.Usage(tokens - output_tokens, output_tokens, usd),
+            )
+            return self.store.db.execute(
+                "SELECT overrun FROM budget_reservation WHERE id=?", (reservation,)
+            ).fetchone()[0]
+
+        for name in (model.Model.HAIKU, model.Model.SONNET):
+            bounds = configs[name].bounds
+            assert bounds is not None
+            samples = sorted(
+                (s for s in receipt["samples"] if s["model"] == name.value),
+                key=lambda s: Decimal(s["usd"]),
+            )
+            fully_cold = [s for s in pilot["samples"] if s["model"] == name.value]
+            self.assertEqual(len(fully_cold), 1)
+            # Median nonce call, the largest-token nonce call (Sonnet 26,789 tokens)
+            # and the fully cold pilot: none may overrun.
+            largest = max(samples, key=lambda s: s["tokens"])
+            for sample in (samples[len(samples) // 2], largest, *fully_cold):
+                with self.subTest(
+                    model=name, usd=sample["usd"], tokens=sample["tokens"]
+                ):
+                    self.assertEqual(
+                        overrun(
+                            name,
+                            bounds,
+                            sample["tokens"],
+                            sample["output_tokens"],
+                            Decimal(sample["usd"]),
+                        ),
+                        0,
+                    )
+            # Margin, one dimension at a time (the other stays at the pilot value).
+            # Tokens bind for both: +16% overruns. USD at +16% overruns Sonnet only;
+            # rounding reserve_usd up to 4 decimals gives Haiku ~16.7% headroom.
+            cold = fully_cold[0]
+            usd_over = int(name is model.Model.SONNET)
+            one = Decimal(1)
+            for token_scale, usd_scale, expected in (
+                (Decimal("1.14"), one, 0),
+                (Decimal("1.16"), one, 1),
+                (one, Decimal("1.14"), 0),
+                (one, Decimal("1.16"), usd_over),
+            ):
+                # A model is refused after two overruns a day; start each case clean.
+                self.store.db.execute("DELETE FROM budget_reservation")
+                self.store.db.execute("DELETE FROM budget")
+                with self.subTest(
+                    model=name, token_scale=token_scale, usd_scale=usd_scale
+                ):
+                    self.assertEqual(
+                        overrun(
+                            name,
+                            bounds,
+                            int(cold["tokens"] * token_scale),
+                            int(cold["output_tokens"] * token_scale),
+                            Decimal(cold["usd"]) * usd_scale,
+                        ),
+                        expected,
+                    )
 
     def test_invalid_decimals_are_value_errors(self):
         with self.assertRaises(ValueError):
@@ -82,6 +233,7 @@ class BudgetTests(unittest.TestCase):
                 "task", model=model.Model.HAIKU, tokens=1, usd="0"
             )
             self.assertIsNotNone(reservation)
+            assert reservation is not None
             if index % 2:
                 self.store.settle_budget(
                     reservation, usage=model.Usage(1, 0, Decimal(0))
@@ -96,6 +248,7 @@ class BudgetTests(unittest.TestCase):
         first = self.store.reserve_budget(
             "task", model=model.Model.HAIKU, tokens=400_000, usd="0"
         )
+        assert first is not None
         self.store.settle_budget(first, usage=model.Usage(300_000, 0, Decimal(0)))
         self.assertIsNotNone(
             self.store.reserve_budget(
@@ -112,6 +265,7 @@ class BudgetTests(unittest.TestCase):
         first = self.store.reserve_budget(
             "task", model=model.Model.HAIKU, tokens=0, usd="1.00"
         )
+        assert first is not None
         with ledger.Ledger(self.store.path) as other:
             self.assertIsNotNone(
                 other.reserve_budget(
@@ -156,6 +310,7 @@ class BudgetTests(unittest.TestCase):
 
 
 class ClassificationLedgerTests(unittest.TestCase):
+    store: ledger.Ledger
     setUp = BudgetTests.setUp
 
     def open(self, call="call-1"):
@@ -181,6 +336,7 @@ class ClassificationLedgerTests(unittest.TestCase):
         )
         with ledger.Ledger(self.store.path) as reopened:
             pending = reopened.classification_pending(str(batch.id), batch.rev)
+            assert pending is not None
             self.assertEqual(
                 (
                     pending.remote,
@@ -197,12 +353,11 @@ class ClassificationLedgerTests(unittest.TestCase):
         self.store.queue_classification(
             str(batch.id), remote="next", brief=None, root_session="root"
         )
-        self.assertEqual(
-            self.store.classification_pending(str(batch.id), batch.rev).brief, brief
-        )
-        self.assertEqual(
-            self.store.classification_pending(str(batch.id), newer.rev).remote, "next"
-        )
+        previous = self.store.classification_pending(str(batch.id), batch.rev)
+        current = self.store.classification_pending(str(batch.id), newer.rev)
+        assert previous is not None and current is not None
+        self.assertEqual(previous.brief, brief)
+        self.assertEqual(current.remote, "next")
 
     def test_apply_uses_raw_floor_without_persisting_conservative_read(self):
         batch = self.open()
@@ -236,7 +391,10 @@ class ClassificationLedgerTests(unittest.TestCase):
         ):
             with self.assertRaises(ValueError):
                 self.store.apply_classification(
-                    str(batch.id), batch.rev, batch.context, invalid
+                    str(batch.id),
+                    batch.rev,
+                    batch.context,
+                    invalid,  # ty: ignore[invalid-argument-type] -- exercise runtime validation
                 )
         self.assertFalse(self.store.get_batch(str(batch.id)).classification.classified)
 

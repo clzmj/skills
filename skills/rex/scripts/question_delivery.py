@@ -12,6 +12,8 @@ from datetime import datetime
 from dataclasses import dataclass
 import fcntl
 import os
+from pathlib import Path
+import time
 from typing import Generator
 from uuid import UUID, uuid4
 
@@ -23,6 +25,26 @@ import question_routes as routes
 INLINE = frozenset({m.Route.INLINE_DENY_REASON, m.Route.INLINE_UPDATED_INPUT})
 ARRIVED = (m.BoxNoteState.SENT, m.BoxNoteState.ECHOED, m.BoxNoteState.UNKNOWN)
 BOOT = uuid4()
+
+
+@contextmanager
+def file_lock(path: Path, *, wait: float = 0) -> Generator[int | None, None, None]:
+    """Keep the descriptor open so route children can inherit the same guard."""
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    deadline = time.monotonic() + wait
+    try:
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    yield None
+                    return
+                time.sleep(min(0.05, max(0, deadline - time.monotonic())))
+        yield fd
+    finally:
+        os.close(fd)
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,20 +97,10 @@ class Delivery:
         # Same file as run-plan. Children inherit the guard so a killed parent
         # cannot expose a staged route to another sender.
         UUID(batch)
-        fd = os.open(
-            self.store.path.parent / m.WORKER_LOCK.format(batch=batch),
-            os.O_CREAT | os.O_RDWR,
-            0o600,
-        )
-        try:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                yield None
-            else:
-                yield fd
-        finally:
-            os.close(fd)
+        with file_lock(
+            self.store.path.parent / m.WORKER_LOCK.format(batch=batch)
+        ) as fd:
+            yield fd
 
     def dispatch(self, outbound: str, *, inline_pid: int | None = None) -> bool:
         message = self.store.get_outbound(outbound)
@@ -198,6 +210,7 @@ class Delivery:
     ) -> bool:
         with self.store.transaction():
             message = self.store.get_outbound(outbound)
+            batch = self.store.get_batch(str(message.batch))
             plan = message.route_plan
             if any(route in INLINE for route in plan):
                 waiter = self._inline_owner(str(message.batch))
@@ -208,22 +221,22 @@ class Delivery:
                 elif inline_pid is not None:
                     return False
                 else:
-                    late = tuple(route for route in plan if route not in INLINE)
-                    if not late:
-                        # No unverified fallback may be invented. Preserve the
-                        # original plan for explicit repair rather than empty it.
+                    # PreToolUse can start a worker before PermissionRequest
+                    # records its waiter. Reserve the window only until one has
+                    # registered; an expired or dead waiter releases it early.
+                    if (
+                        batch.asker.agent is m.AgentKind.CLAUDE
+                        and ledger.now() < batch.opened_at + m.INLINE_WAIT
+                        and self.store.db.execute(
+                            "SELECT 1 FROM inline_waiter WHERE batch=? LIMIT 1",
+                            (str(message.batch),),
+                        ).fetchone()
+                        is None
+                    ):
                         return False
-                    self.store.db.execute(
-                        "UPDATE outbound SET route_plan_json=? WHERE id=? AND route_plan_json=? AND state IN (?,?)",
-                        (
-                            ledger.encoded(late),
-                            outbound,
-                            ledger.encoded(plan),
-                            m.DeliveryState.PENDING,
-                            m.DeliveryState.DISPATCH_FAILED,
-                        ),
-                    )
-                    plan = late
+                    # Pick the effective route under the claim transaction;
+                    # persisted text, token and route intent remain immutable.
+                    plan = tuple(route for route in plan if route not in INLINE)
             elif inline_pid is not None:
                 return False
             if not plan:
@@ -233,7 +246,6 @@ class Delivery:
                 and plan[0] is m.Route.INLINE_DENY_REASON
             ):
                 return False  # Recorded P5 did not establish answer adoption.
-            batch = self.store.get_batch(str(message.batch))
             target_state = (
                 callback.actor_state(message.target_actor)
                 if message.child_actor

@@ -1,0 +1,125 @@
+{
+  "schema": "qe.p12-observed-read-calibration/1",
+  "sample_count": 2,
+  "max_calls": 2,
+  "profile": "question_answerers.build_command + answerer_environment; Broker.ladder_prompt",
+  "calibration_date": "2026-11-25",
+  "tool_profile": {
+    "cli": "claude",
+    "version": "2.1.332 (Claude Code)",
+    "python": "3.14.9"
+  },
+  "repository_head": "d3dc82885c639a5b73904deb8f8cff8ca73c3207",
+  "source_sha256": {
+    "answerer_schema_sha256": "f1d2d13d12b355bb993b42bd3a5711a72624ad6e6735ed4f7c10a8cdc2a752df",
+    "answerer_adapter_sha256": "d75ea88f7f48483698d0f9bd1fdb629e729a640fcab7046ce15b0c59468c506e",
+    "broker_sha256": "3d3e41f02911f8962e0c195b71eefbd5b6eed44856854fbf2a12710591d54066",
+    "guard_sha256": "d8cdb3fc245d11c34cbc1f2f70d65d4177604fb69d6d171d6e7f2fd270a9e3fc",
+    "ledger_sha256": "6ad3cfe89e8c225be030cb24721ce89a99ca1cc22e6aab113d35d71b91c72f74",
+    "model_sha256": "1f302a63c3429887630555f530fcb38ba62443d5d2c019e411cc4df59e39a5fa"
+  },
+  "max_turns": 4,
+  "auth_method": "Parent-sourced subscription OAuth via macOS Keychain (explicit CLAUDE_CODE_OAUTH_TOKEN takes precedence); no API-key or token-file fallback; envelope auth source recorded separately when present",
+  "prompt_bytes": 24512,
+  "project_settings_canary_untouched": true,
+  "p95_method": "n/a (n=1)",
+  "samples": [
+    {
+      "model": "haiku",
+      "ordinal": 1,
+      "max_turns": 4,
+      "max_budget_usd": "0.02",
+      "wall_clock_s": 90,
+      "prompt_bytes": 24512,
+      "num_turns": 4,
+      "exit_code": 0,
+      "timed_out": false,
+      "subtype": "success",
+      "elapsed_ms": 8148,
+      "successful_evidence": true,
+      "model_family_valid": true,
+      "marker_evidence_valid": true,
+      "validation_failures": [],
+      "local_rejection": null,
+      "parse_failure": null,
+      "input_tokens": 4,
+      "cache_creation_input_tokens": 14186,
+      "cache_read_input_tokens": 13714,
+      "output_tokens": 906,
+      "tokens": 28810,
+      "usd": "0.0034277400000000003",
+      "model_ids": [
+        "claude-haiku-5-5"
+      ],
+      "structured_output_present": true,
+      "api_key_source": null
+    },
+    {
+      "model": "sonnet",
+      "ordinal": 1,
+      "max_turns": 4,
+      "max_budget_usd": "0.15",
+      "wall_clock_s": 240,
+      "prompt_bytes": 24512,
+      "num_turns": 4,
+      "exit_code": 0,
+      "timed_out": false,
+      "subtype": "success",
+      "elapsed_ms": 8078,
+      "successful_evidence": true,
+      "model_family_valid": true,
+      "marker_evidence_valid": true,
+      "validation_failures": [],
+      "local_rejection": null,
+      "parse_failure": null,
+      "input_tokens": 4,
+      "cache_creation_input_tokens": 13287,
+      "cache_read_input_tokens": 12893,
+      "output_tokens": 600,
+      "tokens": 26784,
+      "usd": "0.0604453",
+      "model_ids": [
+        "claude-sonnet-5-5"
+      ],
+      "structured_output_present": true,
+      "api_key_source": null
+    }
+  ],
+  "models": {
+    "haiku": {
+      "sample_count": 1,
+      "model_family_valid_count": 1,
+      "successful_evidence_count": 1,
+      "actual_model_ids": [
+        "claude-haiku-5-5"
+      ],
+      "p95_rank_1_based": 1,
+      "p50_tokens_observed": 28810,
+      "p50_usd_observed": "0.0034277400000000003",
+      "p50_elapsed_ms_observed": 8148,
+      "p95_tokens_observed": 28810,
+      "p95_usd_observed": "0.0034277400000000003",
+      "p95_elapsed_ms_observed": 8148
+    },
+    "sonnet": {
+      "sample_count": 1,
+      "model_family_valid_count": 1,
+      "successful_evidence_count": 1,
+      "actual_model_ids": [
+        "claude-sonnet-5-5"
+      ],
+      "p95_rank_1_based": 1,
+      "p50_tokens_observed": 26784,
+      "p50_usd_observed": "0.0604453",
+      "p50_elapsed_ms_observed": 8078,
+      "p95_tokens_observed": 26784,
+      "p95_usd_observed": "0.0604453",
+      "p95_elapsed_ms_observed": 8078
+    }
+  },
+  "note": "n=1 per model: the first call of each model after idle, so the CLI tool/system prefix and the prompt were both cache misses (cache_creation_input_tokens 14186 Haiku / 13287 Sonnet). max_calls and p95_method were hand-edited after the probe run; see hand_edited for the original values and reasons.",
+  "hand_edited": {
+    "max_calls": "probe wrote 40 (its MAX_CALLS constant); set to 2, the pilot's actual call count",
+    "p95_method": "probe wrote 'empirical nearest rank; n=1 per actual model family; no headroom; cold: unique nonce prefix per call'; set to 'n/a (n=1)' because no percentile is derived from n=1"
+  }
+}

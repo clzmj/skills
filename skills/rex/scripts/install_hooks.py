@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 from agent_types import HookEvent
 from question_model import FLAG_ENV
 
@@ -70,12 +69,11 @@ def owned_handler(command, script, home, root):
         words = shlex.split(command)
     except ValueError:
         return False
-    if len(words) < 3 or "hook" not in words[2:]:
+    try:
+        hook_index = words.index("hook", 2)
+    except ValueError:
         return False
-    paths = [Path(word) for word in words if word.startswith("/")]
-    path = next((candidate for candidate in paths if candidate.name == script), None)
-    if path is None:
-        return False
+    path = Path(words[hook_index - 1])
     if path.name != script or not path.is_absolute():
         return False
     return (path.parent == root or path.parent == home / "Developer/tools/rex-visible"

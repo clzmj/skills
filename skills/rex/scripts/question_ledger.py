@@ -135,7 +135,7 @@ CREATE TABLE IF NOT EXISTS budget (scope TEXT NOT NULL, key TEXT NOT NULL, attem
  PRIMARY KEY(scope,key));
 CREATE TABLE IF NOT EXISTS budget_reservation (id TEXT PRIMARY KEY, task TEXT NOT NULL, model TEXT NOT NULL,
  day TEXT NOT NULL, tokens INTEGER NOT NULL, usd TEXT NOT NULL, settled INTEGER NOT NULL DEFAULT 0,
- overrun INTEGER NOT NULL DEFAULT 0);
+ overrun INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00+00:00');
 CREATE TABLE IF NOT EXISTS classifier_pending (batch TEXT NOT NULL REFERENCES batch(id), batch_rev INTEGER NOT NULL,
  remote TEXT NOT NULL, brief_json TEXT, root_session TEXT NOT NULL, started_at TEXT NOT NULL,
  PRIMARY KEY(batch,batch_rev));
@@ -208,9 +208,11 @@ def redacted_audit_detail(detail: str) -> str:
     cap = 500
     while True:
         saved = encoded(clean(record, cap))
-        # Metadata alone may exceed the cap; never cut identifiers or encoded JSON.
-        if len(saved) <= 500 or cap == 0:
+        # Keep identifiers intact while shrinking content, then use a bounded fallback.
+        if len(saved) <= 500:
             return saved
+        if cap == 0:
+            return encoded({"truncated": True, "content_digest": m.digest(detail)})
         cap //= 2
 
 
@@ -348,6 +350,14 @@ class Ledger:
                     self.db.execute(
                         f"ALTER TABLE {table} ADD COLUMN metadata_json TEXT"
                     )
+            reservation_columns = {
+                row["name"]
+                for row in self.db.execute("PRAGMA table_info(budget_reservation)")
+            }
+            if "created_at" not in reservation_columns:
+                self.db.execute(
+                    "ALTER TABLE budget_reservation ADD COLUMN created_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00+00:00'"
+                )
             states = ",".join(f"'{state.value}'" for state in sorted(OPEN_FOR_ATTACH))
             self.db.execute(
                 f"CREATE UNIQUE INDEX IF NOT EXISTS batch_one_open ON batch(actor,turn) WHERE state IN ({states})"
@@ -1245,11 +1255,13 @@ class Ledger:
                     continue
                 matched = True
                 self.db.execute(
-                    "UPDATE outbound SET state=?,updated_at=? WHERE id=? AND state IN (?,?,?)",
+                    "UPDATE outbound SET state=?,updated_at=? WHERE id=? AND state IN (?,?,?,?,?)",
                     (
                         m.DeliveryState.OBSERVED,
                         now().isoformat(),
                         row["id"],
+                        m.DeliveryState.PENDING,
+                        m.DeliveryState.DISPATCH_FAILED,
                         m.DeliveryState.CLAIMED,
                         m.DeliveryState.DISPATCHED,
                         m.DeliveryState.DISPATCH_UNCERTAIN,
@@ -1432,6 +1444,8 @@ class Ledger:
                 owner = row["claim_owner"] or ""
                 pid = owner.partition(":")[0]
                 gone = False
+                # PID reuse can defer recovery until CLAIM_STALE_AFTER; the
+                # bounded stale cutoff still makes the claim uncertain.
                 if pid.isdecimal():
                     try:
                         os.kill(int(pid), 0)
@@ -2041,8 +2055,18 @@ class Ledger:
                 )
             reservation = ReservationId(str(uuid4()))
             self.db.execute(
-                "INSERT INTO budget_reservation (id,task,model,day,tokens,usd) VALUES (?,?,?,?,?,?)",
-                (reservation, task, model, day, tokens, str(amount)),
+                "INSERT INTO budget_reservation (id,task,model,day,tokens,usd,created_at) VALUES (?,?,?,?,?,?,?)",
+                (
+                    reservation,
+                    task,
+                    model,
+                    day,
+                    tokens,
+                    str(amount),
+                    (at or now())
+                    .astimezone(timezone.utc)
+                    .isoformat(timespec="microseconds"),
+                ),
             )
             self.audit(
                 AuditKind.BUDGET, task, f"reserved {tokens} tokens, USD {amount}"
@@ -2101,3 +2125,21 @@ class Ledger:
                 (int(tokens > tokens_reserved or usd > usd_reserved), reservation),
             )
             self.audit(AuditKind.BUDGET, task, f"settled {tokens} tokens, USD {usd}")
+
+    def sweep_budget_reservations(self, *, at: datetime | None = None) -> int:
+        """Settle reservations older than ten minutes as fully spent.
+
+        Ten minutes exceeds the longest bounded answerer call (four minutes),
+        leaving margin for scheduling and result settlement after process exit.
+        """
+        cutoff = (
+            (at or now()).astimezone(timezone.utc) - timedelta(minutes=10)
+        ).isoformat(timespec="microseconds")
+        with self.transaction():
+            expired = self.db.execute(
+                "SELECT id FROM budget_reservation WHERE settled=0 AND created_at<? ORDER BY created_at,id",
+                (cutoff,),
+            ).fetchall()
+            for row in expired:
+                self.settle_budget(ReservationId(row["id"]), usage=None)
+        return len(expired)

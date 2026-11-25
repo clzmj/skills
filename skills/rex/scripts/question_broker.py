@@ -18,22 +18,22 @@ import re
 import secrets
 import sys
 import time
-from pathlib import Path
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from enum import IntEnum, StrEnum
-from typing import Callable, Final, Generator, TypeVar, TypedDict, cast
-from uuid import UUID
-from uuid import uuid4
+from functools import cache
+from pathlib import Path
+from typing import Callable, Final, Generator, TypedDict, TypeVar, cast
+from uuid import UUID, uuid4
 
 import grokbot_callback as callback
-import question_ledger as ledger
+import question_answerers as answerers
 import question_delivery as delivery
+import question_guard as guard
+import question_ledger as ledger
 import question_model as m
 import question_routes as routes
-import question_guard as guard
-import question_answerers as answerers
 from question_redact import redact
 
 # An ordinary Stop is idle, not proof that the session ended. WAITING can
@@ -505,26 +505,11 @@ class Broker:
     def _file_lock(
         self, name: str, *, wait: float | None = None
     ) -> Generator[int | None, None, None]:
-        fd = os.open(
+        with delivery.file_lock(
             self.store.path.parent / name,
-            os.O_CREAT | os.O_RDWR,
-            0o600,
-        )
-        acquired = False
-        deadline = time.monotonic() + (self.lock_wait if wait is None else wait)
-        try:
-            while True:
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    acquired = True
-                    break
-                except BlockingIOError:
-                    if time.monotonic() >= deadline:
-                        break
-                    time.sleep(min(0.05, max(0, deadline - time.monotonic())))
-            yield fd if acquired else None
-        finally:
-            os.close(fd)
+            wait=self.lock_wait if wait is None else wait,
+        ) as acquired:
+            yield acquired
 
     @contextmanager
     def worker_lock(
@@ -559,7 +544,7 @@ class Broker:
         if result["send"] is not None:
             return
         with self.worker_lock(body["batch_id"]) as acquired:
-            if not acquired:
+            if acquired is None:
                 result["send"] = m.SendOutcome.NOT_SENT_BUSY
                 return
             batch = self.store.get_batch(body["batch_id"])
@@ -769,7 +754,7 @@ class Broker:
         if note is None:
             raise ValueError("unknown box delivery")
         with self.worker_lock(str(note.batch)) as acquired:
-            if not acquired:
+            if acquired is None:
                 raise BlockingIOError("batch busy")
             self.store.finish_box_note(
                 identifier,
@@ -856,7 +841,7 @@ class Broker:
         body = cast(m.SendBody, request["body"])
         try:
             with self.worker_lock(body["batch_id"]) as acquired:
-                if acquired:
+                if acquired is not None:
                     self.store.finish_box_note(
                         body["delivery_id"],
                         body["attempt"],
@@ -949,8 +934,7 @@ class Broker:
     def sync(
         self, body: m.SyncBody, result: m.Result, *, include_status: bool = True
     ) -> m.SyncPayload:
-        # Keep every listing and its cursor lookup in the same snapshot. Retention
-        # must not remove a listed row before its rowid is read.
+        # Hold the write lock so retention cannot interleave with listing and lookup.
         with self.store.transaction():
             return self._sync(body, result, include_status=include_status)
 
@@ -1308,11 +1292,16 @@ class Broker:
         batch: m.QuestionBatch,
         output: answerers.AnswererOutput,
         ref: m.AnswererRef,
-    ) -> m.Resolution:
+    ) -> m.Resolution | None:
         with self.store.transaction():
             current = self.store.get_batch(str(batch.id))
+            # ACK/SEND may have won ownership since the worker's eligibility check.
+            if current.state not in {m.BatchState.OPEN, m.BatchState.ESCALATING}:
+                return None
             if current.context != batch.context:
                 raise ValueError("stale answer context")
+            if current.state is m.BatchState.OPEN:
+                self.store.transition(str(batch.id), m.BatchState.ESCALATING)
             rev = m.ResolutionRev(
                 self.store.db.execute(
                     "SELECT coalesce(max(rev),0)+1 FROM resolution WHERE batch=?",
@@ -1341,7 +1330,7 @@ class Broker:
                 child_actor=child,
                 child_finished=bool(child and not self.store.session_alive(child)),
             )
-            # P5 parked answers remain BLOCKED. Only the verified Codex queue path is local.
+            # Deliberate route guard for future callers: P5 parked answers remain BLOCKED.
             if batch.asker.agent is not m.AgentKind.CODEX:
                 raise ValueError("no verified local route")
             outbound = m.OutboundMessage(
@@ -1367,7 +1356,12 @@ class Broker:
 
     def worker(self, batch_id: str, *, spool_digest: bool = True) -> m.QuestionBatch:
         """Classify before registration; local answers never cross a committed L3 floor."""
-        # Six-minute worker: leave two route calls, coalescing and ledger work.
+
+        @cache
+        def resolve_environment() -> dict[str, str] | None:
+            return answerers.answerer_environment(m.AnswererKind.CLAUDE_PRINT)
+
+        # Six-minute worker: leave two route calls and ledger work.
         deadline = time.monotonic() + 285
         with self.worker_lock(batch_id, wait=0) as acquired:
             if acquired is None:
@@ -1444,7 +1438,13 @@ class Broker:
                     entry = register()
                     if entry is None:
                         return False
-                    self.ladder_progress(self.store.get_batch(batch_id), reason=reason)
+                    escalated = self.store.db.execute(
+                        "SELECT escalated FROM batch WHERE id=?", (batch_id,)
+                    ).fetchone()[0]
+                    if escalated is None:
+                        self.ladder_progress(
+                            self.store.get_batch(batch_id), reason=reason
+                        )
                     self.store.take_ownership(
                         batch_id,
                         max(deterministic.floor, m.EscalationLevel.L3_PRINCIPAL),
@@ -1472,6 +1472,7 @@ class Broker:
                 with self.store.transaction():
                     current = self.store.get_batch(batch_id)
                     if current.rev != batch.rev or current.context != batch.context:
+                        # Revision race: the new revision's worker does the dispatch and digest.
                         return current
                     guarded = replace(
                         current.classification,
@@ -1488,19 +1489,23 @@ class Broker:
                     )
                     if register() is not None:
                         raised = deterministic.floor > known_floor
-                        self.ladder_progress(
-                            batch,
-                            reason=m.EscalationReason.GUARD_TRIGGER
-                            if deterministic.hits
-                            else m.EscalationReason.NO_ANSWERER,
-                            raised=m.FloorRaise(
-                                floor=deterministic.floor,
-                                cause=m.FloorRaiseCause.MAC_GUARD,
-                                classification=None,
+                        escalated = self.store.db.execute(
+                            "SELECT escalated FROM batch WHERE id=?", (batch_id,)
+                        ).fetchone()[0]
+                        if raised or escalated is None:
+                            self.ladder_progress(
+                                batch,
+                                reason=m.EscalationReason.GUARD_TRIGGER
+                                if deterministic.hits
+                                else m.EscalationReason.NO_ANSWERER,
+                                raised=m.FloorRaise(
+                                    floor=deterministic.floor,
+                                    cause=m.FloorRaiseCause.MAC_GUARD,
+                                    classification=None,
+                                )
+                                if raised
+                                else None,
                             )
-                            if raised
-                            else None,
-                        )
                         self.store.take_ownership(batch_id, deterministic.floor)
             else:
                 admitted = self.store.start_ladder(batch_id, batch.rev, batch.context)
@@ -1533,6 +1538,7 @@ class Broker:
                         on_wait=classify_wait,
                         pass_fds=(acquired,),
                         deadline=deadline,
+                        resolve_environment=resolve_environment,
                     )
                     output = result.output
                     if (
@@ -1733,18 +1739,19 @@ class Broker:
                     ):
                         escalate(m.EscalationReason.CATEGORY_FLOOR)
                         break
-                    if current.state is m.BatchState.OPEN:
-                        self.store.transition(batch_id, m.BatchState.ESCALATING)
                     eligible = rejection is None
                     if eligible:
                         resolution = self.resolve_local(batch, output, ref)
-                        self.ladder_progress(current, local=resolution)
+                        if resolution is not None:
+                            self.ladder_progress(current, local=resolution)
                         break
                     if level is m.EscalationLevel.L2_NORMAL:
                         escalate(rejection or m.EscalationReason.ANSWER_REJECTED)
-            dispatcher.dispatch_batch_locked(batch_id, acquired)
             task = batch.asker.task
+            dispatcher.dispatch_batch_locked(batch_id, acquired)
         if spool_digest:
+            # The detached worker must publish even if no later hook runs (§5.7).
+            # Release the batch lock and transaction before coalescing siblings.
             time.sleep(DIGEST_COALESCE.total_seconds())
             self.digest(task)
         return self.store.get_batch(batch_id)
@@ -1893,32 +1900,29 @@ class Broker:
             included_entries: list[m.RegisterEntry] = []
             included_progress: list[m.RegisterProgress] = []
             included_notices: list[m.DigestNotice] = []
-            envelope = self.digest_envelope(
-                identifier,
-                task,
-                included_entries,
-                included_progress,
-                included_notices,
-                created,
-                metadata,
-            )
 
-            def pack(source: list[T], destination: list[T]) -> None:
-                while source:
-                    destination.append(source[0])
-                    envelope = self.digest_envelope(
-                        identifier,
-                        task,
-                        included_entries,
-                        included_progress,
-                        included_notices,
-                        created,
-                        metadata,
-                    )
-                    if len(m.canonical(envelope)) > DIGEST_MAX:
-                        destination.pop()
-                        break
-                    source.pop(0)
+            def fit_and_pack(
+                destination: list[T],
+                item: T,
+                related: list[m.RegisterProgress],
+            ) -> bool:
+                destination.append(item)
+                included_progress.extend(related)
+                candidate = self.digest_envelope(
+                    identifier,
+                    task,
+                    included_entries,
+                    included_progress,
+                    included_notices,
+                    created,
+                    metadata,
+                )
+                if len(m.canonical(candidate)) <= DIGEST_MAX:
+                    return True
+                destination.pop()
+                for progress_item in related:
+                    included_progress.remove(progress_item)
+                return False
 
             while entries:
                 entry = entries[0]
@@ -1928,25 +1932,12 @@ class Broker:
                     if (item["batch_id"], item["batch_rev"])
                     == (entry["batch_id"], entry["batch_rev"])
                 ]
-                included_entries.append(entry)
-                included_progress.extend(related)
-                envelope = self.digest_envelope(
-                    identifier,
-                    task,
-                    included_entries,
-                    included_progress,
-                    included_notices,
-                    created,
-                    metadata,
-                )
-                if len(m.canonical(envelope)) > DIGEST_MAX:
-                    included_entries.pop()
-                    for item in related:
-                        included_progress.remove(item)
+                if not fit_and_pack(included_entries, entry, related):
                     break
                 entries.pop(0)
                 progress = [item for item in progress if item not in related]
-            pack(notices, included_notices)
+            while notices and fit_and_pack(included_notices, notices[0], []):
+                notices.pop(0)
             if not (included_entries or included_progress or included_notices):
                 raise ValueError("digest item exceeds wire limit")
             envelope = self.digest_envelope(
@@ -2030,6 +2021,7 @@ class Broker:
                 return False
             self.store.ingest_events(self.store.path.parent / m.EVENTS_DIR)
             self.store.recover_claims(at)
+            self.store.sweep_budget_reservations(at=at)
             for batch in self.store.batches():
                 if (
                     batch.state not in ledger.TERMINAL

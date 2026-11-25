@@ -15,6 +15,8 @@ import fcntl
 import json
 import math
 import os
+import platform
+import pwd
 import re
 from pathlib import Path
 import signal
@@ -32,14 +34,17 @@ from question_guard import CATEGORY_FLOORS
 MAX_PROMPT_BYTES = 24 * 1024
 MAX_CONCURRENT_ANSWERERS = 2
 MIN_USEFUL_SECONDS = 15.0
+# Fixed per-call ceilings keep calibration and production argv identical after
+# observed p95 reservations change. Reservations remain measured, not multiplied.
+CLAUDE_MAX_BUDGET_USD = {
+    m.Model.HAIKU: Decimal("0.02"),
+    m.Model.SONNET: Decimal("0.15"),
+}
 ROOT = Path(__file__).parent
-# USER/LOGNAME are the narrow OS identity exception required by calibrated
-# vendor login discovery; no other ambient environment is inherited.
-ESSENTIAL_ENV = frozenset(("PATH", "HOME", "LANG", "TMPDIR", "USER", "LOGNAME"))
+ESSENTIAL_ENV = frozenset(("PATH", "HOME", "LANG", "TMPDIR"))
+CLAUDE_OAUTH_KEYCHAIN_SERVICE = "grokbot-claude-oauth-token"
 VENDOR_AUTH = {
-    m.AnswererKind.CLAUDE_PRINT: frozenset(
-        ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
-    ),
+    m.AnswererKind.CLAUDE_PRINT: frozenset(("CLAUDE_CODE_OAUTH_TOKEN",)),
     m.AnswererKind.CODEX_EXEC: frozenset(("OPENAI_API_KEY",)),
 }
 
@@ -168,7 +173,7 @@ def load_models(
             _positive_integer(raw["reservation_samples"])
         if (
             "reservation_method" in raw
-            and raw["reservation_method"] != "nearest_rank_p95"
+            and raw["reservation_method"] != "cold_max_x1.15"
         ):
             raise ValueError("unknown reservation method")
         if reserved and (not bounded or tokens is None or usd is None or usd <= 0):
@@ -405,15 +410,28 @@ def build_command(config: ModelConfig, *, executable: str = "claude") -> list[st
         "none",
         "--max-turns",
         str(bounds.max_turns),
+        "--max-budget-usd",
+        str(CLAUDE_MAX_BUDGET_USD[config.model]),
         "--tools",
         "Read,Grep,Glob",
         "--allowedTools",
         "Read Grep Glob",
-        "--disallowedTools",
-        "Bash Edit Write NotebookEdit WebFetch WebSearch Agent Task SendMessage ToolSearch Skill AskUserQuestion",
         "--strict-mcp-config",
         "--mcp-config",
         '{"mcpServers":{}}',
+        # Auth precedence (https://code.claude.com/docs/en/authentication, checked
+        # 2026-11-25): ANTHROPIC_API_KEY (3) and apiKeyHelper (4) both outrank
+        # CLAUDE_CODE_OAUTH_TOKEN (5), and settings files can set either. `claude
+        # --help`: --setting-sources takes a comma-separated subset of
+        # user,project,local. An empty list loads no user, project or local
+        # settings, so a repo-controlled .claude/settings.json cannot swap the
+        # Max-login token for another credential. --bare is not an option: it
+        # never reads OAuth. Managed (admin) settings still apply. Negative control
+        # (tests/qe/hooks/claude-p12-setting-sources-negative-control.json,
+        # canary_fires_without_flag: true): without this flag the project
+        # apiKeyHelper runs in -p, so the empty value is what blocks it.
+        "--setting-sources",
+        "",
     ]
 
 
@@ -436,11 +454,51 @@ def model_family_matches(raw: object, model: m.Model) -> bool:
     )
 
 
-def answerer_environment(kind: m.AnswererKind) -> dict[str, str]:
-    """Return the scrubbed production environment, including approved OS identity."""
-    return {
+def answerer_environment(kind: m.AnswererKind) -> dict[str, str] | None:
+    """Resolve auth in the parent; return None when Claude OAuth is unavailable.
+
+    Explicit parent OAuth takes precedence over the macOS user's Keychain item.
+    No API-key or token-file fallback. Never copy the token into os.environ.
+    """
+    env = {
         k: v for k, v in os.environ.items() if k in ESSENTIAL_ENV | VENDOR_AUTH[kind]
     }
+    if kind != m.AnswererKind.CLAUDE_PRINT:
+        return env
+    if "CLAUDE_CODE_OAUTH_TOKEN" in env and env["CLAUDE_CODE_OAUTH_TOKEN"]:
+        token = env["CLAUDE_CODE_OAUTH_TOKEN"]
+        return env if token.isascii() and token.isprintable() else None
+    if platform.system() != "Darwin":
+        return None
+    try:
+        result = subprocess.run(
+            [
+                "/usr/bin/security",
+                "find-generic-password",
+                "-s",
+                CLAUDE_OAUTH_KEYCHAIN_SERVICE,
+                "-a",
+                pwd.getpwuid(os.getuid()).pw_name,
+                "-w",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            env={k: v for k, v in env.items() if k in ESSENTIAL_ENV},
+        )
+    except (OSError, KeyError, subprocess.SubprocessError, UnicodeError):
+        # Subprocess diagnostics may contain secrets; expose no error text.
+        return None
+    token = result.stdout.rstrip("\r\n")
+    if (
+        result.returncode != 0
+        or not token
+        or not token.isascii()
+        or not token.isprintable()
+    ):
+        return None
+    env["CLAUDE_CODE_OAUTH_TOKEN"] = token
+    return env
 
 
 class Answerers:
@@ -472,6 +530,7 @@ class Answerers:
         on_wait: Callable[[], None] | None = None,
         pass_fds: tuple[int, ...] = (),
         deadline: float | None = None,
+        resolve_environment: Callable[[], dict[str, str] | None] | None = None,
     ) -> AnswerAttempt:
         if level not in (m.EscalationLevel.L1_CHEAP, m.EscalationLevel.L2_NORMAL):
             raise ValueError("answerers only support L1/L2")
@@ -532,6 +591,16 @@ class Answerers:
             return AnswerAttempt(
                 model, m.AttemptOutcome.REJECTED, m.EscalationReason.ANSWER_REJECTED
             )
+        # ponytail: CLAUDE_PRINT is hard-coded until Codex has validated bounds.
+        env = (
+            resolve_environment()
+            if resolve_environment is not None
+            else answerer_environment(m.AnswererKind.CLAUDE_PRINT)
+        )
+        if env is None:
+            return AnswerAttempt(
+                model, m.AttemptOutcome.FAILED, m.EscalationReason.NO_ANSWERER
+            )
         with answerer_slot(self.slots_dir) as acquired:
             if acquired is None:
                 return AnswerAttempt(
@@ -546,6 +615,7 @@ class Answerers:
                     on_wait,
                     (*pass_fds, acquired),
                     deadline,
+                    env,
                 )
             except _WaitCallbackFailed as exc:
                 raise exc.error.with_traceback(exc.error.__traceback__) from None
@@ -559,12 +629,11 @@ class Answerers:
         on_wait: Callable[[], None] | None,
         pass_fds: tuple[int, ...],
         deadline: float | None,
+        env: dict[str, str],
     ) -> AnswerAttempt:
         bounds = config.bounds
         assert bounds is not None
         results = []
-        kind = m.AnswererKind.CLAUDE_PRINT
-        env = answerer_environment(kind)
         argv = build_command(config, executable=self.executable)
         deadline_s = min(bounds.wall_clock.total_seconds(), 90 if level == 1 else 240)
         for ordinal in (1, 2):
@@ -667,6 +736,8 @@ class Answerers:
                     except ProcessLookupError:
                         pass
                     process.wait()
+                if process is None:
+                    usage = m.Usage(0, 0, Decimal(0))
                 self.store.settle_budget(reservation, usage=usage)
             outcome = (
                 m.AttemptOutcome.REJECTED
