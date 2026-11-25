@@ -34,8 +34,13 @@ class RedactionRule(StrEnum):
 
 
 REDACTED: Final = "[REDACTED]"
-URL_USERINFO: Final = re.compile(r"([a-z][a-z0-9+.-]*://)[^/?#\s]+@", re.I)
+URL_USERINFO: Final = re.compile(
+    r"(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*://)[^/?#\s]+@", re.I
+)
 TOKEN: Final = re.compile(r"\S{32,}")
+# Unbounded scans must either consume a match or start only at the edge of
+# their character run. Possessive quantifiers alone cannot prevent search()
+# from retrying overlapping runs at successive starting positions.
 PATTERNS: Final = (
     (
         RedactionRule.PRIVATE_KEY,
@@ -55,14 +60,26 @@ PATTERNS: Final = (
     (RedactionRule.BEARER, re.compile(r"Bearer\s+\S{12,}", re.I)),
     (
         RedactionRule.ASSIGNMENT,
+        # Start once per key run; backtrack over its prefix once to find a
+        # secret suffix, including glued names. No key names are exempt.
         re.compile(
-            r"(?:(?:password|passwd|pwd|passphrase)(?:[_-](?:prod|production|staging|stage|dev|development|test))?|secret(?:[_-](?:access[_-]key|key(?:[_-]base)?))?|token(?:[_-]key)?|api[_-]?key|private[_-]?key)[\"']?\s*[:=]\s*(?:\"[^\"\r\n]*(?:\"|(?=[\r\n]|\Z))|'[^'\r\n]*(?:'|(?=[\r\n]|\Z))|\S+)",
+            r"(?<![\w-])[\w-]*"
+            r"(?:password|passwd|pwd|passphrase|secret(?:[_-](?:access[_-]key|key(?:[_-]base)?))?|token(?:[_-]key)?|api[_-]?key|private[_-]?key)"
+            r"(?:[_-](?:prod|production|staging|stage|dev|development|test|eu|value))*"
+            r"[\"']?\s*[:=]\s*(?:\"[^\"\r\n]*(?:\"|(?=[\r\n]|\Z))|'[^'\r\n]*(?:'|(?=[\r\n]|\Z))|\S+)",
             re.I,
         ),
     ),
     (
         RedactionRule.JWT,
-        re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"),
+        # Consume only the first run so dotted candidates can overlap. Each
+        # run is scanned at most three times; redact() locates eyJ or -eyJ.
+        # The final word boundary may backtrack over trailing hyphens, still
+        # costing only one pass over that run.
+        re.compile(
+            r"(?<![A-Za-z0-9_-])([A-Za-z0-9_-]+)"
+            r"(?=\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)\b)"
+        ),
     ),
 )
 
@@ -97,10 +114,20 @@ def redact(text: str) -> RedactionResult:
         text = URL_USERINFO.sub(r"\1", text)
     spans: list[tuple[int, int]] = []
     for rule, pattern in PATTERNS:
-        matches = tuple(pattern.finditer(text))
-        if matches:
-            hits.append(rule)
-            spans.extend(match.span() for match in matches)
+        for match in pattern.finditer(text):
+            start, end = match.span()
+            if rule is RedactionRule.JWT:
+                first = match.group(1)
+                offset = 0 if first.startswith("eyJ") else first.find("-eyJ") + 1
+                if not first.startswith("eyJ") and offset == 0:
+                    continue
+                if len(first) - offset < 4:
+                    continue
+                start += offset
+                end = match.end(3)
+            if rule not in hits:
+                hits.append(rule)
+            spans.append((start, end))
     for match in TOKEN.finditer(text):
         if entropy(match.group()) > 4.0:
             if RedactionRule.HIGH_ENTROPY not in hits:
@@ -112,9 +139,14 @@ def redact(text: str) -> RedactionResult:
             merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
         else:
             merged.append((start, end))
-    for start, end in reversed(merged):
-        text = text[:start] + REDACTED + text[end:]
-    return RedactionResult(text, tuple(hits))
+    # Copy each untouched region once, even for many small secret matches.
+    parts: list[str] = []
+    cursor = 0
+    for start, end in merged:
+        parts.extend((text[cursor:start], REDACTED))
+        cursor = end
+    parts.append(text[cursor:])
+    return RedactionResult("".join(parts), tuple(hits))
 
 
 def untrusted(text: str, source: UntrustedSource) -> Untrusted:

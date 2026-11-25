@@ -669,16 +669,27 @@ class Box:
             return value.value
         return int(value) if isinstance(value, bool) else value
 
-    def _report(self, kind: BoxReport, batch: str | None, detail: str = "") -> None:
+    def _report(self, kind: BoxReport, batch: str | None, detail: str = "") -> bool:
+        # Card caps reset for a new purpose/pair set; oversized syncs do not.
+        if kind in (BoxReport.SYNC_OVERSIZED, BoxReport.CARD_CAP_REACHED):
+            if self.db.execute(
+                "SELECT 1 FROM report WHERE kind=? AND batch IS ? AND (kind<>? OR detail=?)",
+                (kind.value, batch, BoxReport.CARD_CAP_REACHED.value, detail),
+            ).fetchone():
+                return False
         self.db.execute(
             "INSERT INTO report(kind,batch,detail,at) VALUES (?,?,?,?)",
             (
                 kind.value,
                 batch,
-                redaction.redact(detail).text[:2048],
+                # The cap key contains only a purpose and validated UUID/rev pairs.
+                detail
+                if kind == BoxReport.CARD_CAP_REACHED
+                else redaction.redact(detail).text[:2048],
                 self.clock().isoformat(),
             ),
         )
+        return True
 
     def _unleased(self, batch: str) -> None:
         self._expire(batch)
@@ -1946,8 +1957,10 @@ class Box:
             if error.reason == BoxRefusal.CARD_CAP_REACHED:
                 # The failed intent transaction has rolled back. Keep its alert.
                 with self.transaction():
-                    for batch, _ in self._pairs(task, callback_bot, purpose):
-                        self._report(BoxReport.CARD_CAP_REACHED, batch)
+                    pairs = self._pairs(task, callback_bot, purpose)
+                    detail = f"{purpose}:{json_text(pairs)}"
+                    for batch, _ in pairs:
+                        self._report(BoxReport.CARD_CAP_REACHED, batch, detail)
             raise
 
     def _card_intent(
@@ -2701,12 +2714,20 @@ class Box:
             except (Refused, ValueError) as error:
                 self._registration_refused(batch, error)
         for identifier in payload["oversized"]:
-            self._report(
+            if self._report(
                 BoxReport.SYNC_OVERSIZED,
                 identifier,
                 "untrusted identifier; item requires operator review",
-            )
-            notices.append(f"{BoxReport.SYNC_OVERSIZED}:{identifier}")
+            ):
+                self.db.execute(
+                    "UPDATE report SET notified_at=? WHERE kind=? AND batch IS ?",
+                    (
+                        self.clock().isoformat(),
+                        BoxReport.SYNC_OVERSIZED.value,
+                        identifier,
+                    ),
+                )
+                notices.append(f"{BoxReport.SYNC_OVERSIZED}:{identifier}")
         for saved in payload["plan_results"]:
             if saved["result_b64"] is not None:
                 try:
@@ -2817,15 +2838,26 @@ class Box:
             plans: list[PlanTicket] = []
             handoffs: list[m.L4Handoff] = []
             notices: list[str] = []
-            for report in self._rows(
-                Report,
-                "SELECT * FROM report WHERE kind IN (?,?) AND notified_at IS NULL ORDER BY id",
-                (BoxReport.SYNC_OVERSIZED.value, BoxReport.CARD_CAP_REACHED.value),
-            ):
-                notices.append(f"{report.kind}:{report.batch}")
+            for kind, batch, detail in self.db.execute(
+                "SELECT kind,batch,CASE WHEN kind=? THEN detail ELSE '' END AS notice_detail "
+                "FROM report WHERE kind IN (?,?) AND notified_at IS NULL "
+                "GROUP BY kind,batch,notice_detail ORDER BY min(id)",
+                (
+                    BoxReport.CARD_CAP_REACHED.value,
+                    BoxReport.SYNC_OVERSIZED.value,
+                    BoxReport.CARD_CAP_REACHED.value,
+                ),
+            ).fetchall():
+                notices.append(f"{BoxReport(kind)}:{batch}")
                 self.db.execute(
-                    "UPDATE report SET notified_at=? WHERE id=?",
-                    (self.clock().isoformat(), report.id),
+                    "UPDATE report SET notified_at=? WHERE kind=? AND batch IS ? AND (kind<>? OR detail=?)",
+                    (
+                        self.clock().isoformat(),
+                        kind,
+                        batch,
+                        BoxReport.CARD_CAP_REACHED.value,
+                        detail,
+                    ),
                 )
             for key, _ in self.db.execute(
                 "SELECT key,value FROM box_meta WHERE key LIKE 'ack:%' OR key LIKE 'cancel:%' OR key LIKE 'registered:%' OR key LIKE 'stale:%'"

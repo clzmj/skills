@@ -208,9 +208,11 @@ def redacted_audit_detail(detail: str) -> str:
     cap = 500
     while True:
         saved = encoded(clean(record, cap))
-        # Metadata alone may exceed the cap; never cut identifiers or encoded JSON.
-        if len(saved) <= 500 or cap == 0:
+        # Keep identifiers intact while shrinking content, then use a bounded fallback.
+        if len(saved) <= 500:
             return saved
+        if cap == 0:
+            return encoded({"truncated": True, "content_digest": m.digest(detail)})
         cap //= 2
 
 
