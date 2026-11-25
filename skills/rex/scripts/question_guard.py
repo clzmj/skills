@@ -56,11 +56,12 @@ class BriefInvalid(ValueError):
 
 def normalize(text: str) -> str:
     # Match-only: Cf stripping also removes ZWJ/ZWNJ; never store this normalized text.
-    text = "".join(
-        char
-        for char in unicodedata.normalize("NFKC", text)
-        if unicodedata.category(char) != "Cf"
-    )
+    if not text.isascii():
+        text = "".join(
+            char
+            for char in unicodedata.normalize("NFKC", text)
+            if unicodedata.category(char) != "Cf"
+        )
     return " ".join(text.lower().split())
 
 
@@ -122,10 +123,11 @@ def load_guard(path: Path = GUARD_FILE) -> tuple[GuardRule, ...]:
 def _policy_hits(
     text: str, *, question: QuestionId | None = None, rules: Sequence[GuardRule]
 ) -> tuple[GuardHit, ...]:
+    normalized = normalize(text)
     return tuple(
         GuardHit(rule.trigger, rule.strength, rule.id, question)
         for rule in rules
-        if rule.pattern.search(normalize(text))
+        if rule.pattern.search(normalized)
     )
 
 
