@@ -419,6 +419,16 @@ def build_command(config: ModelConfig, *, executable: str = "claude") -> list[st
         "--strict-mcp-config",
         "--mcp-config",
         '{"mcpServers":{}}',
+        # Auth precedence (https://code.claude.com/docs/en/authentication, checked
+        # 2026-11-25): ANTHROPIC_API_KEY (3) and apiKeyHelper (4) both outrank
+        # CLAUDE_CODE_OAUTH_TOKEN (5), and settings files can set either. `claude
+        # --help`: --setting-sources takes a comma-separated subset of
+        # user,project,local. An empty list loads no user, project or local
+        # settings, so a repo-controlled .claude/settings.json cannot swap the
+        # Max-login token for another credential. --bare is not an option: it
+        # never reads OAuth. Managed (admin) settings still apply.
+        "--setting-sources",
+        "",
     ]
 
 

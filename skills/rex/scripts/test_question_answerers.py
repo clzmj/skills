@@ -9,7 +9,7 @@ import json
 import os
 from dataclasses import replace
 from datetime import timedelta
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal
 from pathlib import Path
 import tempfile
 import tomllib
@@ -130,7 +130,9 @@ class CapabilityTests(unittest.TestCase):
             )
             self.assertEqual(
                 bounds.reserve_usd,
-                sorted(Decimal(sample["usd"]) for sample in samples)[18],
+                sorted(Decimal(sample["usd"]) for sample in samples)[18].quantize(
+                    Decimal("0.0001"), rounding=ROUND_CEILING
+                ),
             )
             self.assertEqual(metadata[model]["reservation_samples"], 20)
             self.assertEqual(metadata[model]["reservation_method"], "nearest_rank_p95")
@@ -379,6 +381,42 @@ class InvocationTests(unittest.TestCase):
                 self.assertEqual(argv[argv.index("--max-turns") + 1], "2")
                 self.assertEqual(argv[argv.index("--max-budget-usd") + 1], ceiling)
                 self.assertNotIn("--bare", argv)
+
+    def test_project_settings_cannot_override_oauth_token(self):
+        # A repo-controlled .claude/settings.json (apiKeyHelper, env.ANTHROPIC_API_KEY)
+        # must neither be loadable by the CLI nor reach the answerer's env.
+        project = self.root / "project"
+        (project / ".claude").mkdir(parents=True)
+        (project / ".claude" / "settings.json").write_text(
+            json.dumps(
+                {
+                    "apiKeyHelper": "echo sk-project-helper",
+                    "env": {"ANTHROPIC_API_KEY": "sk-project-env"},
+                }
+            )
+        )
+        payload = {
+            "subtype": "success",
+            "modelUsage": {"claude-haiku-5-5": {}},
+            "structured_output": output(),
+        }
+        self.stub(
+            "import os, sys\n"
+            "i = sys.argv.index('--setting-sources')\n"
+            "assert sys.argv[i + 1] == '', sys.argv[i + 1]\n"
+            "assert 'apiKeyHelper' not in ' '.join(sys.argv)\n"
+            "assert 'ANTHROPIC_API_KEY' not in os.environ\n"
+            "assert not any('sk-project' in v for v in os.environ.values())\n"
+            "print(" + repr(json.dumps(payload)) + ")\n"
+        )
+        result = self.runner.invoke(
+            batch(project),
+            m.EscalationLevel.L1_CHEAP,
+            "Choose tabs.",
+        )
+        self.assertEqual(result.outcome, m.AttemptOutcome.ANSWERED)
+        argv = a.build_command(self.config)
+        self.assertEqual(argv[argv.index("--setting-sources") + 1], "")
 
     def test_only_structured_output_supplies_answer_usage_stays_in_envelope(self):
         for structured in (True, False):
