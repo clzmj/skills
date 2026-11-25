@@ -21,6 +21,7 @@ from unittest.mock import patch
 import claude_sessions
 import codex_sessions
 import grokbot_callback as callback
+import question_ledger
 
 
 class CallbackTests(unittest.TestCase):
@@ -1222,6 +1223,20 @@ class CallbackTests(unittest.TestCase):
             self.idle()
         self.assertEqual(record.call_args.args[1], message)
         self.assertEqual([len(body["last_message"]) for body in self.finished()], [2000])
+
+    def test_supersede_repeating_an_assumption_adds_no_second_notice(self):
+        message = "ASSUMPTION: delete production database"
+        events = callback.rex.STATE / callback.EVENTS_DIR
+        with patch.dict(os.environ, {callback.FLAG_ENV: "1"}), \
+                question_ledger.Ledger(self.root / "ledger.sqlite3") as store:
+            self.hook("UserPromptSubmit")
+            self.hook(background_tasks=[self.shell("A")], last_assistant_message=message)
+            self.idle()
+            self.assertEqual(store.ingest_events(events), 1)  # The release's file is gone before the supersede.
+            self.hook(last_assistant_message=message)
+            store.ingest_events(events)
+            self.assertEqual(store.db.execute("SELECT count(*) FROM notice").fetchone()[0], 1)
+        self.assertEqual(len(self.finished()), 2)
 
 if __name__ == "__main__":
     unittest.main()

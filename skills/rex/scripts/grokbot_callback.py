@@ -730,6 +730,7 @@ def _notify(agent, data, members):
             event, item["status"] = Event.RUN_FINISHED, held["status"]  # `held` is guarded above.
         elif request:
             event, item["status"] = Event.NEEDS_INPUT, Status.WAITING
+        # `released` is Claude-only (Codex sends no idle_prompt), so the CODEX_ASYNC exemption never meets it.
         elif resumes_input(data) and (item["status"] == Status.WAITING or
                 (item.get("released") == item["turn"] and item["status"] != Status.ENDED)):  # The released turn woke up.
             item["status"] = Status.RUNNING
@@ -792,6 +793,8 @@ def _notify(agent, data, members):
         if superseding:
             envelope["revision"] = 1
         # Inside the transaction: a failed spool write must roll back finished_turn so a later Stop can retry.
+        # Cost: BEGIN IMMEDIATE holds the write lock across the fsync and Popen for every webhook event,
+        # and concurrent hooks wait on it up to the 5 s sqlite timeout.
         created = spool(envelope)
     if created is not None and event == Event.RUN_FINISHED and os.environ.get(FLAG_ENV) == "1":
         try:
@@ -800,12 +803,13 @@ def _notify(agent, data, members):
                 envelope["task_id"],
                 held["last_message"] if idle else final_message(agent, data, limit=None),
                 DigestMetadata(requester=envelope["requester"], repo=source_metadata["repo"], branch=source_metadata["branch"]),
+                turn=envelope["turn"],
             )
         except Exception:  # noqa: BLE001, S110 - optional L0 reporting must not affect completion delivery.
             pass
 
 
-def record_assumptions(task_id: str, text: str, metadata: DigestMetadata | None = None) -> None:
+def record_assumptions(task_id: str, text: str, metadata: DigestMetadata | None = None, *, turn: str) -> None:
     """Write leaf event files; the ledger ingests them on its next tick or hook."""
     for line in text.splitlines():
         if not line.startswith(ASSUMPTION_PREFIX) or not scan_assumptions(line):
@@ -815,8 +819,9 @@ def record_assumptions(task_id: str, text: str, metadata: DigestMetadata | None 
         event = AssumptionEvent(task_id=task_id, text=redact(line).text, batch_id=None)
         if metadata is not None:
             event["metadata"] = metadata
-        path = directory / (str(uuid.uuid4()) + ".json")
-        temporary = path.with_suffix(".tmp")
+        # The stem is the ledger's notice id: a superseding message repeating a line must not add a notice.
+        path = directory / f"{uuid.uuid5(uuid.NAMESPACE_URL, json.dumps([task_id, turn, line]))}.json"
+        temporary = directory / f"{uuid.uuid4()}.tmp"  # Unique, so overlapping writers of one line cannot collide.
         try:
             with os.fdopen(private_fd(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL), "w") as stream:
                 json.dump(event, stream)
