@@ -1459,6 +1459,7 @@ class Broker:
                 with self.store.transaction():
                     current = self.store.get_batch(batch_id)
                     if current.rev != batch.rev or current.context != batch.context:
+                        # Revision race: the new revision's worker does the dispatch and digest.
                         return current
                     guarded = replace(
                         current.classification,

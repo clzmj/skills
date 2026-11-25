@@ -89,6 +89,14 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--receipt", type=Path, required=True)
     parser.add_argument(
+        "--cold",
+        action="store_true",
+        help="Prefix every prompt with a unique nonce so each call misses the prompt cache",
+    )
+    parser.add_argument(
+        "--samples-per-model", type=int, default=SAMPLES_PER_MODEL, choices=range(1, 21)
+    )
+    parser.add_argument(
         "--run",
         action="store_true",
         help="Required explicit approval guard for up to 40 serial model calls",
@@ -103,6 +111,7 @@ def main() -> int:
     if os.environ.get("ANTHROPIC_API_KEY"):
         parser.error("Calibration requires subscription OAuth only")
     os.umask(0o077)
+    samples_per_model = args.samples_per_model
     scripts = args.repo.resolve() / "skills/rex/scripts"
     sys.path.insert(0, str(scripts))
     import question_answerers as a
@@ -163,6 +172,17 @@ def main() -> int:
         capture_output=True,
     )
     head = subprocess.check_output([*git, "rev-parse", "HEAD"], text=True).strip()
+    # Canary: project settings that would hijack auth if the CLI loaded them.
+    canary = private / "settings-canary.txt"
+    (fixture / ".claude").mkdir(mode=0o700)
+    (fixture / ".claude" / "settings.json").write_text(
+        json.dumps(
+            {
+                "apiKeyHelper": f"echo helper-ran > {canary}; echo canary-not-a-key",
+                "env": {"ANTHROPIC_API_KEY": "canary-not-a-key"},
+            }
+        )
+    )
     brief = fixture / "BRIEF.md"
     question = m.Question(
         m.QuestionId(uuid4()),
@@ -283,8 +303,18 @@ def main() -> int:
             config = a.ModelConfig(model, True, True, bounds, True, True)
             argv = a.build_command(config)
             assert argv[argv.index("--max-turns") + 1] == "4"
-            for ordinal in range(1, SAMPLES_PER_MODEL + 1):
+            for ordinal in range(1, samples_per_model + 1):
                 assert len(samples) < MAX_CALLS
+                call_prompt = prompt
+                if args.cold:
+                    # Nonce first: the prompt prefix differs on every call, so the
+                    # message cache cannot hit. Words, not hex, to pass redaction.
+                    nonce = " ".join(secrets.choice(WORDS) for _ in range(10))
+                    call_prompt = (
+                        f"Cold-cache nonce (ignore): {nonce} {ordinal}\n\n{prompt}"
+                    )
+                    assert not a.redact(call_prompt).secret_present
+                    assert marker not in call_prompt
                 prefix = f"{model.value}-{ordinal}"
                 started = time.monotonic()
                 process = None
@@ -305,7 +335,7 @@ def main() -> int:
                             env=env,
                             start_new_session=True,
                         )
-                        process.communicate(prompt.encode(m.UTF8), timeout=wall)
+                        process.communicate(call_prompt.encode(m.UTF8), timeout=wall)
                     except subprocess.TimeoutExpired:
                         timed_out = True
                     finally:
@@ -465,7 +495,9 @@ def main() -> int:
         "max_turns": 4,
         "auth_method": "Parent-sourced subscription OAuth via macOS Keychain (explicit CLAUDE_CODE_OAUTH_TOKEN takes precedence); no API-key or token-file fallback; envelope auth source recorded separately when present",
         "prompt_bytes": prompt_bytes,
-        "p95_method": "empirical nearest rank; n=20 per actual model family; rank 19; no headroom",
+        "project_settings_canary_untouched": not canary.exists(),
+        "p95_method": f"empirical nearest rank; n={samples_per_model} per actual model family; no headroom"
+        + ("; cold: unique nonce prefix per call" if args.cold else ""),
         "samples": samples,
         "models": {},
     }
@@ -523,7 +555,8 @@ def main() -> int:
     )
     return (
         0
-        if all(s["successful_evidence"] for s in samples) and len(samples) == MAX_CALLS
+        if all(s["successful_evidence"] for s in samples)
+        and len(samples) == 2 * samples_per_model
         else 1
     )
 

@@ -1,5 +1,6 @@
-# Observed empirical nearest-rank p95 over 20 representative read-bearing
-# samples per Claude model, with a 24,512-byte production prompt and max_turns=4.
+# Cold-cache (unique nonce prefix per call, Max OAuth) empirical nearest-rank p95
+# over 20 representative read-bearing samples per Claude model; reserve_usd is
+# that p95 rounded up to 4 decimals (Carlos decision 2026-11-25), with a 24,512-byte production prompt and max_turns=4.
 # All runs used dontAsk, strict read tools, empty MCP, and matched actual family.
 # Input totals include cache creation/read tokens. Small n=20 is not a population
 # tail guarantee; re-measure after 50 attempts. Historical P12 probes are retained
@@ -11,12 +12,12 @@ bounded = true
 max_turns = 4
 reservation_validated = true
 tools_validated = true
-reserve_tokens = 34561
-reserve_usd = "0.0014690900000000002"
+reserve_tokens = 28891
+reserve_usd = "0.0023"
 reservation_samples = 20
 reservation_method = "nearest_rank_p95"
-observed_tokens = [34545, 34459, 34445, 34650, 34329, 34387, 34287, 34347, 34561, 34443, 34182, 34501, 34501, 34288, 34074, 34377, 33953, 34266, 34459, 34017]
-observed_usd = ["0.00337277", "0.00140529", "0.0014009500000000002", "0.0014690900000000002", "0.00136937", "0.00138337", "0.00135253", "0.00138125", "0.0014560900000000002", "0.00139719", "0.0013003300000000001", "0.00144489", "0.0014310700000000002", "0.00133881", "0.00128985", "0.0013850099999999999", "0.00124505", "0.0013392500000000002", "0.0014241500000000003", "0.0012718900000000001"]
+observed_tokens = [28872, 28780, 28850, 28867, 28811, 28887, 28817, 28900, 28470, 28191, 28812, 28528, 28611, 28823, 28449, 28891, 28190, 28552, 28867, 28835]
+observed_usd = ["0.00271766", "0.0021990000000000004", "0.00222699", "0.00222622", "0.00221638", "0.0022264000000000003", "0.0022167099999999998", "0.002256", "0.00211131", "0.00197606", "0.00221628", "0.0020884099999999997", "0.0021669700000000003", "0.00222238", "0.00210378", "0.00224258", "0.00197297", "0.0021555800000000003", "0.00223587", "0.00222628"]
 evidence = "tests/qe/hooks/claude-p12-oauth-calibration.json; docs/qe/question-delivery-evidence.md P12"
 
 # n=20 empirical nearest-rank p95; small sample, re-measure at 50 attempts.
@@ -26,12 +27,12 @@ bounded = true
 max_turns = 4
 reservation_validated = true
 tools_validated = true
-reserve_tokens = 32371
-reserve_usd = "0.0212414"
+reserve_tokens = 26777
+reserve_usd = "0.0388"
 reservation_samples = 20
 reservation_method = "nearest_rank_p95"
-observed_tokens = [32058, 32365, 32368, 32351, 32064, 32052, 32112, 32067, 32331, 32327, 32285, 32040, 32052, 32371, 32047, 32124, 32382, 32161, 32109, 32125]
-observed_usd = ["0.0552487", "0.021102199999999998", "0.0212414", "0.0211212", "0.0191746", "0.019259199999999997", "0.019552", "0.019250200000000002", "0.0207172", "0.0208542", "0.0207522", "0.0191254", "0.0193408", "0.0209444", "0.019145600000000002", "0.0197062", "0.0212086", "0.0197378", "0.0196492", "0.019854800000000002"]
+observed_tokens = [26576, 26608, 26588, 26594, 26588, 26574, 26594, 26601, 26600, 26525, 26580, 26589, 26581, 26789, 26593, 26581, 26597, 26777, 26599, 26512]
+observed_usd = ["0.0440889", "0.0377543", "0.0375225", "0.0376461", "0.0375225", "0.0374938", "0.037644000000000004", "0.0376843", "0.037640400000000004", "0.0371004", "0.0375061", "0.037530400000000005", "0.037514000000000006", "0.0387522", "0.0376361", "0.037514000000000006", "0.0376761", "0.038634299999999996", "0.0376643", "0.0370202"]
 evidence = "tests/qe/hooks/claude-p12-oauth-calibration.json; docs/qe/question-delivery-evidence.md P12"
 
 [models.gpt-6-luna]

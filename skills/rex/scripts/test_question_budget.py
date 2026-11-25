@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from dataclasses import replace
@@ -6,6 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
+import question_answerers as answerers
 import question_ledger as ledger
 import question_model as model
 from test_question_ledger import (
@@ -130,6 +132,50 @@ class BudgetTests(unittest.TestCase):
         self.assertIsNotNone(
             self.reserve(at=datetime(2026, 1, 3, 12, tzinfo=timezone.utc))
         )
+
+    def test_typical_cold_answerer_call_is_not_an_overrun(self):
+        # Cold-cache calls (Carlos, 2026-11-25) set reserve_usd; the median measured cold
+        # call must settle without counting toward the daily cap.
+        receipt = json.loads(
+            (
+                Path(__file__).parents[3]
+                / "tests/qe/hooks/claude-p12-oauth-calibration.json"
+            ).read_text()
+        )
+        configs = answerers.load_models()
+        at = datetime(2026, 1, 2, 12, tzinfo=timezone.utc)
+        for name in (model.Model.HAIKU, model.Model.SONNET):
+            bounds = configs[name].bounds
+            assert bounds is not None
+            samples = sorted(
+                (s for s in receipt["samples"] if s["model"] == name.value),
+                key=lambda s: Decimal(s["usd"]),
+            )
+            # Typical = the median cold call. Token and USD p95 come from different
+            # calls, so a USD-p95 call can still exceed the token p95.
+            for sample in (samples[len(samples) // 2],):
+                with self.subTest(model=name, usd=sample["usd"]):
+                    reservation = self.store.reserve_budget(
+                        "task",
+                        model=name,
+                        tokens=bounds.reserve_tokens,
+                        usd=bounds.reserve_usd,
+                        at=at,
+                    )
+                    assert reservation is not None
+                    self.store.settle_budget(
+                        reservation,
+                        usage=model.Usage(
+                            sample["tokens"] - sample["output_tokens"],
+                            sample["output_tokens"],
+                            Decimal(sample["usd"]),
+                        ),
+                    )
+                    overruns = self.store.db.execute(
+                        "SELECT count(*) FROM budget_reservation WHERE id=? AND overrun=1",
+                        (reservation,),
+                    ).fetchone()[0]
+                    self.assertEqual(overruns, 0)
 
     def test_invalid_decimals_are_value_errors(self):
         with self.assertRaises(ValueError):
