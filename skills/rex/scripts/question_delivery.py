@@ -134,7 +134,19 @@ class Delivery:
             ):
                 return m.SendOutcome.NOT_SENT_SUPERSEDED
             batch = self.store.get_batch(str(message.batch))
-            if not self.store.session_alive(message.target_actor):
+            inline = claim.route in INLINE
+            target_session = (
+                str(message.target_actor)
+                if message.child_actor
+                else (
+                    str(message.target_actor).partition(":")[2] or batch.asker.session
+                )
+            )
+            thread = target_session if batch.asker.agent is m.AgentKind.CODEX else None
+            if not self.store.session_alive(message.target_actor) or (
+                not inline
+                and not routes.relay_matches(batch.asker, message.target_actor, thread)
+            ):
                 if apply:
                     if batch.state not in ledger.TERMINAL:
                         self.store.transition(str(batch.id), m.BatchState.STALE)
@@ -234,8 +246,17 @@ class Delivery:
                 and plan[0] is m.Route.INLINE_DENY_REASON
             ):
                 return False  # Recorded P5 did not establish answer adoption.
+            target_state = (
+                callback.actor_state(message.target_actor)
+                if message.child_actor
+                else None
+            )
             target_session = (
-                str(message.target_actor).partition(":")[2] or batch.asker.session
+                target_state["id"]
+                if target_state
+                else (
+                    str(message.target_actor).partition(":")[2] or batch.asker.session
+                )
             )
             state = callback.session_state(batch.asker.agent, target_session)
             running = state is not None and state["status"] == callback.Status.RUNNING
@@ -280,6 +301,12 @@ class Delivery:
             if result.outcome is routes.RouteOutcome.REFUSED
             else m.DeliveryState.DISPATCH_UNCERTAIN
         )
+        if (
+            outcome in (m.DeliveryState.DISPATCHED, m.DeliveryState.DISPATCH_UNCERTAIN)
+            and message.child_actor
+            and not self.store.session_alive(message.child_actor)
+        ):
+            self.store.late_child_notice(batch)
         return (
             self.store.finish_claim(claim, outcome)
             and outcome is m.DeliveryState.DISPATCHED

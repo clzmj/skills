@@ -4,6 +4,8 @@ Independent uv-managed helpers for the installed Rex CLI. [POLICY.md](POLICY.md)
 
 Install from this skill with `uv run --script scripts/install_hooks.py` (optionally `--agents codex` or `--agents claude-code`). This installer only manages Rex hooks. The runtime runs from `~/.local/share/agent-tooling/rex`. Mutable state lives in `~/.local/state/rex-visible` (override with `REX_VISIBLE_STATE_DIR`) so skill updates preserve session bindings, receipts, and the local coordination database. Neither state nor transcripts belong in Git.
 
+Question escalation is operator-controlled: `--question-escalation on` enables it for the selected hosts, and `--question-escalation off` disables it. The default is `off`; generated hooks explicitly set `GROKBOT_QE=0` even when the parent environment has it enabled. Reinstall with the desired setting to switch it, then review the hooks. This changes installed hook commands, not an already-running session's environment.
+
 After installing or updating the Rex hooks, review the resulting hooks in the host's `/hooks` menu and re-trust the project if the host asks. The installer preserves host trust settings and does not grant trust or tool permissions.
 
 Jobs and read-only agent views use the existing main agent Rex session. Successful jobs and inactive views close after 30 seconds; failed jobs and infrastructure/deployment output close after 120 seconds. Running services remain until they exit. `--close-after -1` explicitly pins a job. Cleanup only closes owned panes and verified empty legacy tool sessions.

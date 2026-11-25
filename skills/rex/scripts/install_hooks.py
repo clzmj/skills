@@ -9,11 +9,23 @@ import json
 import re
 import shlex
 import shutil
+import sys
 import time
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 from agent_types import HookEvent
+from question_model import FLAG_ENV
+
+
+class QuestionEscalation(StrEnum):
+    OFF = "off"
+    ON = "on"
+
+    @property
+    def environment_value(self) -> str:
+        return "1" if self is QuestionEscalation.ON else "0"
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,8 +116,9 @@ def _hook_specs(codex):
     return [(spec, agent if spec.script == "question_hooks.py" else None) for spec in specs]
 
 
-def _command(spec, root, uv, agent):
-    words = [uv, "run", "--script", str(root / spec.script), "hook"]
+def _command(spec, root, uv, agent, question_escalation: QuestionEscalation = QuestionEscalation.OFF):
+    words = ["env", f"{FLAG_ENV}={question_escalation.environment_value}",
+             uv, "run", "--script", str(root / spec.script), "hook"]
     if spec.script == "question_hooks.py":
         words.extend(("--agent", agent))
     return shlex.join(words)
@@ -115,9 +128,10 @@ def _matches_spec(group, spec):
     return group.get("matcher") == spec.matcher
 
 
-def _apply_spec(data, spec, root, home, uv, agent, sibling_matchers=None):
+def _apply_spec(data, spec, root, home, uv, agent, sibling_matchers=None,
+                question_escalation: QuestionEscalation = QuestionEscalation.OFF):
     groups = data.setdefault("hooks", {}).setdefault(spec.event.value, [])
-    command = _command(spec, root, uv, agent)
+    command = _command(spec, root, uv, agent, question_escalation)
     matches = []
     sibling_matchers = sibling_matchers or {spec.matcher}
     # A script/event pair can own several matcher groups. Move only handlers
@@ -165,7 +179,7 @@ def _apply_spec(data, spec, root, home, uv, agent, sibling_matchers=None):
                    **({"matcher": spec.matcher} if spec.matcher is not None else {})})
 
 
-def rex_hooks(data, root, home, uv, codex):
+def rex_hooks(data, root, home, uv, codex, question_escalation: QuestionEscalation = QuestionEscalation.OFF):
     all_specs = _hook_specs(codex)
     for spec, agent in all_specs:
         # The legacy observer behavior intentionally makes these scripts global
@@ -183,10 +197,21 @@ def rex_hooks(data, root, home, uv, codex):
                         groups.append({"hooks": owned})
         sibling_matchers = {other.matcher for other, _ in all_specs
                             if other.script == spec.script and other.event == spec.event}
-        _apply_spec(data, spec, root, home, uv, agent, sibling_matchers)
+        _apply_spec(data, spec, root, home, uv, agent, sibling_matchers, question_escalation)
 
 
-def install(home, agents):
+def _has_enabled_owned_hook(data, root, home, codex):
+    scripts = {spec.script for spec, _ in _hook_specs(codex)}
+    return any(
+        f"{FLAG_ENV}=1" in shlex.split(handler.get("command", ""))
+        for groups in data.get("hooks", {}).values()
+        for group in groups
+        for handler in group.get("hooks", [])
+        if any(owned_handler(handler.get("command", ""), script, home, root) for script in scripts)
+    )
+
+
+def install(home, agents, question_escalation: QuestionEscalation = QuestionEscalation.OFF):
     uv = shutil.which("uv")
     if not uv:
         raise RuntimeError("uv is required; install uv and ensure it is on PATH")
@@ -198,11 +223,15 @@ def install(home, agents):
         shutil.copytree(source, runtime, dirs_exist_ok=True,
                         ignore=shutil.ignore_patterns("__pycache__", ".state", "*.pyc"))
     changed = []
+    downgrades_question_escalation = False
     for agent in agents:
         codex = agent == "codex"
         path = home / (".codex/hooks.json" if codex else ".claude/settings.json")
         data = json.loads(path.read_text()) if path.exists() else {}
-        rex_hooks(data, runtime, home, uv, codex)
+        if (question_escalation is QuestionEscalation.OFF
+                and _has_enabled_owned_hook(data, runtime, home, codex)):
+            downgrades_question_escalation = True
+        rex_hooks(data, runtime, home, uv, codex, question_escalation)
         if write(path, json.dumps(data, indent=2) + "\n"):
             changed.append(str(path))
         instructions = home / (".codex/AGENTS.md" if codex else ".claude/CLAUDE.md")
@@ -213,6 +242,9 @@ def install(home, agents):
             marked_block(instructions, "claude-coordination", "## Conversational agent coordination\n\nCoordinate the user's objective using Claude's native Agent and SendMessage tools when available. Before delegation, background work, or session coordination, read " + str(runtime / "COORDINATION.md") + ". Keep clear ownership and use the existing main agent Rex session for read-only activity views. Preserve normal permissions and host trust.")
 
     return {"runtime": str(runtime), "changed": changed,
+            "question_escalation": question_escalation.value,
+            "GROKBOT_QE": question_escalation.environment_value,
+            "downgrades_question_escalation": downgrades_question_escalation,
             "hook_review": "Review new or changed hooks in the host's /hooks menu. This installer never changes hook trust or tool permissions."}
 
 
@@ -220,5 +252,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--agents", nargs="+", choices=("codex", "claude-code"), default=["codex", "claude-code"])
     parser.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
+    parser.add_argument("--question-escalation", type=QuestionEscalation,
+                        choices=list(QuestionEscalation), default=QuestionEscalation.OFF,
+                        help="Operator-controlled question escalation for installed hooks (default: off).")
     args = parser.parse_args()
-    print(json.dumps(install(args.home.expanduser().resolve(), args.agents), indent=2))
+    receipt = install(args.home.expanduser().resolve(), args.agents, args.question_escalation)
+    if receipt["downgrades_question_escalation"]:
+        print("Warning: reinstalling without --question-escalation changes existing GROKBOT_QE=1 hooks to GROKBOT_QE=0.", file=sys.stderr)
+    print(json.dumps(receipt, indent=2))

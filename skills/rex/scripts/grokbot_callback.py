@@ -491,6 +491,11 @@ def session_state(
     agent: AgentKind, session: str, child: str = ""
 ) -> SessionState | None:
     """Read one callback session record without creating or modifying its database."""
+    return actor_state(actor_key(agent, session, child))
+
+
+def actor_state(actor: str) -> SessionState | None:
+    """Read a registered actor, including a child's opaque callback key."""
     path = rex.STATE / "grokbot-callback.sqlite3"
     if not path.exists():
         return None
@@ -500,7 +505,7 @@ def session_state(
         ) as db:
             row = db.execute(
                 "SELECT record FROM sessions WHERE key=?",
-                (actor_key(agent, session, child),),
+                (actor,),
             ).fetchone()
         return _parse_session_state(row[0]) if row else None
     except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):

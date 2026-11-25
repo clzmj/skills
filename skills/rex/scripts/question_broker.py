@@ -456,7 +456,7 @@ class Broker:
                     else None,
                     "context": batch.context,
                     "callback_bot": batch.asker.callback_bot,
-                    "session_alive": self.store.session_alive(batch.asker.actor),
+                    "session_alive": self.store.asker_session_alive(batch.asker),
                     "answered_in_pane": self.store.answered_in_pane(identifier),
                     "local_resolution": resolution,
                     "outbound": outbound,
@@ -593,9 +593,17 @@ class Broker:
                 result["send"] = m.SendOutcome.NOT_SENT_PAUSED
                 result["takeover_id"] = takeovers[0]["id"]
                 return
-            if not self.store.session_alive(
-                batch.asker.actor
-            ) or not self.store.session_alive(body["target_actor"]):
+            if (
+                not self.store.asker_session_alive(batch.asker)
+                or not self.store.session_alive(body["target_actor"])
+                or not routes.relay_matches(
+                    batch.asker, body["target_actor"], body["codex_thread"]
+                )
+                or (
+                    batch.asker.role is m.ActorRole.NATIVE_SUBAGENT
+                    and body["child_actor"] != batch.asker.actor
+                )
+            ):
                 result["send"] = m.SendOutcome.NOT_SENT_SESSION_GONE
                 return
             if body["session_marker"] is None:
@@ -718,6 +726,10 @@ class Broker:
                 body["delivery_id"], body["attempt"], request["plan_id"], note_state
             )
             if result["send"] in SENT:
+                if body["child_actor"] and not self.store.session_alive(
+                    body["child_actor"]
+                ):
+                    self.store.late_child_notice(batch)
                 # A concurrently recorded human takeover may already have
                 # cancelled the batch. Never reopen that terminal state.
                 with self.store.transaction():
@@ -1316,6 +1328,7 @@ class Broker:
                 identifier,
                 token,
                 child_actor=child,
+                child_finished=bool(child and not self.store.session_alive(child)),
             )
             # Deliberate route guard for future callers: P5 parked answers remain BLOCKED.
             if batch.asker.agent is not m.AgentKind.CODEX:
@@ -2010,8 +2023,9 @@ class Broker:
             self.store.recover_claims(at)
             self.store.sweep_budget_reservations(at=at)
             for batch in self.store.batches():
-                if batch.state not in ledger.TERMINAL and not self.store.session_alive(
-                    batch.asker.actor
+                if (
+                    batch.state not in ledger.TERMINAL
+                    and not self.store.asker_session_alive(batch.asker)
                 ):
                     self.store.transition(str(batch.id), m.BatchState.STALE)
             self.store.retain(at)

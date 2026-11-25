@@ -9,7 +9,7 @@ Only the terminal executables are fixtures; plan validation, leases, replay,
 locks, fences, route selection and route subprocesses are production code.
 """
 
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeout
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -20,7 +20,8 @@ import subprocess
 import sys
 import threading
 from unittest.mock import patch
-from uuid import uuid4
+from uuid import UUID, uuid4
+from typing import cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import qe_box as box
@@ -39,7 +40,7 @@ from test_registration import BoxTest, progress, revision
 m = box.m
 
 
-class LeaseFenceTests(BoxTest):
+class BrokerBoxFixture(BoxTest):
     def setUp(self):
         super().setUp()
         echo_wait = patch.object(m, "ECHO_WAIT", timedelta(0))
@@ -191,6 +192,10 @@ with open(os.environ["QE_ROUTE_LOG"], "a") as stream:
                     operation()
                 self.assertEqual(caught.exception.reason, box.BoxRefusal.LEASED)
                 self.assertEqual(caught.exception.exit_code, 4)
+
+
+class LeaseFenceTests(BrokerBoxFixture):
+    overlap: Future[m.Result]
 
     def test_01_queued_revision_applies_after_sent_result(self):
         plan = self.issue()
@@ -396,8 +401,8 @@ with open(os.environ["QE_ROUTE_LOG"], "a") as stream:
             m.ReconcileVerdict.NOT_DELIVERED, delivery_id=self.delivery().id
         )
         second = self.box.deliver(self.delivery().id).plans[0].plan
-        self.assertEqual(second["body"]["attempt"], 2)
-        self.assertTrue(second["body"]["resend_after_reconcile"])
+        self.assertEqual(cast(m.SendBody, second["body"])["attempt"], 2)
+        self.assertTrue(cast(m.SendBody, second["body"])["resend_after_reconcile"])
         self.assertEqual(self.execute(first)["send"], m.SendOutcome.NOT_SENT_EXPIRED)
         self.submit(self.execute(second))
         self.assertEqual(self.execute(first)["send"], m.SendOutcome.NOT_SENT_EXPIRED)
@@ -435,7 +440,7 @@ with open(os.environ["QE_ROUTE_LOG"], "a") as stream:
         identifier = str(uuid4())
         self.store.record_takeover(
             m.Takeover(
-                m.TakeoverId(identifier),
+                m.TakeoverId(UUID(identifier)),
                 self.batch.id,
                 m.PromptOrigin.UNKNOWN,
                 None,
@@ -470,7 +475,7 @@ with open(os.environ["QE_ROUTE_LOG"], "a") as stream:
                 self.submit(self.execute(ticket.plan))
         self.assertIsNone(self.delivery().paused_by)
         retry = self.box.deliver(self.delivery().id).plans[0].plan
-        self.assertTrue(retry["body"]["resend_after_reconcile"])
+        self.assertTrue(cast(m.SendBody, retry["body"])["resend_after_reconcile"])
         self.assertEqual(self.execute(retry)["send"], m.SendOutcome.SENT_NO_ECHO)
         self.assertEqual(len(self.sends()), 2)
 
@@ -584,7 +589,7 @@ with open(os.environ["QE_ROUTE_LOG"], "a") as stream:
         plan = self.issue()
         # Select Rex through real route selection by removing Codex's turn id.
         body = dict(plan["body"], codex_thread=None, allowed_routes=[m.Route.REX_SEND])
-        request = dict(plan, body=body)
+        request: m.Plan = {**plan, "body": cast(m.SendBody, body)}
         request["plan_digest"] = m.digest(
             {k: v for k, v in request.items() if k != "plan_digest"}
         )
