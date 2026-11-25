@@ -50,6 +50,7 @@ test("release --list returns the filtered tracked inventory", () => {
     "skills/rex/scripts/COORDINATION.md",
     "skills/rex/scripts/POLICY.md",
     "skills/rex/scripts/README.md",
+    "skills/rex/scripts/agent_types.py",
     "skills/rex/scripts/agents/complex-worker.toml",
     "skills/rex/scripts/agents/focused-worker.toml",
     "skills/rex/scripts/agents/task-coordinator.toml",
@@ -59,6 +60,11 @@ test("release --list returns the filtered tracked inventory", () => {
     "skills/rex/scripts/grokbot_callback.py",
     "skills/rex/scripts/install_codex.py",
     "skills/rex/scripts/install_hooks.py",
+    "skills/rex/scripts/question_guard.py",
+    "skills/rex/scripts/question_guard.toml",
+    "skills/rex/scripts/question_ledger.py",
+    "skills/rex/scripts/question_model.py",
+    "skills/rex/scripts/question_redact.py",
     "skills/rex/scripts/rex_visible.py",
   ]);
   expect(
