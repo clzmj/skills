@@ -55,14 +55,8 @@ class InstallerTests(unittest.TestCase):
     def test_foreign_hook_invocation_cannot_be_claimed_by_argument_path(self):
         home = Path("/test-home")
         root = home / ".local/share/agent-tooling/rex"
-        self.assertFalse(
-            installer.owned_handler(
-                "uv run /x/codex_sessions.py hook", "codex_sessions.py", home, root
-            )
-        )
-        command = shlex.join(
-            ["uv", "run", "--script", "/x/foreign.py", "hook", str(root / "codex_sessions.py")]
-        )
+        self.assertFalse(installer.owned_handler("uv run /x/codex_sessions.py hook", "codex_sessions.py", home, root))
+        command = shlex.join(["uv", "run", "--script", "/x/foreign.py", "hook", str(root / "codex_sessions.py")])
         self.assertFalse(installer.owned_handler(command, "codex_sessions.py", home, root))
 
     def test_operator_cli_can_enable_then_disable_both_hosts_without_duplicates(self):
@@ -71,21 +65,32 @@ class InstallerTests(unittest.TestCase):
             commands_by_host: dict[str, list[str]] = {}
             for setting in ("on", "off", "off"):
                 result = subprocess.run(
-                    [sys.executable, str(Path(installer.__file__ or "")), "--home", str(home),
-                     "--question-escalation", setting],
-                    text=True, capture_output=True, check=True,
+                    [
+                        sys.executable,
+                        str(Path(installer.__file__ or "")),
+                        "--home",
+                        str(home),
+                        "--question-escalation",
+                        setting,
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=True,
                 )
                 receipt = json.loads(result.stdout)
                 self.assertEqual(receipt["question_escalation"], setting)
                 self.assertEqual(receipt["GROKBOT_QE"], "1" if setting == "on" else "0")
                 for config in (home / ".codex/hooks.json", home / ".claude/settings.json"):
                     data = json.loads(config.read_text())
-                    commands = [handler["command"] for groups in data["hooks"].values()
-                                for group in groups for handler in group["hooks"]]
+                    commands = [
+                        handler["command"]
+                        for groups in data["hooks"].values()
+                        for group in groups
+                        for handler in group["hooks"]
+                    ]
                     expected = "GROKBOT_QE=1" if setting == "on" else "GROKBOT_QE=0"
                     self.assertTrue(commands)
-                    self.assertTrue(all(shlex.split(command)[:2] == ["env", expected]
-                                        for command in commands))
+                    self.assertTrue(all(shlex.split(command)[:2] == ["env", expected] for command in commands))
                     previous = commands_by_host.get(str(config))
                     if previous is not None:
                         self.assertEqual(len(commands), len(previous))
@@ -98,13 +103,23 @@ class InstallerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             home = Path(folder)
             subprocess.run(
-                [sys.executable, str(Path(installer.__file__ or "")), "--home", str(home),
-                 "--question-escalation", "on"],
-                text=True, capture_output=True, check=True,
+                [
+                    sys.executable,
+                    str(Path(installer.__file__ or "")),
+                    "--home",
+                    str(home),
+                    "--question-escalation",
+                    "on",
+                ],
+                text=True,
+                capture_output=True,
+                check=True,
             )
             result = subprocess.run(
                 [sys.executable, str(Path(installer.__file__ or "")), "--home", str(home)],
-                text=True, capture_output=True, check=True,
+                text=True,
+                capture_output=True,
+                check=True,
             )
             self.assertEqual(json.loads(result.stdout)["GROKBOT_QE"], "0")
             self.assertIn("GROKBOT_QE=1 hooks to GROKBOT_QE=0", result.stderr)
@@ -120,9 +135,13 @@ class InstallerTests(unittest.TestCase):
             for groups in data["hooks"].values():
                 for group in groups:
                     for handler in group["hooks"]:
-                        result = subprocess.run(shlex.split(handler["command"]),
-                                                env={**os.environ, "GROKBOT_QE": "1"},
-                                                text=True, capture_output=True, check=True)
+                        result = subprocess.run(
+                            shlex.split(handler["command"]),
+                            env={**os.environ, "GROKBOT_QE": "1"},
+                            text=True,
+                            capture_output=True,
+                            check=True,
+                        )
                         self.assertEqual(result.stdout.strip(), "0")
 
     def test_install_is_independent_and_idempotent(self):
@@ -132,7 +151,11 @@ class InstallerTests(unittest.TestCase):
             path.parent.mkdir()
             python_hook = {"type": "command", "command": "/usr/bin/python3 /custom/python_tooling.py", "timeout": 9}
             unrelated = {"hooks": [python_hook], "matcher": "custom"}
-            original = {"hooks": {"PreToolUse": [unrelated]}, "trust": {"enabled": False}, "permissions": {"allow": ["Bash(rg:*)"]}}
+            original = {
+                "hooks": {"PreToolUse": [unrelated]},
+                "trust": {"enabled": False},
+                "permissions": {"allow": ["Bash(rg:*)"]},
+            }
             path.write_text(json.dumps(original))
             (home / ".codex/AGENTS.md").write_text("Personal instructions\n")
             with patch.object(installer.shutil, "which", return_value="/opt/tools/uv"):
@@ -174,17 +197,39 @@ class InstallerTests(unittest.TestCase):
     def test_migration_only_changes_recognized_rex_handlers(self):
         home = Path("/test-home")
         root = home / ".local/share/agent-tooling/rex"
-        for old in (root, home / "Developer/tools/rex-visible", home / "repo/skills/python-tooling/scripts/rex", home / "repo/skills/rex/scripts"):
-            owned: Handler = {"type": "command", "command": shlex.join(["/usr/bin/python3", str(old / "codex_sessions.py"), "hook"]), "timeout": 80}
-            unrelated: Handler = {"type": "command", "command": "/usr/bin/python3 /custom/codex_sessions.py hook", "timeout": 7}
-            data: HookConfig = {"hooks": {"SessionEnd": [{"hooks": [owned, copy.deepcopy(unrelated)], "matcher": "keep"}]}}
+        for old in (
+            root,
+            home / "Developer/tools/rex-visible",
+            home / "repo/skills/python-tooling/scripts/rex",
+            home / "repo/skills/rex/scripts",
+        ):
+            owned: Handler = {
+                "type": "command",
+                "command": shlex.join(["/usr/bin/python3", str(old / "codex_sessions.py"), "hook"]),
+                "timeout": 80,
+            }
+            unrelated: Handler = {
+                "type": "command",
+                "command": "/usr/bin/python3 /custom/codex_sessions.py hook",
+                "timeout": 7,
+            }
+            data: HookConfig = {
+                "hooks": {"SessionEnd": [{"hooks": [owned, copy.deepcopy(unrelated)], "matcher": "keep"}]}
+            }
             installer.rex_hooks(data, root, home, "/opt/tools/uv", True)
             self.assertEqual(data["hooks"]["SessionEnd"][0]["hooks"], [unrelated])
             self.assertEqual(data["hooks"]["SessionEnd"][0]["matcher"], "keep")
-            relocated = [handler for group in data["hooks"]["SessionEnd"] for handler in group["hooks"]
-                         if installer.owned_handler(handler.get("command", ""), "codex_sessions.py", home, root)]
+            relocated = [
+                handler
+                for group in data["hooks"]["SessionEnd"]
+                for handler in group["hooks"]
+                if installer.owned_handler(handler.get("command", ""), "codex_sessions.py", home, root)
+            ]
             self.assertEqual(len(relocated), 1)
-            self.assertEqual(shlex.split(relocated[0]["command"]), ["env", "GROKBOT_QE=0", "/opt/tools/uv", "run", "--script", str(root / "codex_sessions.py"), "hook"])
+            self.assertEqual(
+                shlex.split(relocated[0]["command"]),
+                ["env", "GROKBOT_QE=0", "/opt/tools/uv", "run", "--script", str(root / "codex_sessions.py"), "hook"],
+            )
             self.assertEqual(relocated[0]["timeout"], 3)
 
     def test_reinstall_replaces_legacy_unprefixed_commands_for_both_hosts(self):
@@ -192,12 +237,24 @@ class InstallerTests(unittest.TestCase):
         root = home / ".local/share/agent-tooling/rex"
         for codex, script in ((True, "codex_sessions.py"), (False, "claude_sessions.py")):
             legacy = shlex.join(["uv", "run", "--script", str(root / script), "hook"])
-            data: HookConfig = {"hooks": {"SessionStart": [{"hooks": [
-                {"type": "command", "command": legacy, "timeout": 60},
-            ]}]}}
+            data: HookConfig = {
+                "hooks": {
+                    "SessionStart": [
+                        {
+                            "hooks": [
+                                {"type": "command", "command": legacy, "timeout": 60},
+                            ]
+                        }
+                    ]
+                }
+            }
             installer.rex_hooks(data, root, home, "/opt/tools/uv", codex)
-            owned = [handler for group in data["hooks"]["SessionStart"] for handler in group["hooks"]
-                     if str(root / script) in shlex.split(handler["command"])]
+            owned = [
+                handler
+                for group in data["hooks"]["SessionStart"]
+                for handler in group["hooks"]
+                if str(root / script) in shlex.split(handler["command"])
+            ]
             self.assertEqual(len(owned), 1)
             self.assertEqual(shlex.split(owned[0]["command"])[1], "GROKBOT_QE=0")
 
@@ -205,15 +262,26 @@ class InstallerTests(unittest.TestCase):
         home = Path("/test-home")
         root = home / ".local/share/agent-tooling/rex"
         for codex, script in ((True, "codex_sessions.py"), (False, "claude_sessions.py")):
-            owned: Handler = {"type": "command", "command": shlex.join(["uv", "run", "--script", str(root / script), "hook"])}
+            owned: Handler = {
+                "type": "command",
+                "command": shlex.join(["uv", "run", "--script", str(root / script), "hook"]),
+            }
             unrelated: Handler = {"type": "command", "command": "/custom/observer", "timeout": 7}
             mixed: HookGroup = {"matcher": "Bash", "hooks": [copy.deepcopy(owned), unrelated], "custom": "preserved"}
-            data: HookConfig = {"hooks": {"PostToolUse": [mixed, {"matcher": "SendMessage", "hooks": [copy.deepcopy(owned)]}]}}
+            data: HookConfig = {
+                "hooks": {"PostToolUse": [mixed, {"matcher": "SendMessage", "hooks": [copy.deepcopy(owned)]}]}
+            }
             installer.rex_hooks(data, root, home, "/opt/tools/uv", codex)
             self.assertEqual(mixed, {"matcher": "Bash", "hooks": [unrelated], "custom": "preserved"})
-            observers = [group for group in data["hooks"]["PostToolUse"]
-                         if group is not mixed and any(installer.owned_handler(handler.get("command", ""), script, home, root)
-                                                       for handler in group.get("hooks", []))]
+            observers = [
+                group
+                for group in data["hooks"]["PostToolUse"]
+                if group is not mixed
+                and any(
+                    installer.owned_handler(handler.get("command", ""), script, home, root)
+                    for handler in group.get("hooks", [])
+                )
+            ]
             self.assertEqual(len(observers), 1)
             self.assertTrue(all("matcher" not in group for group in observers))
             before = copy.deepcopy(data)
@@ -232,8 +300,29 @@ class InstallerTests(unittest.TestCase):
             data = json.loads(path.read_text())
             self.assertEqual(data["permissions"], original["permissions"])
             self.assertEqual(data["enabledPlugins"], original["enabledPlugins"])
-            self.assertTrue({"SessionStart", "UserPromptSubmit", "PreToolUse", "SubagentStart", "SubagentStop", "Stop", "StopFailure", "SessionEnd", "TeammateIdle", "TaskCreated", "TaskCompleted", "Notification", "PermissionRequest"}.issubset(data["hooks"]))
-            commands = [handler["command"] for groups in data["hooks"].values() for group in groups for handler in group["hooks"]]
+            self.assertTrue(
+                {
+                    "SessionStart",
+                    "UserPromptSubmit",
+                    "PreToolUse",
+                    "SubagentStart",
+                    "SubagentStop",
+                    "Stop",
+                    "StopFailure",
+                    "SessionEnd",
+                    "TeammateIdle",
+                    "TaskCreated",
+                    "TaskCompleted",
+                    "Notification",
+                    "PermissionRequest",
+                }.issubset(data["hooks"])
+            )
+            commands = [
+                handler["command"]
+                for groups in data["hooks"].values()
+                for group in groups
+                for handler in group["hooks"]
+            ]
             self.assertTrue(any("claude_sessions.py" in command for command in commands))
             self.assertFalse(any("codex_sessions.py" in command for command in commands))
             first = path.read_text()

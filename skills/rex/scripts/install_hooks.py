@@ -4,6 +4,7 @@
 # dependencies = []
 # ///
 """Install independent Rex hooks without changing Python hooks or host trust."""
+
 import argparse
 import json
 import re
@@ -76,26 +77,57 @@ def owned_handler(command, script, home, root):
     path = Path(words[hook_index - 1])
     if path.name != script or not path.is_absolute():
         return False
-    return (path.parent == root or path.parent == home / "Developer/tools/rex-visible"
-            or path.parent == Path(__file__).resolve().parent
-            or str(path.parent).endswith(("/skills/python-tooling/scripts/rex", "/skills/rex/scripts")))
+    return (
+        path.parent == root
+        or path.parent == home / "Developer/tools/rex-visible"
+        or path.parent == Path(__file__).resolve().parent
+        or str(path.parent).endswith(("/skills/python-tooling/scripts/rex", "/skills/rex/scripts"))
+    )
 
 
 def _hook_specs(codex):
     specs = []
     visible = (HookEvent.SESSION_START, HookEvent.USER_PROMPT_SUBMIT, HookEvent.PRE_TOOL_USE)
-    specs.extend(HookSpec("rex_visible.py", event,
-                          "Bash|exec_command|shell|shell_command" if event == HookEvent.PRE_TOOL_USE else None,
-                          5) for event in visible)
+    specs.extend(
+        HookSpec(
+            "rex_visible.py",
+            event,
+            "Bash|exec_command|shell|shell_command" if event == HookEvent.PRE_TOOL_USE else None,
+            5,
+        )
+        for event in visible
+    )
     script = "codex_sessions.py" if codex else "claude_sessions.py"
-    events = ((HookEvent.SESSION_START, HookEvent.USER_PROMPT_SUBMIT, HookEvent.SUBAGENT_START,
-               HookEvent.SUBAGENT_STOP, HookEvent.STOP, HookEvent.SESSION_END, HookEvent.POST_TOOL_USE,
-               HookEvent.PERMISSION_REQUEST) if codex else
-              (HookEvent.SESSION_START, HookEvent.USER_PROMPT_SUBMIT, HookEvent.SUBAGENT_START,
-               HookEvent.SUBAGENT_STOP, HookEvent.PRE_TOOL_USE, HookEvent.POST_TOOL_USE, HookEvent.STOP,
-               HookEvent.STOP_FAILURE, HookEvent.SESSION_END, HookEvent.TEAMMATE_IDLE,
-               HookEvent.TASK_CREATED, HookEvent.TASK_COMPLETED, HookEvent.NOTIFICATION,
-               HookEvent.PERMISSION_REQUEST, HookEvent.POST_MODEL_SWITCH))
+    events = (
+        (
+            HookEvent.SESSION_START,
+            HookEvent.USER_PROMPT_SUBMIT,
+            HookEvent.SUBAGENT_START,
+            HookEvent.SUBAGENT_STOP,
+            HookEvent.STOP,
+            HookEvent.SESSION_END,
+            HookEvent.POST_TOOL_USE,
+            HookEvent.PERMISSION_REQUEST,
+        )
+        if codex
+        else (
+            HookEvent.SESSION_START,
+            HookEvent.USER_PROMPT_SUBMIT,
+            HookEvent.SUBAGENT_START,
+            HookEvent.SUBAGENT_STOP,
+            HookEvent.PRE_TOOL_USE,
+            HookEvent.POST_TOOL_USE,
+            HookEvent.STOP,
+            HookEvent.STOP_FAILURE,
+            HookEvent.SESSION_END,
+            HookEvent.TEAMMATE_IDLE,
+            HookEvent.TASK_CREATED,
+            HookEvent.TASK_COMPLETED,
+            HookEvent.NOTIFICATION,
+            HookEvent.PERMISSION_REQUEST,
+            HookEvent.POST_MODEL_SWITCH,
+        )
+    )
     for event in events:
         timeout = 3 if event == HookEvent.SESSION_END else (20 if event == HookEvent.SUBAGENT_START else 5)
         # PostToolUse remains a broad lifecycle observer; only these two scripts
@@ -105,20 +137,31 @@ def _hook_specs(codex):
         specs.append(HookSpec(script, HookEvent.PRE_TOOL_USE, CODEX_QUESTION_TOOL_MATCHER, 10))
     agent = "codex" if codex else "claude"
     matcher = CODEX_QUESTION_TOOL_MATCHER if codex else CLAUDE_QUESTION_TOOL_MATCHER
-    specs.extend((HookSpec("question_hooks.py", HookEvent.PRE_TOOL_USE, matcher, 60 if not codex else 10),
-                  HookSpec("question_hooks.py", HookEvent.POST_TOOL_USE, matcher, 10),
-                  HookSpec("question_hooks.py", HookEvent.USER_PROMPT_SUBMIT, None, 5),
-                  HookSpec("question_hooks.py", HookEvent.STOP, None, 5),
-                  HookSpec("question_hooks.py", HookEvent.SESSION_END, None, 5),
-                  HookSpec("question_hooks.py", HookEvent.SUBAGENT_STOP, None, 5)))
+    specs.extend(
+        (
+            HookSpec("question_hooks.py", HookEvent.PRE_TOOL_USE, matcher, 60 if not codex else 10),
+            HookSpec("question_hooks.py", HookEvent.POST_TOOL_USE, matcher, 10),
+            HookSpec("question_hooks.py", HookEvent.USER_PROMPT_SUBMIT, None, 5),
+            HookSpec("question_hooks.py", HookEvent.STOP, None, 5),
+            HookSpec("question_hooks.py", HookEvent.SESSION_END, None, 5),
+            HookSpec("question_hooks.py", HookEvent.SUBAGENT_STOP, None, 5),
+        )
+    )
     if not codex:
         specs.append(HookSpec("question_hooks.py", HookEvent.PERMISSION_REQUEST, matcher, 60))
     return [(spec, agent if spec.script == "question_hooks.py" else None) for spec in specs]
 
 
 def _command(spec, root, uv, agent, question_escalation: QuestionEscalation = QuestionEscalation.OFF):
-    words = ["env", f"{FLAG_ENV}={question_escalation.environment_value}",
-             uv, "run", "--script", str(root / spec.script), "hook"]
+    words = [
+        "env",
+        f"{FLAG_ENV}={question_escalation.environment_value}",
+        uv,
+        "run",
+        "--script",
+        str(root / spec.script),
+        "hook",
+    ]
     if spec.script == "question_hooks.py":
         words.extend(("--agent", agent))
     return shlex.join(words)
@@ -128,8 +171,16 @@ def _matches_spec(group, spec):
     return group.get("matcher") == spec.matcher
 
 
-def _apply_spec(data, spec, root, home, uv, agent, sibling_matchers=None,
-                question_escalation: QuestionEscalation = QuestionEscalation.OFF):
+def _apply_spec(
+    data,
+    spec,
+    root,
+    home,
+    uv,
+    agent,
+    sibling_matchers=None,
+    question_escalation: QuestionEscalation = QuestionEscalation.OFF,
+):
     groups = data.setdefault("hooks", {}).setdefault(spec.event.value, [])
     command = _command(spec, root, uv, agent, question_escalation)
     matches = []
@@ -137,8 +188,11 @@ def _apply_spec(data, spec, root, home, uv, agent, sibling_matchers=None,
     # A script/event pair can own several matcher groups. Move only handlers
     # that belong to this spec; leave mixed groups and their matchers intact.
     for group in list(groups):
-        owned = [handler for handler in group.get("hooks", [])
-                 if owned_handler(handler.get("command", ""), spec.script, home, root)]
+        owned = [
+            handler
+            for handler in group.get("hooks", [])
+            if owned_handler(handler.get("command", ""), spec.script, home, root)
+        ]
         if not owned:
             continue
         if _matches_spec(group, spec):
@@ -164,19 +218,23 @@ def _apply_spec(data, spec, root, home, uv, agent, sibling_matchers=None,
                 if not seen_keeper:
                     seen_keeper = True
                 else:
-                    duplicate_index = next(index for index, candidate in enumerate(keepers)
-                                           if candidate is handler)
+                    duplicate_index = next(index for index, candidate in enumerate(keepers) if candidate is handler)
                     keepers.pop(duplicate_index)
         for group, handler in matches[1:]:
-            match_index = next((index for index, candidate in enumerate(group.get("hooks", []))
-                                if candidate is handler), None)
+            match_index = next(
+                (index for index, candidate in enumerate(group.get("hooks", [])) if candidate is handler), None
+            )
             if match_index is not None:
                 group["hooks"].pop(match_index)
             if not group.get("hooks"):
                 groups.remove(group)
         return
-    groups.append({"hooks": [{"type": "command", "command": command, "timeout": spec.timeout}],
-                   **({"matcher": spec.matcher} if spec.matcher is not None else {})})
+    groups.append(
+        {
+            "hooks": [{"type": "command", "command": command, "timeout": spec.timeout}],
+            **({"matcher": spec.matcher} if spec.matcher is not None else {}),
+        }
+    )
 
 
 def rex_hooks(data, root, home, uv, codex, question_escalation: QuestionEscalation = QuestionEscalation.OFF):
@@ -187,16 +245,20 @@ def rex_hooks(data, root, home, uv, codex, question_escalation: QuestionEscalati
         if spec.event == HookEvent.POST_TOOL_USE and spec.script in BROADEN_POST_TOOL_USE:
             groups = data.setdefault("hooks", {}).setdefault(spec.event.value, [])
             for group in list(groups):
-                owned = [handler for handler in group.get("hooks", [])
-                         if owned_handler(handler.get("command", ""), spec.script, home, root)]
+                owned = [
+                    handler
+                    for handler in group.get("hooks", [])
+                    if owned_handler(handler.get("command", ""), spec.script, home, root)
+                ]
                 if owned and group.get("matcher"):
                     if len(owned) == len(group["hooks"]):
                         group.pop("matcher")
                     else:
                         group["hooks"] = [handler for handler in group["hooks"] if handler not in owned]
                         groups.append({"hooks": owned})
-        sibling_matchers = {other.matcher for other, _ in all_specs
-                            if other.script == spec.script and other.event == spec.event}
+        sibling_matchers = {
+            other.matcher for other, _ in all_specs if other.script == spec.script and other.event == spec.event
+        }
         _apply_spec(data, spec, root, home, uv, agent, sibling_matchers, question_escalation)
 
 
@@ -220,43 +282,71 @@ def install(home, agents, question_escalation: QuestionEscalation = QuestionEsca
     runtime = home / ".local/share/agent-tooling/rex"
     if source != runtime.resolve():
         # Include the callback used by the existing lifecycle handlers; no extra hooks.
-        shutil.copytree(source, runtime, dirs_exist_ok=True,
-                        ignore=shutil.ignore_patterns("__pycache__", ".state", "*.pyc"))
+        shutil.copytree(
+            source, runtime, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", ".state", "*.pyc")
+        )
     changed = []
     downgrades_question_escalation = False
     for agent in agents:
         codex = agent == "codex"
         path = home / (".codex/hooks.json" if codex else ".claude/settings.json")
         data = json.loads(path.read_text()) if path.exists() else {}
-        if (question_escalation is QuestionEscalation.OFF
-                and _has_enabled_owned_hook(data, runtime, home, codex)):
+        if question_escalation is QuestionEscalation.OFF and _has_enabled_owned_hook(data, runtime, home, codex):
             downgrades_question_escalation = True
         rex_hooks(data, runtime, home, uv, codex, question_escalation)
         if write(path, json.dumps(data, indent=2) + "\n"):
             changed.append(str(path))
         instructions = home / (".codex/AGENTS.md" if codex else ".claude/CLAUDE.md")
-        marked_block(instructions, "rex-visible", "## Visible terminal work\n\nRun important commands in the existing main agent Rex session. Reuse its tabs and owned panes; never create task or team sessions for visibility. Before important terminal work, read " + str(runtime / "POLICY.md") + " and follow its runner, layout, verification, and retention rules. Keep quick reads in ordinary tools. Preserve normal permissions and explicitly requested machines. Access other machines through their configured Rex connection directly, never SSH.")
+        marked_block(
+            instructions,
+            "rex-visible",
+            "## Visible terminal work\n\nRun important commands in the existing main agent Rex session. Reuse its tabs and owned panes; never create task or team sessions for visibility. Before important terminal work, read "
+            + str(runtime / "POLICY.md")
+            + " and follow its runner, layout, verification, and retention rules. Keep quick reads in ordinary tools. Preserve normal permissions and explicitly requested machines. Access other machines through their configured Rex connection directly, never SSH.",
+        )
         if codex:
-            marked_block(instructions, "codex-coordination", "## Conversational agent coordination\n\nUse direct tools for small deterministic work. Delegate bounded work to fresh focused workers with compact context; escalate models when evidence requires it. Read " + str(runtime / "COORDINATION.md") + " once before coordinating, then consult changed sections. Keep ownership clear and views in the main agent Rex session.")
+            marked_block(
+                instructions,
+                "codex-coordination",
+                "## Conversational agent coordination\n\nUse direct tools for small deterministic work. Delegate bounded work to fresh focused workers with compact context; escalate models when evidence requires it. Read "
+                + str(runtime / "COORDINATION.md")
+                + " once before coordinating, then consult changed sections. Keep ownership clear and views in the main agent Rex session.",
+            )
         else:
-            marked_block(instructions, "claude-coordination", "## Conversational agent coordination\n\nCoordinate the user's objective using Claude's native Agent and SendMessage tools when available. Before delegation, background work, or session coordination, read " + str(runtime / "COORDINATION.md") + ". Keep clear ownership and use the existing main agent Rex session for read-only activity views. Preserve normal permissions and host trust.")
+            marked_block(
+                instructions,
+                "claude-coordination",
+                "## Conversational agent coordination\n\nCoordinate the user's objective using Claude's native Agent and SendMessage tools when available. Before delegation, background work, or session coordination, read "
+                + str(runtime / "COORDINATION.md")
+                + ". Keep clear ownership and use the existing main agent Rex session for read-only activity views. Preserve normal permissions and host trust.",
+            )
 
-    return {"runtime": str(runtime), "changed": changed,
-            "question_escalation": question_escalation.value,
-            "GROKBOT_QE": question_escalation.environment_value,
-            "downgrades_question_escalation": downgrades_question_escalation,
-            "hook_review": "Review new or changed hooks in the host's /hooks menu. This installer never changes hook trust or tool permissions."}
+    return {
+        "runtime": str(runtime),
+        "changed": changed,
+        "question_escalation": question_escalation.value,
+        "GROKBOT_QE": question_escalation.environment_value,
+        "downgrades_question_escalation": downgrades_question_escalation,
+        "hook_review": "Review new or changed hooks in the host's /hooks menu. This installer never changes hook trust or tool permissions.",
+    }
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--agents", nargs="+", choices=("codex", "claude-code"), default=["codex", "claude-code"])
     parser.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
-    parser.add_argument("--question-escalation", type=QuestionEscalation,
-                        choices=list(QuestionEscalation), default=QuestionEscalation.OFF,
-                        help="Operator-controlled question escalation for installed hooks (default: off).")
+    parser.add_argument(
+        "--question-escalation",
+        type=QuestionEscalation,
+        choices=list(QuestionEscalation),
+        default=QuestionEscalation.OFF,
+        help="Operator-controlled question escalation for installed hooks (default: off).",
+    )
     args = parser.parse_args()
     receipt = install(args.home.expanduser().resolve(), args.agents, args.question_escalation)
     if receipt["downgrades_question_escalation"]:
-        print("Warning: reinstalling without --question-escalation changes existing GROKBOT_QE=1 hooks to GROKBOT_QE=0.", file=sys.stderr)
+        print(
+            "Warning: reinstalling without --question-escalation changes existing GROKBOT_QE=1 hooks to GROKBOT_QE=0.",
+            file=sys.stderr,
+        )
     print(json.dumps(receipt, indent=2))
