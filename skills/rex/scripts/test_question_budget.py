@@ -136,12 +136,10 @@ class BudgetTests(unittest.TestCase):
     def test_typical_cold_answerer_call_is_not_an_overrun(self):
         # Cold-cache calls (Carlos, 2026-11-25) set reserve_usd; the median measured cold
         # call must settle without counting toward the daily cap.
-        receipt = json.loads(
-            (
-                Path(__file__).parents[3]
-                / "tests/qe/hooks/claude-p12-oauth-calibration.json"
-            ).read_text()
-        )
+        hooks = Path(__file__).parents[3] / "tests/qe/hooks"
+        receipt = json.loads((hooks / "claude-p12-oauth-calibration.json").read_text())
+        # n=2 fully cold pilots (first call per model after idle) must also fit.
+        pilot = json.loads((hooks / "claude-p12-fully-cold-pilot.json").read_text())
         configs = answerers.load_models()
         at = datetime(2026, 1, 2, 12, tzinfo=timezone.utc)
         for name in (model.Model.HAIKU, model.Model.SONNET):
@@ -153,7 +151,9 @@ class BudgetTests(unittest.TestCase):
             )
             # Typical = the median cold call. Token and USD p95 come from different
             # calls, so a USD-p95 call can still exceed the token p95.
-            for sample in (samples[len(samples) // 2],):
+            fully_cold = [s for s in pilot["samples"] if s["model"] == name.value]
+            self.assertEqual(len(fully_cold), 1)
+            for sample in (samples[len(samples) // 2], *fully_cold):
                 with self.subTest(model=name, usd=sample["usd"]):
                     reservation = self.store.reserve_budget(
                         "task",

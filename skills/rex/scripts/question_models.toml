@@ -1,6 +1,8 @@
 # Cold-cache (unique nonce prefix per call, Max OAuth) empirical nearest-rank p95
 # over 20 representative read-bearing samples per Claude model; reserve_usd is
-# that p95 rounded up to 4 decimals (Carlos decision 2026-11-25), with a 24,512-byte production prompt and max_turns=4.
+# that p95 rounded up to 4 decimals (Carlos decision 2026-11-25), raised so each
+# reserve also covers the n=1 fully cold pilot call (Dinesh, within that decision):
+# reserve_usd = pilot USD rounded up; reserve_tokens = max(p95, pilot tokens), with a 24,512-byte production prompt and max_turns=4.
 # All runs used dontAsk, strict read tools, empty MCP, and matched actual family.
 # Input totals include cache creation/read tokens. Small n=20 is not a population
 # tail guarantee; re-measure after 50 attempts. Historical P12 probes are retained
@@ -13,7 +15,7 @@ max_turns = 4
 reservation_validated = true
 tools_validated = true
 reserve_tokens = 28891
-reserve_usd = "0.0023"
+reserve_usd = "0.0035"
 reservation_samples = 20
 reservation_method = "nearest_rank_p95"
 observed_tokens = [28872, 28780, 28850, 28867, 28811, 28887, 28817, 28900, 28470, 28191, 28812, 28528, 28611, 28823, 28449, 28891, 28190, 28552, 28867, 28835]
@@ -27,8 +29,8 @@ bounded = true
 max_turns = 4
 reservation_validated = true
 tools_validated = true
-reserve_tokens = 26777
-reserve_usd = "0.0388"
+reserve_tokens = 26784
+reserve_usd = "0.0610"
 reservation_samples = 20
 reservation_method = "nearest_rank_p95"
 observed_tokens = [26576, 26608, 26588, 26594, 26588, 26574, 26594, 26601, 26600, 26525, 26580, 26589, 26581, 26789, 26593, 26581, 26597, 26777, 26599, 26512]

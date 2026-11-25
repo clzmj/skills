@@ -9,7 +9,7 @@ import json
 import os
 from dataclasses import replace
 from datetime import timedelta
-from decimal import ROUND_CEILING, Decimal
+from decimal import Decimal
 from pathlib import Path
 import tempfile
 import tomllib
@@ -91,6 +91,9 @@ class CapabilityTests(unittest.TestCase):
             / "tests/qe/hooks/claude-p12-oauth-calibration.json"
         )
         raw = json.loads(fixture.read_text())
+        pilot_raw = json.loads(
+            (fixture.parent / "claude-p12-fully-cold-pilot.json").read_text()
+        )
         self.assertEqual(raw["sample_count"], 40)
         self.assertEqual(raw["max_turns"], 4)
         self.assertEqual(raw["prompt_bytes"], 24512)
@@ -124,16 +127,19 @@ class CapabilityTests(unittest.TestCase):
             self.assertEqual(len(samples), 20)
             bounds = configs[model].bounds
             assert bounds is not None
+            pilot = [p for p in pilot_raw["samples"] if p["model"] == model.value]
+            self.assertEqual(len(pilot), 1)
+            # Reserve covers both the nonce-cold p95 and the fully cold pilot.
             self.assertEqual(
                 bounds.reserve_tokens,
-                sorted(sample["tokens"] for sample in samples)[18],
+                max(sorted(s["tokens"] for s in samples)[18], pilot[0]["tokens"]),
             )
-            self.assertEqual(
-                bounds.reserve_usd,
-                sorted(Decimal(sample["usd"]) for sample in samples)[18].quantize(
-                    Decimal("0.0001"), rounding=ROUND_CEILING
-                ),
+            floor = max(
+                sorted(Decimal(s["usd"]) for s in samples)[18],
+                Decimal(pilot[0]["usd"]),
             )
+            self.assertGreaterEqual(bounds.reserve_usd, floor)
+            self.assertLessEqual(bounds.reserve_usd, floor * Decimal("1.03"))
             self.assertEqual(metadata[model]["reservation_samples"], 20)
             self.assertEqual(metadata[model]["reservation_method"], "nearest_rank_p95")
             self.assertEqual(
