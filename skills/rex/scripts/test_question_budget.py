@@ -157,7 +157,9 @@ class BudgetTests(unittest.TestCase):
             # tokens), and the fully cold pilot.
             largest = max(samples, key=lambda s: s["tokens"])
             for sample in (samples[len(samples) // 2], largest, *fully_cold):
-                with self.subTest(model=name, usd=sample["usd"], tokens=sample["tokens"]):
+                with self.subTest(
+                    model=name, usd=sample["usd"], tokens=sample["tokens"]
+                ):
                     reservation = self.store.reserve_budget(
                         "task",
                         model=name,

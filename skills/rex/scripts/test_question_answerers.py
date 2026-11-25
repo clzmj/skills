@@ -138,9 +138,7 @@ class CapabilityTests(unittest.TestCase):
             top_tokens = max(s["tokens"] for s in samples + pilot)
             top_usd = max(Decimal(s["usd"]) for s in samples + pilot)
             self.assertGreaterEqual(bounds.reserve_tokens, top_tokens)
-            self.assertEqual(
-                bounds.reserve_tokens, math.ceil(top_tokens * HEADROOM)
-            )
+            self.assertEqual(bounds.reserve_tokens, math.ceil(top_tokens * HEADROOM))
             self.assertGreaterEqual(bounds.reserve_usd, top_usd)
             self.assertEqual(
                 bounds.reserve_usd,

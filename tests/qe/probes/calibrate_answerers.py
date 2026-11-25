@@ -325,7 +325,10 @@ def main() -> int:
             result = {
                 "schema": "qe.p12-setting-sources-negative-control/1",
                 "calibration_date": date.today().isoformat(),
-                "tool_profile": {"cli": "claude", "version": version.stdout.strip()[:100]},
+                "tool_profile": {
+                    "cli": "claude",
+                    "version": version.stdout.strip()[:100],
+                },
                 "repository_head": repo_head,
                 "calls": 1,
                 "flag_removed": "--setting-sources ''",
