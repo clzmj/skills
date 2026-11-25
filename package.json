@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "install:python": "uv run --script skills/python-tooling/scripts/install_hooks.py",
-    "install:rex": "uv run --script skills/rex/scripts/install_hooks.py",
+    "install:rex": "uv run --script skills/rex/scripts/install_claude_agents.py && uv run --script skills/rex/scripts/install_hooks.py",
     "install:hooks": "bun run install:python && bun run install:rex",
     "init": "bun scripts/init.ts",
     "test": "uv run --script scripts/check.py && bun test tests",
