@@ -1,3 +1,4 @@
+import itertools
 import json
 import tempfile
 import unittest
@@ -141,15 +142,18 @@ class BudgetTests(unittest.TestCase):
         receipt = json.loads((hooks / "claude-p12-oauth-calibration.json").read_text())
         pilot = json.loads((hooks / "claude-p12-fully-cold-pilot.json").read_text())
         configs = answerers.load_models()
-        at = datetime(2026, 1, 2, 12, tzinfo=timezone.utc)
+        start = datetime(2026, 1, 2, 12, tzinfo=timezone.utc)
+        cases = itertools.count()
 
         def overrun(name, bounds, tokens, output_tokens, usd):
+            # Own day and task per case: no overrun block or cap carries over.
+            case = next(cases)
             reservation = self.store.reserve_budget(
-                "task",
+                f"task-{case}",
                 model=name,
                 tokens=bounds.reserve_tokens,
                 usd=bounds.reserve_usd,
-                at=at,
+                at=start + ledger.timedelta(days=case),
             )
             assert reservation is not None
             self.store.settle_budget(
@@ -198,9 +202,6 @@ class BudgetTests(unittest.TestCase):
                 (one, Decimal("1.14"), 0),
                 (one, Decimal("1.16"), usd_over),
             ):
-                # A model is refused after two overruns a day; start each case clean.
-                self.store.db.execute("DELETE FROM budget_reservation")
-                self.store.db.execute("DELETE FROM budget")
                 with self.subTest(
                     model=name, token_scale=token_scale, usd_scale=usd_scale
                 ):
