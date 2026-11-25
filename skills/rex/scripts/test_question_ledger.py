@@ -468,20 +468,27 @@ class LedgerTests(unittest.TestCase):
             [answer["answer_id"] for answer in detail["answers"]],
         )
 
-    def test_audit_detail_preserves_metadata_when_it_alone_exceeds_cap(self):
+    def test_audit_detail_falls_back_when_metadata_exceeds_hard_cap(self):
         detail = {
             "answers": [
                 {"answer_id": str(uuid4()), "text": "x" * 600} for _ in range(12)
             ],
             "content_digest": "0123456789abcdef" * 4,
         }
-        saved = json.loads(ledger.redacted_audit_detail(ledger.encoded(detail)))
-        self.assertEqual(saved["content_digest"], detail["content_digest"])
-        self.assertEqual(
-            [answer["answer_id"] for answer in saved["answers"]],
-            [answer["answer_id"] for answer in detail["answers"]],
-        )
-        self.assertTrue(all(not answer["text"] for answer in saved["answers"]))
+        original = ledger.encoded(detail)
+        redacted = ledger.redacted_audit_detail(original)
+        saved = json.loads(redacted)
+        self.assertLessEqual(len(redacted), 500)
+        self.assertEqual(saved["content_digest"], ledger.m.digest(original))
+        self.assertTrue(saved["truncated"])
+
+    def test_audit_detail_hard_bound_with_huge_keys_and_identifiers(self):
+        detail = ledger.encoded({"k" * 20_000: {"batch_id": "b" * 20_000}})
+        saved = ledger.redacted_audit_detail(detail)
+        parsed = json.loads(saved)
+        self.assertLessEqual(len(saved), 500)
+        self.assertTrue(parsed["truncated"])
+        self.assertEqual(parsed["content_digest"], ledger.m.digest(detail))
 
     def test_post_commit_audit_write_failure_logs_and_continues(self):
         original_open = os.open
