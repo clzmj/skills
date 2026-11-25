@@ -117,5 +117,9 @@
       "p95_elapsed_ms_observed": 8078
     }
   },
-  "note": "n=1 per model: the first call of each model after idle, so the CLI tool/system prefix and the prompt were both cache misses (cache_creation_input_tokens 14186 Haiku / 13287 Sonnet). The inherited p95_method label is not applicable; no percentile is derived from n=1."
+  "note": "n=1 per model: the first call of each model after idle, so the CLI tool/system prefix and the prompt were both cache misses (cache_creation_input_tokens 14186 Haiku / 13287 Sonnet). max_calls and p95_method were hand-edited after the probe run; see hand_edited for the original values and reasons.",
+  "hand_edited": {
+    "max_calls": "probe wrote 40 (its MAX_CALLS constant); set to 2, the pilot's actual call count",
+    "p95_method": "probe wrote 'empirical nearest rank; n=1 per actual model family; no headroom; cold: unique nonce prefix per call'; set to 'n/a (n=1)' because no percentile is derived from n=1"
+  }
 }

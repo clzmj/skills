@@ -173,7 +173,7 @@ def load_models(
             _positive_integer(raw["reservation_samples"])
         if (
             "reservation_method" in raw
-            and raw["reservation_method"] != "nearest_rank_p95"
+            and raw["reservation_method"] != "cold_max_x1.15"
         ):
             raise ValueError("unknown reservation method")
         if reserved and (not bounded or tokens is None or usd is None or usd <= 0):

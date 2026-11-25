@@ -337,7 +337,8 @@ def main() -> int:
             }
             args.receipt.resolve().write_text(json.dumps(result, indent=2) + "\n")
             print(json.dumps(result))
-            return 0 if done.returncode == 0 else 1
+            # Expected outcome: the canary fires and the hijacked auth is rejected.
+            return 0 if canary.exists() else 1
         for model, level, wall in (
             (m.Model.HAIKU, m.EscalationLevel.L1_CHEAP, 90),
             (m.Model.SONNET, m.EscalationLevel.L2_NORMAL, 240),

@@ -13,6 +13,7 @@ from datetime import timedelta
 from decimal import ROUND_CEILING, Decimal
 from pathlib import Path
 import tempfile
+import time
 import tomllib
 import re
 import subprocess
@@ -146,8 +147,10 @@ class CapabilityTests(unittest.TestCase):
                     Decimal("0.0001"), rounding=ROUND_CEILING
                 ),
             )
-            self.assertEqual(metadata[model]["reservation_samples"], 20)
-            self.assertEqual(metadata[model]["reservation_method"], "nearest_rank_p95")
+            self.assertEqual(
+                metadata[model]["reservation_samples"], 21
+            )  # 20 nonce + 1 pilot
+            self.assertEqual(metadata[model]["reservation_method"], "cold_max_x1.15")
             self.assertEqual(
                 metadata[model]["observed_tokens"],
                 [sample["tokens"] for sample in samples],
@@ -579,19 +582,12 @@ class InvocationTests(unittest.TestCase):
             batch(self.root), m.EscalationLevel.L1_CHEAP, "x" * 24000, pass_fds=(guard,)
         )
         self.assertEqual(result.reason, m.EscalationReason.TIMEOUT)
-        import time
-
-        # The stub may still be flushing its pid file when the kill lands: poll.
-        give_up = time.monotonic() + 5
-        pids: list[int] = []
-        while len(pids) < 2 and time.monotonic() < give_up:
-            if marker.exists():
-                pids = [int(pid) for pid in marker.read_text().split()]
-            time.sleep(0.05)
+        # invoke returns only after killpg + wait on every attempt, so the pid file
+        # is complete here. The 4 s wall clock is the de-flake: 0.5 s could kill the
+        # stub before it spawned its child (a test race). The test runs >= 8 s.
+        pids = [int(pid) for pid in marker.read_text().split()]
         self.assertEqual(len(pids), 2)
         # ps reports terminated descendants as absent or zombies pending OS reaping.
-        import subprocess
-
         for pid in pids:
             state = subprocess.run(
                 ["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True
@@ -636,13 +632,11 @@ class InvocationTests(unittest.TestCase):
             a.parse_answerer_output(raw, batch(self.root))
 
     def test_absolute_deadline_is_shared_across_failed_retry(self):
-        import time
-
         marker = self.root / "attempt-count"
         self.stub(
             "import pathlib, time\np=pathlib.Path("
             + repr(str(marker))
-            + ")\nif p.exists():\n time.sleep(20)\nelse:\n p.touch()\n time.sleep(.15)\n print('invalid json')\n"
+            + ")\nif p.exists():\n time.sleep(20)\nelse:\n p.touch()\n time.sleep(1.0)\n print('invalid json')\n"
         )
         start = time.monotonic()
         with patch.object(a, "MIN_USEFUL_SECONDS", 0.01):
@@ -654,12 +648,14 @@ class InvocationTests(unittest.TestCase):
             )
         self.assertEqual(result.reason, m.EscalationReason.TIMEOUT)
         self.assertEqual(len(result.attempts), 2)
-        self.assertLess(time.monotonic() - start, 3.7)
+        # Attempt 1 uses 1.0 s of the 3.0 s deadline. A per-attempt reset would end
+        # near 4.0 s; a shared deadline ends at ~3.0 s.
+        elapsed = time.monotonic() - start
+        self.assertGreaterEqual(elapsed, 2.9)
+        self.assertLess(elapsed, 3.6)
         self.assertEqual(len(self.store.settlements), 2)
 
     def test_expired_deadline_starts_no_subprocess_or_reservation(self):
-        import time
-
         result = self.runner.invoke(
             batch(self.root),
             m.EscalationLevel.L1_CHEAP,
@@ -758,8 +754,6 @@ class InvocationTests(unittest.TestCase):
         self.assertEqual(len(result.attempts), 2)
 
     def test_near_deadline_starts_no_reservation_or_process(self):
-        import time
-
         result = self.runner.invoke(
             batch(self.root),
             m.EscalationLevel.L1_CHEAP,
@@ -770,8 +764,6 @@ class InvocationTests(unittest.TestCase):
         self.assertFalse(self.store.reservations)
 
     def test_timeout_retries_only_with_full_invocation_window_left(self):
-        import time
-
         assert self.config.bounds is not None
         self.runner.configs = {
             m.Model.HAIKU: replace(

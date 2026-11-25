@@ -9,5 +9,7 @@
   "calls": 1,
   "flag_removed": "--setting-sources ''",
   "exit_code": 1,
-  "canary_fires_without_flag": true
+  "canary_fires_without_flag": true,
+  "probe_sha256": "4cb4c82ef288aa50682f5cbd4ba42a9f977fd82c66a5b537b5a4225edd96b933",
+  "note": "Run from the uncommitted working tree at a850d1f plus the --negative-control probe code, first committed in 5d65164; probe_sha256 is the sha256 of tests/qe/probes/calibrate_answerers.py at 5d65164 (the code as run). exit_code 1 is the expected hijack result: the canary apiKeyHelper ran and its dummy key was rejected."
 }
