@@ -135,7 +135,8 @@ class BudgetTests(unittest.TestCase):
 
     def test_typical_cold_answerer_call_is_not_an_overrun(self):
         # Reserves carry 1.15x headroom (Carlos, 2026-11-25): observed cold calls and
-        # a fully cold call 14% above the pilot settle cleanly; 16% above overruns.
+        # a fully cold call 14% above the pilot settle cleanly; 16% above overruns on
+        # tokens (and on USD for Sonnet; Haiku's USD rounding leaves ~16.7%).
         hooks = Path(__file__).parents[3] / "tests/qe/hooks"
         receipt = json.loads((hooks / "claude-p12-oauth-calibration.json").read_text())
         pilot = json.loads((hooks / "claude-p12-fully-cold-pilot.json").read_text())
@@ -185,17 +186,31 @@ class BudgetTests(unittest.TestCase):
                         ),
                         0,
                     )
-            # Margin: the pilot scaled by 1.14 fits, scaled by 1.16 overruns.
+            # Margin, one dimension at a time (the other stays at the pilot value).
+            # Tokens bind for both: +16% overruns. USD at +16% overruns Sonnet only;
+            # rounding reserve_usd up to 4 decimals gives Haiku ~16.7% headroom.
             cold = fully_cold[0]
-            for scale, expected in ((Decimal("1.14"), 0), (Decimal("1.16"), 1)):
-                with self.subTest(model=name, scale=scale):
+            usd_over = int(name is model.Model.SONNET)
+            one = Decimal(1)
+            for token_scale, usd_scale, expected in (
+                (Decimal("1.14"), one, 0),
+                (Decimal("1.16"), one, 1),
+                (one, Decimal("1.14"), 0),
+                (one, Decimal("1.16"), usd_over),
+            ):
+                # A model is refused after two overruns a day; start each case clean.
+                self.store.db.execute("DELETE FROM budget_reservation")
+                self.store.db.execute("DELETE FROM budget")
+                with self.subTest(
+                    model=name, token_scale=token_scale, usd_scale=usd_scale
+                ):
                     self.assertEqual(
                         overrun(
                             name,
                             bounds,
-                            int(cold["tokens"] * scale),
-                            int(cold["output_tokens"] * scale),
-                            Decimal(cold["usd"]) * scale,
+                            int(cold["tokens"] * token_scale),
+                            int(cold["output_tokens"] * token_scale),
+                            Decimal(cold["usd"]) * usd_scale,
                         ),
                         expected,
                     )
