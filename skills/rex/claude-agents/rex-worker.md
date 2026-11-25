@@ -1,5 +1,6 @@
 ---
-name: worker
+# managed-by: agent-tooling rex
+name: rex-worker
 description: Default delegate for normal implementation, routine tests, bounded fixes and most other subagent work.
 model: sonnet
 effort: medium

@@ -364,6 +364,7 @@ export async function initialize(manifest: unknown, initial: Options, runtime: R
     else summary.push(`Launcher source: ${coreSource === CORE_SOURCE ? root : coreSource}`);
     if (options.hooks && options.scope === InstallScope.Global) {
       summary.push(`Hook runtime: ${resolve(homedir(), ".local/share/agent-tooling")}`);
+      if (options.agents.includes("claude-code")) summary.push(`Claude subagents: ${resolve(homedir(), ".claude/agents")} (rex-*; files Rex does not own are kept)`);
       for (const agent of options.agents) summary.push(`Hook settings: ${resolve(homedir(), agent === "codex" ? ".codex/hooks.json" : ".claude/settings.json")}`, `Rex instructions: ${resolve(homedir(), agent === "codex" ? ".codex/AGENTS.md" : ".claude/CLAUDE.md")}`);
     }
     if (!runtime.ui) {

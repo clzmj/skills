@@ -15,10 +15,11 @@ agent delegation, session ownership, and scoped messaging, read
 Rex session; never create task or team sessions for visibility. Preserve normal
 permissions and explicitly requested machines.
 
-Pick every Claude model by role: spawn `mechanical-worker`, `worker`,
-`deep-worker` or `reviewer`, or pass the model from
-[scripts/claude_models.toml](scripts/claude_models.toml). Install those
-definitions with `uv run --script scripts/install_claude_agents.py`.
+Pick every Claude model by role: spawn `rex-mechanical-worker`, `rex-worker`,
+`rex-deep-worker` or `rex-reviewer`, or pass the model from
+[scripts/claude_models.toml](scripts/claude_models.toml). The hook installer
+installs those definitions for `claude-code`;
+`uv run --script scripts/install_claude_agents.py` installs them alone.
 
 Install the independent hooks from this skill's directory:
 

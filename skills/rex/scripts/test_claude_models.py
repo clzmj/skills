@@ -2,6 +2,8 @@
 import contextlib
 import io
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,19 +15,21 @@ from claude_models import ClaudeEffort, ClaudeModel, ClaudeRole
 
 AGENTS = Path(__file__).resolve().parents[1] / "claude-agents"
 AGENT_ROLES = {
-    "mechanical-worker.md": ClaudeRole.MECHANICAL,
-    "worker.md": ClaudeRole.NORMAL,
-    "deep-worker.md": ClaudeRole.HARD,
-    "reviewer.md": ClaudeRole.REVIEW,
+    "rex-mechanical-worker.md": ClaudeRole.MECHANICAL,
+    "rex-worker.md": ClaudeRole.NORMAL,
+    "rex-deep-worker.md": ClaudeRole.HARD,
+    "rex-reviewer.md": ClaudeRole.REVIEW,
 }
 READ_ONLY_TOOLS = {"Read", "Grep", "Glob"}
+OWNED = "# managed-by: agent-tooling rex"
 
 
 def frontmatter(path):
     lines = path.read_text().split("\n")
     assert lines[0] == "---", f"{path.name}: no frontmatter"
     end = lines.index("---", 1)
-    return dict(line.split(": ", 1) for line in lines[1:end])
+    # Flat "key: value" lines only; YAML lists or multi-line values would break this.
+    return dict(line.split(": ", 1) for line in lines[1:end] if not line.startswith("#"))
 
 
 class ResolverTests(unittest.TestCase):
@@ -94,13 +98,14 @@ class AgentDefinitionTests(unittest.TestCase):
                 self.assertEqual(meta.get("effort"), claude_models.effort(role))
 
     def test_reviewer_has_only_read_only_tools(self):
-        meta = frontmatter(AGENTS / "reviewer.md")
+        meta = frontmatter(AGENTS / "rex-reviewer.md")
         self.assertEqual(set(meta["tools"].split(", ")), READ_ONLY_TOOLS)
         self.assertNotIn("mcpServers", meta)
 
 
 class LaunchTemplateTests(unittest.TestCase):
-    def test_every_claude_answerer_launch_names_its_model(self):
+    def test_every_claude_answerer_launches_a_role_model(self):
+        role_models = {claude_models.resolve(role) for role in ClaudeRole}
         configs = question_answerers.load_models(
             Path(__file__).with_name("question_models.toml")
         )
@@ -109,7 +114,7 @@ class LaunchTemplateTests(unittest.TestCase):
         for config in claude:
             with self.subTest(config.model):
                 argv = question_answerers.build_command(config)
-                self.assertEqual(argv[argv.index("--model") + 1], config.model.value)
+                self.assertIn(argv[argv.index("--model") + 1], role_models)
 
 
 class InstallerTests(unittest.TestCase):
@@ -136,22 +141,62 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(self.run_installer()["changed"], [])
         self.assertEqual(len(list(self.target.iterdir())), len(AGENT_ROLES))
 
-    def test_backs_up_a_differing_file_and_leaves_others(self):
-        self.target.mkdir()
-        (self.target / "worker.md").write_text("mine\n")
-        (self.target / "unrelated.md").write_text("keep\n")
-        self.run_installer()
-        [backup] = self.target.glob("worker.md.agent-tooling-backup-*")
-        self.assertEqual(backup.read_text(), "mine\n")
-        self.assertEqual((self.target / "worker.md").read_text(), (AGENTS / "worker.md").read_text())
-        self.assertEqual((self.target / "unrelated.md").read_text(), "keep\n")
+    def backups(self):
+        return list(self.target.glob("*.agent-tooling-backup-*"))
 
-    def test_package_script_chains_the_installer(self):
-        package = Path(__file__).resolve().parents[3] / "package.json"
-        script = json.loads(package.read_text())["scripts"]["install:rex"]
-        self.assertIn("install_claude_agents.py", script)
-        # Extra `bun run install:rex -- ...` args go to the last command.
-        self.assertTrue(script.endswith("install_hooks.py"))
+    def test_every_source_carries_the_ownership_marker(self):
+        for name in AGENT_ROLES:
+            with self.subTest(name):
+                self.assertIn(OWNED, (AGENTS / name).read_text().split("\n"))
+
+    def test_skips_an_unowned_file_and_leaves_others(self):
+        self.target.mkdir()
+        mine = self.target / "rex-worker.md"
+        mine.write_text(f"mine, quoting {OWNED} inline\n")
+        (self.target / "worker.md").write_text("keep\n")
+        receipt = self.run_installer()
+        self.assertEqual(receipt["skipped"], [str(mine.resolve())])
+        self.assertEqual(len(receipt["changed"]), len(AGENT_ROLES) - 1)
+        self.assertIn("mine", mine.read_text())
+        self.assertEqual((self.target / "worker.md").read_text(), "keep\n")
+        self.assertEqual(self.backups(), [])
+
+    def test_force_replaces_an_unowned_file_with_a_backup(self):
+        self.target.mkdir()
+        (self.target / "rex-worker.md").write_text("mine\n")
+        self.assertEqual(self.run_installer("--force")["skipped"], [])
+        [backup] = self.backups()
+        self.assertEqual(backup.read_text(), "mine\n")
+        self.assertEqual((self.target / "rex-worker.md").read_text(), (AGENTS / "rex-worker.md").read_text())
+
+    def test_replaces_an_owned_file_once(self):
+        self.target.mkdir()
+        old = f"---\n{OWNED}\nname: rex-worker\n---\nold\n"
+        (self.target / "rex-worker.md").write_text(old)
+        self.assertEqual(self.run_installer()["skipped"], [])
+        self.assertEqual(self.run_installer()["changed"], [])
+        [backup] = self.backups()
+        self.assertEqual(backup.read_text(), old)
+        self.assertEqual((self.target / "rex-worker.md").read_text(), (AGENTS / "rex-worker.md").read_text())
+
+    def run_hooks(self, home, agent, script=Path(__file__).with_name("install_hooks.py")):
+        return subprocess.run(
+            [sys.executable, str(script), "--home", str(home), "--agents", agent],
+            check=True, capture_output=True, text=True,
+        )
+
+    def test_hook_installer_installs_agents_only_for_claude_code(self):
+        for agent, expected in (("codex", set()), ("claude-code", set(AGENT_ROLES))):
+            with self.subTest(agent):
+                home = self.target.parent / agent
+                json.loads(self.run_hooks(home, agent).stdout)
+                self.assertEqual({p.name for p in (home / ".claude/agents").glob("*.md")}, expected)
+
+    def test_runtime_copy_keeps_installing_hooks_without_agent_sources(self):
+        home = self.target.parent / "home"
+        self.run_hooks(home, "claude-code")
+        runtime = home / ".local/share/agent-tooling/rex/install_hooks.py"
+        self.assertIn("skills repository", self.run_hooks(home, "claude-code", runtime).stderr)
 
 
 if __name__ == "__main__":

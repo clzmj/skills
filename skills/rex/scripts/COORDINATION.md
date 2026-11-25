@@ -24,17 +24,21 @@ Every Claude launch, subagent and workflow stage names its model by role. The us
 
 | Role | Model | Effort | Subagent | Work |
 | --- | --- | --- | --- | --- |
-| `mechanical` | haiku | low | `mechanical-worker` | Renames, formatting, bumps, small mechanical edits, lookups |
-| `normal` | sonnet | medium | `worker` | Normal implementation, most subagent work |
-| `hard` | opus | high | `deep-worker` | Hard design or debugging, risky diffs (security, data model) |
-| `review` | opus | high | `reviewer` | Fresh read-only reviews (`Read`, `Grep`, `Glob` only) |
+| `mechanical` | haiku | low | `rex-mechanical-worker` | Renames, formatting, bumps, small mechanical edits, lookups |
+| `normal` | sonnet | medium | `rex-worker` | Normal implementation, most subagent work |
+| `hard` | opus | high | `rex-deep-worker` | Hard design or debugging, risky diffs (security, data model) |
+| `review` | opus | high | `rex-reviewer` | Fresh read-only reviews (`Read`, `Grep`, `Glob` only) |
 
-- Subagents: spawn one of the definitions above (installed from [claude-agents](../claude-agents) by `install_claude_agents.py`). For built-in or plugin agent types, pass the `model` parameter; the definition's or session's default may differ from the policy. A per-invocation `model` overrides the definition, so pass it only to change role deliberately.
+- Subagents: spawn one of the definitions above. If one is missing, run `bun run install:rex -- --agents claude-code` from the skills repository (or the hosted installer with `--hooks`); this runtime copy does not hold the definitions. For built-in or plugin agent types, pass the `model` parameter; the definition's or session's default may differ from the policy. A per-invocation `model` overrides the definition, so pass it only to change role deliberately.
 - Workflows and agent teams: name the model for each stage or teammate. Unnamed workflow agents use the session model.
 - Sessions, including `--bg`: pass `--model` and `--effort`, taken from `claude_models.resolve(role)` and `claude_models.effort(role)`.
+- Cost, not window size: the saving comes from choosing haiku or sonnet. On the Anthropic API all three aliases run with a 1M window by default (`[1m]` adds nothing), a `model: opus` subagent under an opus root runs on the root's exact version, and Haiku 5.5 costs more per token on prompts over 100K tokens. To compact a subagent earlier, set `autoCompactWindow` (at least 100000) in its frontmatter. See [model configuration](https://code.claude.com/docs/en/model-config#extended-context).
+- Amazon Bedrock and Google Cloud's Agent Platform (Vertex) resolve `haiku` to Haiku 4.5 and `sonnet` to Sonnet 4.5, which do not support effort: the `mechanical` and `normal` effort is ignored there.
 - `CLAUDE_CODE_SUBAGENT_MODEL` only fills in when neither the invocation nor the definition names a model. Leave `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` unset: it discards both. `CLAUDE_CODE_EFFORT_LEVEL` overrides every effort above.
 
 Start with the lightest role likely to pass the acceptance checks; escalate for concrete difficulty or a verification gap and carry the evidence forward. Reuse a worker only when its role and compact context fit the follow-up. Prefer one worker over coordinator layers, parallelize only independent work with clear ownership, and keep handoffs to the objective, owned paths, constraints, checks and deliverable. Verify once. Record the role and reason for routing in Rex.
+
+Codex is dropped from model routing: this document gives no Codex model guidance. The Codex registration helpers below only record sessions and views.
 
 ## Working together
 

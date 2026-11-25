@@ -1,5 +1,6 @@
 ---
-name: mechanical-worker
+# managed-by: agent-tooling rex
+name: rex-mechanical-worker
 description: Use for renames, formatting, version bumps, small mechanical edits and exact lookups with a clear expected result.
 model: haiku
 effort: low

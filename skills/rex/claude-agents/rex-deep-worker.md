@@ -1,5 +1,6 @@
 ---
-name: deep-worker
+# managed-by: agent-tooling rex
+name: rex-deep-worker
 description: Use for hard design or debugging, ambiguous cross-module work and risky diffs such as security or data model changes.
 model: opus
 effort: high

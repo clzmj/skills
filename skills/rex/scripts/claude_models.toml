@@ -1,7 +1,7 @@
 # Single source of truth: Claude role -> model alias and effort.
 # Every Claude launch, subagent and workflow stage picks a model from this table;
 # the user default in ~/.claude/settings.json is never relied on.
-# Read through claude_models.py. skills/rex/claude-agents/*.md must match
+# Read through claude_models.py. skills/rex/claude-agents/rex-*.md must match
 # (test_claude_models.py enforces it).
 
 [roles.mechanical] # renames, formatting, bumps, small mechanical edits, lookups
