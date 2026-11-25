@@ -563,7 +563,8 @@ class InvocationTests(unittest.TestCase):
         self.runner.configs = {
             m.Model.HAIKU: replace(
                 self.config,
-                bounds=replace(self.config.bounds, wall_clock=timedelta(seconds=0.5)),
+                # Wide enough for a loaded machine to start the stub and its child.
+                bounds=replace(self.config.bounds, wall_clock=timedelta(seconds=4)),
             )
         }
         marker = self.root / "descendant-pids"
@@ -580,7 +581,15 @@ class InvocationTests(unittest.TestCase):
             batch(self.root), m.EscalationLevel.L1_CHEAP, "x" * 24000, pass_fds=(guard,)
         )
         self.assertEqual(result.reason, m.EscalationReason.TIMEOUT)
-        pids = [int(pid) for pid in marker.read_text().splitlines()]
+        import time
+
+        # The stub may still be flushing its pid file when the kill lands: poll.
+        give_up = time.monotonic() + 5
+        pids: list[int] = []
+        while len(pids) < 2 and time.monotonic() < give_up:
+            if marker.exists():
+                pids = [int(pid) for pid in marker.read_text().split()]
+            time.sleep(0.05)
         self.assertEqual(len(pids), 2)
         # ps reports terminated descendants as absent or zombies pending OS reaping.
         import subprocess
@@ -643,11 +652,11 @@ class InvocationTests(unittest.TestCase):
                 batch(self.root),
                 m.EscalationLevel.L1_CHEAP,
                 "Choose tabs.",
-                deadline=start + 1.5,
+                deadline=start + 3.0,
             )
         self.assertEqual(result.reason, m.EscalationReason.TIMEOUT)
         self.assertEqual(len(result.attempts), 2)
-        self.assertLess(time.monotonic() - start, 2.2)
+        self.assertLess(time.monotonic() - start, 3.7)
         self.assertEqual(len(self.store.settlements), 2)
 
     def test_expired_deadline_starts_no_subprocess_or_reservation(self):
