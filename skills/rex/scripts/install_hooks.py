@@ -47,7 +47,12 @@ def write(path, content):
         return False
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
-        shutil.copy2(path, path.with_name(path.name + ".agent-tooling-backup-" + time.strftime("%Y%m%d-%H%M%S")))
+        shutil.copy2(
+            path,
+            path.with_name(
+                path.name + ".agent-tooling-backup-" + time.strftime("%Y%m%d-%H%M%S")
+            ),
+        )
     temporary = path.with_name(path.name + ".agent-tooling.tmp")
     temporary.write_text(content)
     temporary.replace(path)
@@ -59,7 +64,12 @@ def marked_block(path, name, text):
     begin, end = f"<!-- {name}:start -->", f"<!-- {name}:end -->"
     addition = f"{begin}\n{text.strip()}\n{end}"
     if begin in before and end in before:
-        after = re.sub(re.escape(begin) + r".*?" + re.escape(end), lambda _: addition, before, flags=re.DOTALL)
+        after = re.sub(
+            re.escape(begin) + r".*?" + re.escape(end),
+            lambda _: addition,
+            before,
+            flags=re.DOTALL,
+        )
     else:
         after = before.rstrip() + ("\n\n" if before.strip() else "") + addition + "\n"
     write(path, after)
@@ -81,18 +91,26 @@ def owned_handler(command, script, home, root):
         path.parent == root
         or path.parent == home / "Developer/tools/rex-visible"
         or path.parent == Path(__file__).resolve().parent
-        or str(path.parent).endswith(("/skills/python-tooling/scripts/rex", "/skills/rex/scripts"))
+        or str(path.parent).endswith(
+            ("/skills/python-tooling/scripts/rex", "/skills/rex/scripts")
+        )
     )
 
 
 def _hook_specs(codex):
     specs = []
-    visible = (HookEvent.SESSION_START, HookEvent.USER_PROMPT_SUBMIT, HookEvent.PRE_TOOL_USE)
+    visible = (
+        HookEvent.SESSION_START,
+        HookEvent.USER_PROMPT_SUBMIT,
+        HookEvent.PRE_TOOL_USE,
+    )
     specs.extend(
         HookSpec(
             "rex_visible.py",
             event,
-            "Bash|exec_command|shell|shell_command" if event == HookEvent.PRE_TOOL_USE else None,
+            "Bash|exec_command|shell|shell_command"
+            if event == HookEvent.PRE_TOOL_USE
+            else None,
             5,
         )
         for event in visible
@@ -129,17 +147,28 @@ def _hook_specs(codex):
         )
     )
     for event in events:
-        timeout = 3 if event == HookEvent.SESSION_END else (20 if event == HookEvent.SUBAGENT_START else 5)
+        timeout = (
+            3
+            if event == HookEvent.SESSION_END
+            else (20 if event == HookEvent.SUBAGENT_START else 5)
+        )
         # PostToolUse remains a broad lifecycle observer; only these two scripts
         # participate in the legacy matcher broadening migration below.
         specs.append(HookSpec(script, event, None, timeout))
     if codex:
-        specs.append(HookSpec(script, HookEvent.PRE_TOOL_USE, CODEX_QUESTION_TOOL_MATCHER, 10))
+        specs.append(
+            HookSpec(script, HookEvent.PRE_TOOL_USE, CODEX_QUESTION_TOOL_MATCHER, 10)
+        )
     agent = "codex" if codex else "claude"
     matcher = CODEX_QUESTION_TOOL_MATCHER if codex else CLAUDE_QUESTION_TOOL_MATCHER
     specs.extend(
         (
-            HookSpec("question_hooks.py", HookEvent.PRE_TOOL_USE, matcher, 60 if not codex else 10),
+            HookSpec(
+                "question_hooks.py",
+                HookEvent.PRE_TOOL_USE,
+                matcher,
+                60 if not codex else 10,
+            ),
             HookSpec("question_hooks.py", HookEvent.POST_TOOL_USE, matcher, 10),
             HookSpec("question_hooks.py", HookEvent.USER_PROMPT_SUBMIT, None, 5),
             HookSpec("question_hooks.py", HookEvent.STOP, None, 5),
@@ -148,11 +177,21 @@ def _hook_specs(codex):
         )
     )
     if not codex:
-        specs.append(HookSpec("question_hooks.py", HookEvent.PERMISSION_REQUEST, matcher, 60))
-    return [(spec, agent if spec.script == "question_hooks.py" else None) for spec in specs]
+        specs.append(
+            HookSpec("question_hooks.py", HookEvent.PERMISSION_REQUEST, matcher, 60)
+        )
+    return [
+        (spec, agent if spec.script == "question_hooks.py" else None) for spec in specs
+    ]
 
 
-def _command(spec, root, uv, agent, question_escalation: QuestionEscalation = QuestionEscalation.OFF):
+def _command(
+    spec,
+    root,
+    uv,
+    agent,
+    question_escalation: QuestionEscalation = QuestionEscalation.OFF,
+):
     words = [
         "env",
         f"{FLAG_ENV}={question_escalation.environment_value}",
@@ -201,7 +240,11 @@ def _apply_spec(
             continue
         else:
             owned_ids = {id(handler) for handler in owned}
-            remaining = [handler for handler in group.get("hooks", []) if id(handler) not in owned_ids]
+            remaining = [
+                handler
+                for handler in group.get("hooks", [])
+                if id(handler) not in owned_ids
+            ]
             if remaining:
                 group["hooks"] = remaining
             else:
@@ -218,11 +261,20 @@ def _apply_spec(
                 if not seen_keeper:
                     seen_keeper = True
                 else:
-                    duplicate_index = next(index for index, candidate in enumerate(keepers) if candidate is handler)
+                    duplicate_index = next(
+                        index
+                        for index, candidate in enumerate(keepers)
+                        if candidate is handler
+                    )
                     keepers.pop(duplicate_index)
         for group, handler in matches[1:]:
             match_index = next(
-                (index for index, candidate in enumerate(group.get("hooks", [])) if candidate is handler), None
+                (
+                    index
+                    for index, candidate in enumerate(group.get("hooks", []))
+                    if candidate is handler
+                ),
+                None,
             )
             if match_index is not None:
                 group["hooks"].pop(match_index)
@@ -237,29 +289,49 @@ def _apply_spec(
     )
 
 
-def rex_hooks(data, root, home, uv, codex, question_escalation: QuestionEscalation = QuestionEscalation.OFF):
+def rex_hooks(
+    data,
+    root,
+    home,
+    uv,
+    codex,
+    question_escalation: QuestionEscalation = QuestionEscalation.OFF,
+):
     all_specs = _hook_specs(codex)
     for spec, agent in all_specs:
         # The legacy observer behavior intentionally makes these scripts global
         # PostToolUse observers, while question_hooks retain exact ownership.
-        if spec.event == HookEvent.POST_TOOL_USE and spec.script in BROADEN_POST_TOOL_USE:
+        if (
+            spec.event == HookEvent.POST_TOOL_USE
+            and spec.script in BROADEN_POST_TOOL_USE
+        ):
             groups = data.setdefault("hooks", {}).setdefault(spec.event.value, [])
             for group in list(groups):
                 owned = [
                     handler
                     for handler in group.get("hooks", [])
-                    if owned_handler(handler.get("command", ""), spec.script, home, root)
+                    if owned_handler(
+                        handler.get("command", ""), spec.script, home, root
+                    )
                 ]
                 if owned and group.get("matcher"):
                     if len(owned) == len(group["hooks"]):
                         group.pop("matcher")
                     else:
-                        group["hooks"] = [handler for handler in group["hooks"] if handler not in owned]
+                        group["hooks"] = [
+                            handler
+                            for handler in group["hooks"]
+                            if handler not in owned
+                        ]
                         groups.append({"hooks": owned})
         sibling_matchers = {
-            other.matcher for other, _ in all_specs if other.script == spec.script and other.event == spec.event
+            other.matcher
+            for other, _ in all_specs
+            if other.script == spec.script and other.event == spec.event
         }
-        _apply_spec(data, spec, root, home, uv, agent, sibling_matchers, question_escalation)
+        _apply_spec(
+            data, spec, root, home, uv, agent, sibling_matchers, question_escalation
+        )
 
 
 def _has_enabled_owned_hook(data, root, home, codex):
@@ -269,11 +341,16 @@ def _has_enabled_owned_hook(data, root, home, codex):
         for groups in data.get("hooks", {}).values()
         for group in groups
         for handler in group.get("hooks", [])
-        if any(owned_handler(handler.get("command", ""), script, home, root) for script in scripts)
+        if any(
+            owned_handler(handler.get("command", ""), script, home, root)
+            for script in scripts
+        )
     )
 
 
-def install(home, agents, question_escalation: QuestionEscalation = QuestionEscalation.OFF):
+def install(
+    home, agents, question_escalation: QuestionEscalation = QuestionEscalation.OFF
+):
     uv = shutil.which("uv")
     if not uv:
         raise RuntimeError("uv is required; install uv and ensure it is on PATH")
@@ -283,7 +360,10 @@ def install(home, agents, question_escalation: QuestionEscalation = QuestionEsca
     if source != runtime.resolve():
         # Include the callback used by the existing lifecycle handlers; no extra hooks.
         shutil.copytree(
-            source, runtime, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", ".state", "*.pyc")
+            source,
+            runtime,
+            dirs_exist_ok=True,
+            ignore=shutil.ignore_patterns("__pycache__", ".state", "*.pyc"),
         )
     changed = []
     downgrades_question_escalation = False
@@ -291,7 +371,9 @@ def install(home, agents, question_escalation: QuestionEscalation = QuestionEsca
         codex = agent == "codex"
         path = home / (".codex/hooks.json" if codex else ".claude/settings.json")
         data = json.loads(path.read_text()) if path.exists() else {}
-        if question_escalation is QuestionEscalation.OFF and _has_enabled_owned_hook(data, runtime, home, codex):
+        if question_escalation is QuestionEscalation.OFF and _has_enabled_owned_hook(
+            data, runtime, home, codex
+        ):
             downgrades_question_escalation = True
         rex_hooks(data, runtime, home, uv, codex, question_escalation)
         if write(path, json.dumps(data, indent=2) + "\n"):
@@ -333,8 +415,15 @@ def install(home, agents, question_escalation: QuestionEscalation = QuestionEsca
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--agents", nargs="+", choices=("codex", "claude-code"), default=["codex", "claude-code"])
-    parser.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--agents",
+        nargs="+",
+        choices=("codex", "claude-code"),
+        default=["codex", "claude-code"],
+    )
+    parser.add_argument(
+        "--home", type=Path, default=Path.home(), help=argparse.SUPPRESS
+    )
     parser.add_argument(
         "--question-escalation",
         type=QuestionEscalation,
@@ -343,7 +432,9 @@ if __name__ == "__main__":
         help="Operator-controlled question escalation for installed hooks (default: off).",
     )
     args = parser.parse_args()
-    receipt = install(args.home.expanduser().resolve(), args.agents, args.question_escalation)
+    receipt = install(
+        args.home.expanduser().resolve(), args.agents, args.question_escalation
+    )
     if receipt["downgrades_question_escalation"]:
         print(
             "Warning: reinstalling without --question-escalation changes existing GROKBOT_QE=1 hooks to GROKBOT_QE=0.",
