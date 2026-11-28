@@ -1238,5 +1238,20 @@ class CallbackTests(unittest.TestCase):
             self.assertEqual(store.db.execute("SELECT count(*) FROM notice").fetchone()[0], 1)
         self.assertEqual(len(self.finished()), 2)
 
+    def test_supersede_overwrites_a_still_pending_assumption_event_without_duplicating(self):
+        message = "ASSUMPTION: drop the staging table"
+        events = callback.rex.STATE / callback.EVENTS_DIR
+        with patch.dict(os.environ, {callback.FLAG_ENV: "1"}), \
+                question_ledger.Ledger(self.root / "ledger.sqlite3") as store:
+            self.hook("UserPromptSubmit")
+            self.hook(background_tasks=[self.shell("A")], last_assistant_message=message)
+            self.idle()  # Release spools run_finished (revision 0) and writes the event; nothing is ingested yet.
+            self.hook(last_assistant_message=message)  # Supersede: same task, turn and line, so the same event stem.
+            self.assertEqual(len(list(events.glob("*.json"))), 1)
+            self.assertEqual(store.ingest_events(events), 1)
+            self.assertEqual(store.db.execute("SELECT count(*) FROM notice").fetchone()[0], 1)
+        self.assertEqual(sorted(body["revision"] for body in self.finished()), [0, 1])  # Drain order is arbitrary.
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -819,7 +819,9 @@ def record_assumptions(task_id: str, text: str, metadata: DigestMetadata | None 
         event = AssumptionEvent(task_id=task_id, text=redact(line).text, batch_id=None)
         if metadata is not None:
             event["metadata"] = metadata
-        # The stem is the ledger's notice id: a superseding message repeating a line must not add a notice.
+        # The stem is the ledger's notice id, keyed on (task, turn, line). Deliberate: a repeated ASSUMPTION line
+        # within one message, or across an idle release and its superseding Stop (same turn), yields one notice.
+        # A still-pending file is overwritten in place by the same stem.
         path = directory / f"{uuid.uuid5(uuid.NAMESPACE_URL, json.dumps([task_id, turn, line]))}.json"
         temporary = directory / f"{uuid.uuid4()}.tmp"  # Unique, so overlapping writers of one line cannot collide.
         try:
