@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from functools import cache
 from pathlib import Path
+from types import MappingProxyType
 
 CONFIG = Path(__file__).resolve().with_name("claude_models.toml")
 
@@ -62,7 +63,10 @@ def load(path: Path = CONFIG) -> dict[ClaudeRole, RoleModel]:
 
 
 # Read once per process; load() stays uncached for explicit paths.
-_table = cache(load)
+# Read-only view: cached callers cannot mutate the shared table.
+@cache
+def _table() -> MappingProxyType[ClaudeRole, RoleModel]:
+    return MappingProxyType(load())
 
 
 def resolve(role: ClaudeRole | str) -> ClaudeModel:

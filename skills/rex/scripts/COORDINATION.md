@@ -36,6 +36,8 @@ Every Claude launch, subagent and workflow stage names its model by role. The us
 - Amazon Bedrock and Google Cloud's Agent Platform (Vertex) resolve `haiku` to Haiku 4.5 and `sonnet` to Sonnet 4.5, which do not support effort: the `mechanical` and `normal` effort is ignored there.
 - `CLAUDE_CODE_SUBAGENT_MODEL` only fills in when neither the invocation nor the definition names a model. Leave `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` unset: it discards both. `CLAUDE_CODE_EFFORT_LEVEL` overrides every effort above.
 
+The question answerers pin haiku and sonnet in `question_models.toml`, separately from this table; changing the `mechanical` or `normal` model means recalibrating the answerer budgets there.
+
 Start with the lightest role likely to pass the acceptance checks; escalate for concrete difficulty or a verification gap and carry the evidence forward. Reuse a worker only when its role and compact context fit the follow-up. Prefer one worker over coordinator layers, parallelize only independent work with clear ownership, and keep handoffs to the objective, owned paths, constraints, checks and deliverable. Verify once. Record the role and reason for routing in Rex.
 
 Codex is dropped from model routing: this document gives no Codex model guidance. The Codex registration helpers below only record sessions and views.

@@ -21,6 +21,8 @@ AGENT_ROLES = {
     "rex-deep-worker.md": ClaudeRole.HARD,
     "rex-reviewer.md": ClaudeRole.REVIEW,
 }
+# question_models.toml pins haiku/sonnet separately from claude_models.toml: changing
+# the mechanical/normal model here means recalibrating the answerer budgets there.
 ANSWERER_ROLES = {
     m.Model.HAIKU: ClaudeRole.MECHANICAL,
     m.Model.SONNET: ClaudeRole.NORMAL,
@@ -116,9 +118,12 @@ class LaunchTemplateTests(unittest.TestCase):
         claude = {
             key: config
             for key, config in configs.items()
-            if key in question_answerers.CLAUDE_MAX_BUDGET_USD
+            if m.answerer_kind(key) == m.AnswererKind.CLAUDE_PRINT
         }
         self.assertEqual(set(claude), set(ANSWERER_ROLES))
+        for key in claude:
+            with self.subTest(budget=key):
+                self.assertIn(key, question_answerers.CLAUDE_MAX_BUDGET_USD)
         for key, role in ANSWERER_ROLES.items():
             with self.subTest(key):
                 argv = question_answerers.build_command(claude[key])
