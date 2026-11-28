@@ -21,6 +21,10 @@ Pick every Claude model by role: spawn `rex-mechanical-worker`, `rex-worker`,
 installs those definitions for `claude-code`;
 `uv run --script scripts/install_claude_agents.py` installs them alone.
 
+Start every delegated Claude Code run with `rex-run`; it refuses without a
+verified Notion ticket record, and the installed hooks block ticketless bot and
+Rex sessions. See [scripts/README.md](scripts/README.md#ticket-guardrail).
+
 Install the independent hooks from this skill's directory:
 
 ```sh

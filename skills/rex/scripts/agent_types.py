@@ -9,6 +9,7 @@ from enum import StrEnum
 
 class Event(StrEnum):
     RUN_FINISHED = "run_finished"
+    RUN_REJECTED = "run_rejected_no_ticket"
     NEEDS_INPUT = "needs_input"
     HEARTBEAT = "heartbeat"
     LINEAGE = "lineage"

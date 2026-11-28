@@ -55,6 +55,7 @@ class CallbackTests(unittest.TestCase):
         for item in (patch.object(callback, "CONFIG", self.config),
                      patch.object(callback, "git_metadata", return_value={"repo": "/repo", "branch": "feature", "head_sha": "abc123"}),
                      patch.object(callback.rex, "STATE", self.root / "state"),
+                     patch.object(callback, "ticket_report", return_value=(None, "")),  # test_ticket_guard.py
                      patch.object(codex_sessions, "DB", self.root / "coordination.sqlite3"),
                      patch.object(codex_sessions, "reopen_activity"),
                      patch.dict(os.environ, {"GROKBOT_CALLBACK": "dinesh", "REX_SESSION": "rex-s", "REX_BLOCK": "rex-b"}, clear=True)):

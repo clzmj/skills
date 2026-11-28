@@ -42,6 +42,8 @@ from question_model import (
 from question_guard import scan_assumptions
 from question_redact import redact
 import rex_visible as rex
+import ticket_guard
+from ticket_guard import TicketStatus
 
 CONFIG = Path.home() / ".config/agent-tooling/grokbot-callback.env"
 
@@ -113,6 +115,16 @@ class ChildSummary(TypedDict):
     status: Status
 
 
+class TicketInfo(TypedDict):
+    """Captured in the hook; the delivery worker has no run environment."""
+
+    ticket_id: str
+    ticket_url: str
+    review: bool
+    no_pr: bool
+    blocked: bool  # The run left a QUESTION.md next to its brief.
+
+
 class Payload(GitMetadata):
     event: Event
     status: Status
@@ -133,6 +145,11 @@ class Payload(GitMetadata):
     kind: NotRequired[InputKind]
     delivery_key: NotRequired[str]
     revision: NotRequired[int]  # run_finished only.
+    ticket_id: NotRequired[str]
+    ticket_url: NotRequired[str]
+    suggested_status: NotRequired[TicketStatus]  # Dinesh applies it; this machine never writes to Notion.
+    status_reason: NotRequired[str]
+    pr_url: NotRequired[str]
 
 
 class TestPayload(TypedDict):
@@ -170,6 +187,8 @@ class Envelope(TypedDict):
     body: NotRequired[Payload]
     delivery_outcome: NotRequired[Outcome]
     revision: NotRequired[int]  # 1 on a Stop superseding an idle_prompt release.
+    ticket: NotRequired[TicketInfo]
+    status_reason: NotRequired[str]  # Why the run was rejected, or its host error code.
 
 
 class HeldStop(TypedDict):
@@ -250,7 +269,7 @@ class RetryResult(TypedDict):
     failed: int
 
 
-WEBHOOK_EVENTS = (Event.RUN_FINISHED, Event.NEEDS_INPUT)
+WEBHOOK_EVENTS = (Event.RUN_FINISHED, Event.NEEDS_INPUT, Event.RUN_REJECTED)
 TERMINAL_STATUSES = (Status.COMPLETED, Status.FAILED, Status.ENDED)
 ROOT_ONLY_FIELDS = ("blocking", "finished_turn", "held", "released")
 # Any of these means the session moved on, so a held Stop is out of date.
@@ -624,6 +643,48 @@ def sync_sessions(sessions: dict[str, SessionState], members, current_key=""):
         sync(key, set())
 
 
+def ticket_report(agent: AgentKind) -> tuple[TicketInfo | None, str]:
+    """This run's ticket, or why a Claude run has to be reported as rejected."""
+    try:
+        ticket = ticket_guard.session_ticket()
+    except ticket_guard.TicketError as error:
+        return None, str(error) if agent == AgentKind.CLAUDE else ""  # Only Claude runs require tickets.
+    brief = os.environ.get("GROKBOT_BRIEF", "")
+    try:
+        blocked = bool(brief) and (Path(brief).parent / "QUESTION.md").stat().st_mtime >= ticket.verified_at.timestamp()
+    except OSError:
+        blocked = False
+    return TicketInfo(ticket_id=ticket.id, ticket_url=ticket.url, review=os.environ.get("GROKBOT_REVIEW") == "1",
+                      no_pr=os.environ.get("GROKBOT_NO_PR") == "1", blocked=blocked), ""
+
+
+def open_pr(cwd: str, branch: str) -> str | None:
+    """The branch's open PR URL, "" when there is none, None when the lookup failed."""
+    if not branch:
+        return ""
+    try:
+        result = subprocess.run(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "url"],
+                                cwd=cwd, capture_output=True, text=True, timeout=15, check=False)
+        if result.returncode:
+            return None
+        rows = json.loads(result.stdout)
+        return str(rows[0]["url"]) if rows else ""
+    except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
+        return None
+
+
+def suggest_status(status: Status, ticket: TicketInfo, pr: str | None, error: str) -> tuple[TicketStatus, str]:
+    if status == Status.FAILED:
+        return TicketStatus.IN_PROGRESS, f"run failed ({error})" if error else "run failed"
+    if ticket["blocked"]:
+        return TicketStatus.BLOCKED, "run left a QUESTION.md"
+    if pr or ticket["review"]:
+        return TicketStatus.IN_REVIEW, ""
+    if ticket["no_pr"]:
+        return TicketStatus.DONE, ""
+    return TicketStatus.IN_PROGRESS, "PR lookup failed" if pr is None else "finished without an open PR"
+
+
 def notify(agent, data, members=()):
     """Fail open: hooks only record local state and launch a detached HTTP worker."""
     try:
@@ -760,6 +821,12 @@ def _notify(agent, data, members):
             item["status"] = Status.ENDED
             if item["parent"]:
                 event = Event.LINEAGE
+        ticket, rejection = None, ""
+        if not item["parent"] and (event in WEBHOOK_EVENTS or name == HookEvent.USER_PROMPT_SUBMIT):
+            ticket, rejection = ticket_report(agent)
+            # The guard blocks this prompt, so no Stop will follow: report it now.
+            if rejection and name == HookEvent.USER_PROMPT_SUBMIT:
+                event, item["status"] = Event.RUN_REJECTED, Status.FAILED
         sessions[key] = item
         superseding = False
         if event == Event.RUN_FINISHED and not item["parent"]:
@@ -773,6 +840,8 @@ def _notify(agent, data, members):
                 superseding = True
             else:
                 event = None
+        if rejection and event == Event.RUN_FINISHED:
+            event, item["status"] = Event.RUN_REJECTED, Status.FAILED
         sync_sessions(sessions, members, current_key=key)
         for k, row in sessions.items():
             db.execute("INSERT OR REPLACE INTO sessions VALUES (?,?)", (k, json.dumps(row)))
@@ -792,6 +861,12 @@ def _notify(agent, data, members):
             envelope.update(kind=request[0], prompt_text=request[1], request_key=request_identity(data))
         if superseding:
             envelope["revision"] = 1
+        if ticket:
+            envelope["ticket"] = ticket
+        if event == Event.RUN_REJECTED:
+            envelope["status_reason"] = rejection
+        elif event == Event.RUN_FINISHED and isinstance(data.get("error"), str):
+            envelope["status_reason"] = redact(data["error"][:100]).text
         # Inside the transaction: a failed spool write must roll back finished_turn so a later Stop can retry.
         # Cost: BEGIN IMMEDIATE holds the write lock across the fsync and Popen for every webhook event,
         # and concurrent hooks wait on it up to the 5 s sqlite timeout.
@@ -935,6 +1010,19 @@ def payload(envelope) -> Payload:
         body["revision"] = envelope.get("revision", 0)
     if "kind" in envelope:
         body["kind"] = InputKind(envelope["kind"])
+    if body["event"] == Event.RUN_REJECTED:
+        body["status_reason"] = envelope.get("status_reason", "")
+    if ticket := envelope.get("ticket"):
+        body["ticket_id"], body["ticket_url"] = ticket["ticket_id"], ticket["ticket_url"]
+        if body["event"] == Event.NEEDS_INPUT:
+            body["suggested_status"] = TicketStatus.BLOCKED
+        elif body["event"] == Event.RUN_FINISHED:
+            pr = open_pr(metadata["repo"] or cwd, metadata["branch"])
+            if pr:
+                body["pr_url"] = pr
+            body["suggested_status"], reason = suggest_status(body["status"], ticket, pr, envelope.get("status_reason", ""))
+            if reason:
+                body["status_reason"] = reason
     return body
 
 

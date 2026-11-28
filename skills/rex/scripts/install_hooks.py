@@ -37,6 +37,7 @@ class HookSpec:
     event: HookEvent
     matcher: str | None
     timeout: int
+    fail_closed: bool = False  # Claude Code >= 2.1.295: a crash or timeout blocks.
 
 
 CODEX_QUESTION_TOOL_MATCHER = "^(request_user_input|request_user_input_async)$"
@@ -116,6 +117,10 @@ def _hook_specs(codex):
                   HookSpec("question_hooks.py", HookEvent.SUBAGENT_STOP, None, 5)))
     if not codex:
         specs.append(HookSpec("question_hooks.py", HookEvent.PERMISSION_REQUEST, matcher, 60))
+    if not codex:
+        specs.extend((HookSpec("ticket_guard.py", HookEvent.SESSION_START, None, 10),
+                      HookSpec("ticket_guard.py", HookEvent.USER_PROMPT_SUBMIT, None, 10, fail_closed=True),
+                      HookSpec("ticket_guard.py", HookEvent.PRE_TOOL_USE, "*", 10, fail_closed=True)))
     return [(spec, agent if spec.script == "question_hooks.py" else None) for spec in specs]
 
 
@@ -159,6 +164,8 @@ def _apply_spec(data, spec, root, home, uv, agent, sibling_matchers=None,
         keeper_group, keeper = matches[0]
         keeper["command"] = command
         keeper["timeout"] = spec.timeout
+        if spec.fail_closed:
+            keeper["onFailure"] = "block"
         # De-duplicate exact owned handlers in this matcher's group.
         keepers = keeper_group.get("hooks", [])
         seen_keeper = False
@@ -178,7 +185,9 @@ def _apply_spec(data, spec, root, home, uv, agent, sibling_matchers=None,
             if not group.get("hooks"):
                 groups.remove(group)
         return
-    groups.append({"hooks": [{"type": "command", "command": command, "timeout": spec.timeout}],
+    handler = {"type": "command", "command": command, "timeout": spec.timeout,
+               **({"onFailure": "block"} if spec.fail_closed else {})}
+    groups.append({"hooks": [handler],
                    **({"matcher": spec.matcher} if spec.matcher is not None else {})})
 
 
@@ -214,6 +223,14 @@ def _has_enabled_owned_hook(data, root, home, codex):
     )
 
 
+def install_launcher(home, runtime, uv):
+    """~/.local/bin/rex-run, a shim over the installed runtime. True when changed."""
+    shim = home / ".local/bin/rex-run"
+    changed = write(shim, f'#!/bin/sh\nexec {shlex.join([uv, "run", "--script", str(runtime / "rex_run.py")])} "$@"\n')
+    shim.chmod(0o755)
+    return changed
+
+
 def install(home, agents, question_escalation: QuestionEscalation = QuestionEscalation.OFF):
     uv = shutil.which("uv")
     if not uv:
@@ -227,6 +244,8 @@ def install(home, agents, question_escalation: QuestionEscalation = QuestionEsca
                         ignore=shutil.ignore_patterns("__pycache__", ".state", "*.pyc"))
     changed = []
     downgrades_question_escalation = False
+    if "claude-code" in agents and install_launcher(home, runtime, uv):
+        changed.append(str(home / ".local/bin/rex-run"))
     for agent in agents:
         codex = agent == "codex"
         path = home / (".codex/hooks.json" if codex else ".claude/settings.json")

@@ -20,6 +20,44 @@ The hooks inspect commands and record lifecycle events. They never launch model 
 
 After install: run `/agents` and confirm `rex-mechanical-worker`, `rex-worker`, `rex-deep-worker`, `rex-reviewer` load.
 
+## Ticket guardrail
+
+Every bot or Rex Claude Code run needs its own Notion ticket. Dinesh verifies it
+in Notion and writes `~/.local/state/agent-tickets/<task id>.json`:
+
+```json
+{"task_id": "", "ticket_url": "", "ticket_id": "", "status": "In progress",
+ "verified_at": "2026-01-01T00:00:00Z", "verified_by": "dinesh"}
+```
+
+This machine makes no Notion call and holds no Notion token. A record is valid
+when the task id matches, `status` is `Backlog`, `Ready`, `In progress`,
+`In review` or `Blocked`, and `verified_at` is under 24 hours old
+(`GROKBOT_TICKET_MAX_AGE_HOURS` changes the limit).
+
+Start runs with `rex-run` (installed to `~/.local/bin`):
+
+```sh
+rex-run --ticket https://app.notion.com/p/<id> --label <task id> --role normal \
+  --worktree <dir> --brief <file> --callback dinesh
+```
+
+Optional: `--model` (must be in `claude_models.toml`), `--add-dir`, `--session`,
+`--review` (same label and ticket, edit tools disabled; Bash is not sandboxed),
+`--no-pr` (the brief needs no PR). It prints `{window_id, block_id, ticket}`.
+Refusal exit codes: 3 task id, 4 no record, 5 invalid record, 6 other task,
+7 closed status, 8 stale, 10 ticket mismatch, 11 bad `--ticket`, 12 model,
+13 path, 14 Rex.
+
+`ticket_guard.py` hooks block the prompt and deny every tool when
+`GROKBOT_CALLBACK`, `GROKBOT_TASK_ID` or `REX_BLOCK` is set and the record is
+invalid or `GROKBOT_TICKET` does not match it. So **a hand-started `claude` in a
+Rex pane is blocked too**; plain terminals outside Rex are not affected. The
+blocking hooks use `onFailure: "block"` (Claude Code 2.1.295 or later). The
+record is rechecked on every tool call, so a run stops when it expires until
+Dinesh verifies again. This is a guardrail, not a sandbox: a process running as
+the same user can write records. Codex is not guarded.
+
 ## Grok Bot callbacks
 
 Callbacks are opt-in. Configure `~/.config/agent-tooling/grokbot-callback.env`
@@ -43,7 +81,15 @@ uv run --script ~/.local/share/agent-tooling/rex/grokbot_callback.py doctor
 uv run --script ~/.local/share/agent-tooling/rex/grokbot_callback.py test
 ```
 
-Only `run_finished` and `needs_input` hooks submit durable spools and launch
+`run_finished` and `needs_input` carry `ticket_id`, `ticket_url` and
+`suggested_status` for Dinesh to apply: `Blocked` for `needs_input` or a
+`QUESTION.md` written next to the brief since verification; `In progress` with
+`status_reason` for a failed run, or one that finished with no open PR; `In
+review` (with `pr_url`) for an open PR or a review run; `Done` for a `--no-pr`
+run. A Claude run without a valid ticket sends `run_rejected_no_ticket` with
+`status_reason` instead of a finish.
+
+Only `run_finished`, `needs_input` and `run_rejected_no_ticket` hooks submit durable spools and launch
 detached HTTP delivery. Every POST wakes a paid Grok Bot routine, so heartbeat
 and lineage activity stays local and never posts. Errors fail open and do not
 change host behavior. `doctor` checks callback config; `test` remains an explicit
