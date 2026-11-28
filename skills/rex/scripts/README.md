@@ -2,7 +2,7 @@
 
 Independent uv-managed helpers for the installed Rex CLI. [POLICY.md](POLICY.md) controls command routing; [COORDINATION.md](COORDINATION.md) controls agent visibility and scoped messaging.
 
-Install from this skill with `uv run --script scripts/install_hooks.py` (optionally `--agents codex` or `--agents claude-code`). This installer only manages Rex hooks. The runtime runs from `~/.local/share/agent-tooling/rex`. Mutable state lives in `~/.local/state/rex-visible` (override with `REX_VISIBLE_STATE_DIR`) so skill updates preserve session bindings, receipts, and the local coordination database. Neither state nor transcripts belong in Git.
+Install from this skill with `uv run --script scripts/install_hooks.py` (optionally `--agents codex` or `--agents claude-code`). It manages Rex hooks, their instruction blocks and, for `claude-code`, the Rex Claude subagents. Codex is dropped from model routing, so Codex hosts get hooks and coordination but no model guidance. The runtime runs from `~/.local/share/agent-tooling/rex`. Mutable state lives in `~/.local/state/rex-visible` (override with `REX_VISIBLE_STATE_DIR`) so skill updates preserve session bindings, receipts, and the local coordination database. Neither state nor transcripts belong in Git.
 
 Question escalation is operator-controlled: `--question-escalation on` enables it for the selected hosts, and `--question-escalation off` disables it. The default is `off`; generated hooks explicitly set `GROKBOT_QE=0` even when the parent environment has it enabled. Reinstall with the desired setting to switch it, then review the hooks. This changes installed hook commands, not an already-running session's environment.
 
@@ -11,6 +11,14 @@ After installing or updating the Rex hooks, review the resulting hooks in the ho
 Jobs and read-only agent views use the existing main agent Rex session. Successful jobs and inactive views close after 30 seconds; failed jobs and infrastructure/deployment output close after 120 seconds. Running services remain until they exit. `--close-after -1` explicitly pins a job. Cleanup only closes owned panes and verified empty legacy tool sessions.
 
 The hooks inspect commands and record lifecycle events. They never launch model tasks, approve tools, or invoke Computer Use. The agent runs substantial commands through `rex_visible.py run` under ordinary permissions. Codex uses native messaging or supported `codex queue` for independent sessions. Claude uses native Agent/SendMessage; its adapter records read-only lifecycle and transcript views, never Codex queues.
+
+## Claude roles and subagents
+
+`claude_models.toml` maps each role (`mechanical`, `normal`, `hard`, `review`) to a model alias and effort; `claude_models.resolve(role)` and `claude_models.effort(role)` read it and raise on an unknown role. The matching `rex-*` subagent definitions are in the skill's `claude-agents/` directory. See [COORDINATION.md](COORDINATION.md#claude-roles-and-models) for the table and usage.
+
+`install_hooks.py` installs them into `~/.claude/agents` whenever `--agents` includes `claude-code`, so `bun run install:rex` and the hosted installer's `--hooks` do too. To install them alone, run `uv run --script scripts/install_claude_agents.py` from this skill; `--dry-run` previews and `--target DIR` changes the destination. Only files carrying the `# managed-by: agent-tooling rex` line are replaced (after a backup); a same-named file without it is skipped and reported, and `--force` replaces it. Delete that line to keep your own edits. A project-level `.claude/agents` file with the same name still takes precedence. Rerunning with unchanged content writes nothing.
+
+After install: run `/agents` and confirm `rex-mechanical-worker`, `rex-worker`, `rex-deep-worker`, `rex-reviewer` load.
 
 ## Grok Bot callbacks
 

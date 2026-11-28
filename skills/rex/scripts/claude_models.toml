@@ -1,0 +1,21 @@
+# Single source of truth: Claude role -> model alias and effort.
+# Every Claude launch, subagent and workflow stage picks a model from this table;
+# the user default in ~/.claude/settings.json is never relied on.
+# Read through claude_models.py. skills/rex/claude-agents/rex-*.md must match
+# (test_claude_models.py enforces it).
+
+[roles.mechanical] # renames, formatting, bumps, small mechanical edits, lookups
+model = "haiku"
+effort = "low"
+
+[roles.normal] # normal implementation, most subagent work
+model = "sonnet"
+effort = "medium"
+
+[roles.hard] # hard design or debugging, risky diffs (security, data model)
+model = "opus"
+effort = "high"
+
+[roles.review] # fresh read-only reviews
+model = "opus"
+effort = "high"

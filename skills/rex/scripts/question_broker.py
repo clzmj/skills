@@ -1570,9 +1570,7 @@ class Broker:
                         previous_floor=self.store.guard_floor(batch_id),
                     )
                     ref = m.AnswererRef(
-                        m.AnswererKind.CLAUDE_PRINT
-                        if result.model in {m.Model.HAIKU, m.Model.SONNET}
-                        else m.AnswererKind.CODEX_EXEC,
+                        m.answerer_kind(result.model),
                         result.model,
                         level,
                     )

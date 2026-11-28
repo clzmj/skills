@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { TerminalBack, TerminalCancelled } from "../scripts/terminal-ui";
-import { readFileSync, mkdtempSync, rmSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, readdirSync, rmSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { initialize, parseManifest, parseOptions, parseState, buildPlan, resolveCoreSource, detectAgents, skillDirectory, settingsPath, runSubprocess, type PageUI, type Runtime, type Options, type InstallRecord } from "../scripts/init";
@@ -105,6 +105,15 @@ describe("installer choices and plans", () => {
       const plan = buildPlan([], options(["--scope", "project", "--project-dir", dir]), {}, "clzmj/skills");
       expect(plan.skipped.some(line => line.includes("rex for codex"))).toBe(true);
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  test("hosted --hooks for claude-code installs the Rex subagents", () => {
+    const home = mkdtempSync(resolve(tmpdir(), "skills-hooks-"));
+    try {
+      const plan = buildPlan([], options(["--core", "none", "--hooks", "--agents", "claude-code"]), {}, "clzmj/skills", () => false);
+      const step = plan.steps.find(s => s.command[3]?.endsWith("skills/rex/scripts/install_hooks.py"))!;
+      expect(Bun.spawnSync([...step.command, "--home", home]).exitCode).toBe(0);
+      expect(readdirSync(resolve(home, ".claude/agents")).sort()).toEqual(["rex-deep-worker.md", "rex-mechanical-worker.md", "rex-reviewer.md", "rex-worker.md"]);
+    } finally { rmSync(home, { recursive: true, force: true }); }
   });
   test("independent hook choice can install hooks without ordinary core skills", () => {
     const plan = buildPlan([], options(["--core", "none", "--hooks"]), {}, "clzmj/skills", () => false);
