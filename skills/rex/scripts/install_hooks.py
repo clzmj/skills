@@ -3,7 +3,10 @@
 # requires-python = ">=3.11"
 # dependencies = []
 # ///
-"""Install independent Rex hooks without changing Python hooks or host trust."""
+"""Install independent Rex hooks without changing Python hooks or host trust.
+
+With claude-code selected, also install the Rex Claude subagents.
+"""
 
 import argparse
 import json
@@ -390,7 +393,7 @@ def install(
             marked_block(
                 instructions,
                 "codex-coordination",
-                "## Conversational agent coordination\n\nUse direct tools for small deterministic work. Delegate bounded work to fresh focused workers with compact context; escalate models when evidence requires it. Read "
+                "## Conversational agent coordination\n\nUse direct tools for small deterministic work. Delegate bounded work to fresh focused workers with compact context. Read "
                 + str(runtime / "COORDINATION.md")
                 + " once before coordinating, then consult changed sections. Keep ownership clear and views in the main agent Rex session.",
             )
@@ -432,9 +435,21 @@ if __name__ == "__main__":
         help="Operator-controlled question escalation for installed hooks (default: off).",
     )
     args = parser.parse_args()
-    receipt = install(
-        args.home.expanduser().resolve(), args.agents, args.question_escalation
-    )
+    home = args.home.expanduser().resolve()
+    receipt = install(home, args.agents, args.question_escalation)
+    if "claude-code" in args.agents:
+        import install_claude_agents  # imports this module, so not at the top
+
+        if any(install_claude_agents.SOURCE.glob("*.md")):
+            changed, skipped = install_claude_agents.install(home / ".claude/agents")
+            receipt["changed"] += changed
+            receipt["skipped_agents"] = skipped
+        else:
+            print(
+                "Claude subagents not updated: the runtime copy has no definitions. "
+                "Run the installer from the skills repository.",
+                file=sys.stderr,
+            )
     if receipt["downgrades_question_escalation"]:
         print(
             "Warning: reinstalling without --question-escalation changes existing GROKBOT_QE=1 hooks to GROKBOT_QE=0.",

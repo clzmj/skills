@@ -330,6 +330,13 @@ class Model(StrEnum):
     SONNET = "sonnet"  # Claude aliases: P12; runtime validates actual model families.
 
 
+def answerer_kind(model: Model) -> AnswererKind:
+    """Haiku and Sonnet run through the Claude CLI; the other models through Codex."""
+    if model in {Model.HAIKU, Model.SONNET}:
+        return AnswererKind.CLAUDE_PRINT
+    return AnswererKind.CODEX_EXEC
+
+
 class Verdict(StrEnum):
     ANSWER = "answer"
     ESCALATE = "escalate"

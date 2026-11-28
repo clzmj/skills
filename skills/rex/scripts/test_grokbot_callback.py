@@ -21,6 +21,7 @@ from unittest.mock import patch
 import claude_sessions
 import codex_sessions
 import grokbot_callback as callback
+import question_ledger
 
 
 class CallbackTests(unittest.TestCase):
@@ -85,7 +86,7 @@ class CallbackTests(unittest.TestCase):
     def test_payload_shape_and_git_metadata(self):
         with patch.object(callback, "git_metadata", wraps=self.git_metadata), patch.object(callback.subprocess, "run", side_effect=[subprocess.CompletedProcess([], 0, value, "") for value in ("/repo\n", "feature\n", "abc123\n")]):
             body = callback.payload(self.envelope(last_assistant_message="x" * 2100))
-        self.assertEqual(set(body), {"event", "status", "agent", "requester", "agent_session_id", "rex_session", "rex_block", "cwd", "repo", "branch", "head_sha", "last_message", "finished_at", "task_id", "turn_id", "lineage", "children", "untrusted", "prompt_text"})
+        self.assertEqual(set(body), {"event", "status", "agent", "requester", "agent_session_id", "rex_session", "rex_block", "cwd", "repo", "branch", "head_sha", "last_message", "finished_at", "task_id", "turn_id", "lineage", "children", "untrusted", "prompt_text", "revision"})
         self.assertEqual((body["event"], body["status"], body["agent"], body["requester"]), ("run_finished", "completed", "codex", "dinesh"))
         self.assertEqual((body["repo"], body["branch"], body["head_sha"]), ("/repo", "feature", "abc123"))
         self.assertEqual(len(body["last_message"]), 2000)
@@ -934,6 +935,322 @@ class CallbackTests(unittest.TestCase):
         self.drain()
         finished = next(body for body, _ in self.requests if body["event"] == "run_finished")
         self.assertEqual(finished["children"], [{"id": "child", "depth": 1, "status": "failed"}])
+
+    def finished(self):
+        self.drain()
+        return [body for body, _ in self.requests if body["event"] == "run_finished"]
+
+    def shell(self, ident="bocryg3na", **fields):
+        return {"id": ident, "type": "shell", "status": "running", **fields}
+
+    def test_stale_background_tasks_do_not_block_run_finished(self):
+        for index, tasks in enumerate(([{"id": "m1", "type": "monitor", "status": "running"}],
+                      [{"id": "s1", "type": "shell", "status": "completed"}, {"id": "s2", "status": "Failed"}],
+                      [{"id": "m1", "type": "monitor", "status": "running"}, {"id": "s1", "status": "killed"}])):
+            with self.subTest(tasks=tasks):
+                self.assertIsNotNone(self.queued("claude", self.data("Stop", session_id=f"sess-{index}", background_tasks=tasks)))
+        # Fresh running work still holds the callback, case-insensitively.
+        for status in ("running", "RUNNING", "pending", "In_Progress"):
+            with self.subTest(status=status):
+                self.assertIsNone(self.queued("claude", self.data("Stop", session_id=f"fresh-{status}", background_tasks=[self.shell(status=status)])))
+
+    def test_same_blocking_id_on_next_stop_is_stale_and_new_id_still_waits(self):
+        self.queued("claude", self.data("UserPromptSubmit"))
+        self.assertIsNone(self.queued("claude", self.data("Stop", background_tasks=[self.shell()])))
+        self.assertEqual(self.session_status("claude", self.data()["session_id"]), "waiting")
+        self.assertIsNotNone(self.queued("claude", self.data("Stop", background_tasks=[self.shell()])))
+        self.assertEqual(len(self.finished()), 1)
+        # A brand-new blocker on a later turn still skips, even beside the stale one.
+        self.queued("claude", self.data("UserPromptSubmit"))
+        self.assertIsNone(self.queued("claude", self.data("Stop", background_tasks=[self.shell(), self.shell("fresh1")])))
+        self.assertIsNotNone(self.queued("claude", self.data("Stop", background_tasks=[self.shell("fresh1")])))
+        self.assertEqual(len(self.finished()), 2)
+
+    def test_stale_id_fires_on_a_later_turn(self):
+        self.queued("claude", self.data("UserPromptSubmit", turn_id="t1"))
+        self.assertIsNone(self.queued("claude", self.data("Stop", turn_id="t1", background_tasks=[self.shell()])))
+        self.queued("claude", self.data("UserPromptSubmit", turn_id="t2"))
+        self.assertIsNotNone(self.queued("claude", self.data("Stop", turn_id="t2", background_tasks=[self.shell()])))
+
+    def hook(self, name="Stop", **fields):
+        with patch.object(callback.subprocess, "Popen"):
+            claude_sessions.handle_hook(self.data(name, **fields))
+
+    def status(self):
+        return self.session_status("claude", self.data()["session_id"])
+
+    # Fence: SubagentStop/PermissionRequest must not release a held Stop.
+    def test_only_the_roots_own_next_stop_releases_a_held_stop(self):
+        self.hook("UserPromptSubmit")
+        self.hook(background_tasks=[self.shell("A")], last_assistant_message="held")
+        self.hook("SubagentStop", agent_id="A")
+        self.assertEqual(self.finished(), [])
+        self.assertEqual(self.status(), "waiting")
+        self.hook(background_tasks=[self.shell("A")], last_assistant_message="final")
+        self.hook(background_tasks=[self.shell("A")], last_assistant_message="again")
+        self.assertEqual([body["last_message"] for body in self.finished()], ["final"])
+
+    # Fence: SubagentStop/PermissionRequest must not release a held Stop.
+    def test_needs_input_never_fires_run_finished(self):
+        self.hook("UserPromptSubmit")
+        self.hook(background_tasks=[self.shell("A")])
+        self.hook("PermissionRequest", request_id="r1")
+        self.hook("SubagentStop", agent_id="A")
+        self.assertEqual(self.finished(), [])
+
+    def test_session_crons_always_hold(self):
+        cron = [{"id": "loop"}]
+        for _ in range(3):
+            self.hook("UserPromptSubmit")
+            self.hook(session_crons=cron)
+        self.hook(background_tasks=[self.shell("A")], session_crons=cron)
+        self.hook(background_tasks=[self.shell("A")], session_crons=cron)
+        self.assertEqual(self.finished(), [])
+        self.assertEqual(self.status(), "waiting")
+        self.hook(background_tasks=[self.shell("A")])  # Cron gone, A is stale.
+        self.assertEqual(len(self.finished()), 1)
+
+    def test_fallback_ids_ignore_list_position(self):
+        self.hook("UserPromptSubmit")
+        self.hook(background_tasks=[{"command": "one"}, {"command": "two"}])
+        self.hook(background_tasks=[{"command": "three"}])
+        self.assertEqual(self.finished(), [])
+
+    def test_fallback_ids_ignore_changing_fields(self):
+        self.hook("UserPromptSubmit")
+        self.hook(background_tasks=[{"command": "one", "elapsed": 1}])
+        self.hook(background_tasks=[{"command": "one", "elapsed": 2}])
+        self.assertEqual(len(self.finished()), 1)
+
+    def test_children_do_not_inherit_root_turn_bookkeeping(self):
+        self.hook("UserPromptSubmit")
+        self.hook()
+        self.hook(background_tasks=[self.shell("A")])
+        self.hook("SubagentStart", agent_id="child")
+        with callback.database() as db:
+            rows = [json.loads(row) for (row,) in db.execute("SELECT record FROM sessions")]
+        child = next(row for row in rows if row["parent"])
+        self.assertEqual([field for field in ("blocking", "finished_turn") if field in child], [])
+
+    def idle(self, kind="idle_prompt", **fields):
+        self.hook("Notification", notification_type=kind, message="Claude is waiting for your input", **fields)
+
+    def test_idle_prompt_fires_a_held_stop_once_with_its_message(self):
+        self.hook("UserPromptSubmit")
+        self.hook(background_tasks=[self.shell("A")], last_assistant_message="held")
+        self.idle()
+        self.idle()
+        self.assertEqual([(body["status"], body["last_message"]) for body in self.finished()], [("completed", "held")])
+
+    def test_idle_prompt_keeps_a_held_stop_failure_failed(self):
+        self.hook("UserPromptSubmit")
+        self.hook("StopFailure", background_tasks=[self.shell("A")])
+        self.idle()
+        self.assertEqual([body["status"] for body in self.finished()], ["failed"])
+
+    def test_stop_after_an_idle_release_supersedes_it_once(self):
+        self.hook("UserPromptSubmit")
+        self.hook(background_tasks=[self.shell("A")], last_assistant_message="build started")
+        self.idle()
+        self.finished()
+        self.hook(last_assistant_message="build passed")
+        self.finished()
+        self.hook(last_assistant_message="third")
+        self.hook(background_tasks=[self.shell("B")], last_assistant_message="fourth")
+        self.idle()
+        self.assertEqual([body["last_message"] for body in self.finished()], ["build started", "build passed"])
+        self.assertEqual(len({body["delivery_key"] for body in self.finished()}), 2)
+
+    def test_second_idle_prompt_does_not_supersede_an_idle_release(self):
+        self.hook("UserPromptSubmit")
+        self.hook(background_tasks=[self.shell("A")], last_assistant_message="provisional")
+        self.idle()
+        self.finished()
+        self.hook(background_tasks=[self.shell("B")], last_assistant_message="still running")
+        self.idle()
+        self.assertEqual([body["last_message"] for body in self.finished()], ["provisional"])
+        self.hook(last_assistant_message="final")
+        self.assertEqual([body["last_message"] for body in self.finished()], ["provisional", "final"])
+
+    def test_new_prompt_resets_an_idle_release(self):
+        self.hook("UserPromptSubmit")
+        self.hook(background_tasks=[self.shell("A")], last_assistant_message="provisional")
+        self.idle()
+        self.finished()
+        self.hook("UserPromptSubmit")
+        self.hook(last_assistant_message="next")
+        self.hook(last_assistant_message="extra")
+        self.assertEqual([body["last_message"] for body in self.finished()], ["provisional", "next"])
+
+    def test_approval_after_an_idle_release_still_sends_needs_input(self):
+        self.hook("UserPromptSubmit")
+        self.hook(background_tasks=[self.shell("A")])
+        self.idle()
+        self.drain()  # One spool at a time: drain order is arbitrary.
+        self.hook("PreToolUse", tool_name="Bash")
+        self.hook("PermissionRequest", request_id="r1")
+        self.drain()
+        self.assertEqual([body["event"] for body, _ in self.requests], ["run_finished", "needs_input"])
+        self.assertEqual(self.status(), "waiting")
+
+    def test_late_tool_hook_does_not_revive_a_session_ended_after_an_idle_release(self):
+        self.hook("UserPromptSubmit")
+        self.hook(background_tasks=[self.shell("A")])
+        self.idle()
+        self.hook("SessionEnd")
+        self.hook("PostToolUse", tool_name="Bash")
+        self.assertEqual(self.status(), "ended")
+
+    def test_run_finished_revision_marks_the_supersede(self):
+        self.hook("UserPromptSubmit")
+        self.hook(background_tasks=[self.shell("A")])
+        self.idle()
+        self.finished()
+        self.hook()
+        self.assertEqual([body["revision"] for body in self.finished()], [0, 1])
+
+    def test_second_idle_prompt_leaves_a_newly_held_stop_waiting(self):
+        self.hook("UserPromptSubmit")
+        self.hook(background_tasks=[self.shell("A")])
+        self.idle()
+        self.hook(background_tasks=[self.shell("B")])
+        self.idle()
+        self.assertEqual(self.status(), "waiting")
+
+    # A prompt that reuses its native turn id (steering) keeps the turn, so only the pop clears `released`.
+    def test_prompt_reusing_a_turn_id_clears_an_idle_release(self):
+        self.hook("UserPromptSubmit", turn_id="t")
+        self.hook(turn_id="t", background_tasks=[self.shell("A")])
+        self.idle(turn_id="t")
+        self.finished()
+        self.hook("UserPromptSubmit", turn_id="t")
+        self.hook(turn_id="t")  # Same delivery_key as the release: deduped.
+        self.hook(turn_id="t")
+        self.assertEqual(len(self.finished()), 1)
+
+    def test_idle_prompt_after_run_finished_does_not_double_fire(self):
+        self.hook("UserPromptSubmit")
+        self.hook(last_assistant_message="first")
+        self.hook(background_tasks=[self.shell("B")], last_assistant_message="second")
+        self.finished()  # Drain: a pending spool would dedupe the send by itself.
+        for marker in (self.root / "state").glob("grokbot-sent-*"):
+            marker.unlink()  # finished_turn must work without delivery_key.
+        self.idle()
+        self.assertEqual([body["last_message"] for body in self.finished()], ["first"])
+
+    def plant_held(self, child):
+        """Write a `held` no current hook would leave behind, as a mixed-version swap could."""
+        with callback.database() as db:
+            for key, raw in db.execute("SELECT key,record FROM sessions").fetchall():
+                row = json.loads(raw)
+                if bool(row["parent"]) == child:
+                    turn = row["turn"] if child else "older-turn"
+                    row["held"] = {"turn": turn, "last_message": "stale", "status": "completed"}
+                    db.execute("UPDATE sessions SET record=? WHERE key=?", (json.dumps(row), key))
+
+    def test_idle_prompt_ignores_a_held_stop_from_another_turn(self):
+        self.hook("UserPromptSubmit")
+        self.plant_held(child=False)
+        self.idle()
+        self.assertEqual(self.finished(), [])
+
+    def test_idle_prompt_ignores_a_held_stop_on_a_child(self):
+        self.hook("UserPromptSubmit")
+        self.hook("SubagentStart", agent_id="child")
+        self.plant_held(child=True)
+        self.idle(agent_id="child")
+        self.assertEqual(self.finished(), [])
+
+    # Regression fences below: they also pass without the idle_prompt path.
+    def test_permission_and_input_notifications_do_not_fire_a_held_stop(self):
+        self.hook("UserPromptSubmit")
+        self.hook(background_tasks=[self.shell("A")])
+        for kind in ("permission_prompt", "elicitation_dialog", "agent_needs_input", "auth_success"):
+            self.idle(kind)
+        self.assertEqual(self.finished(), [])
+
+    def test_idle_prompt_without_a_held_stop_does_nothing(self):
+        self.idle()  # No record at all.
+        self.assertFalse((self.root / "state" / "grokbot-callback.sqlite3").exists() and callback.health()["sessions"])
+        self.hook("UserPromptSubmit")
+        self.idle()
+        self.assertEqual(self.finished(), [])
+        self.assertEqual(self.status(), "running")
+
+    def test_activity_after_a_held_stop_drops_it(self):
+        for name, fields in (("UserPromptSubmit", {}), ("PreToolUse", {"tool_name": "Bash"}),
+                             ("PostToolUse", {"tool_name": "Bash"}), ("PermissionRequest", {"request_id": "r"}),
+                             ("SessionEnd", {})):
+            with self.subTest(name=name):
+                self.hook("UserPromptSubmit", session_id=name)
+                self.hook(session_id=name, background_tasks=[self.shell("A")])
+                self.hook(name, session_id=name, **fields)
+                self.idle(session_id=name)
+                self.assertEqual(self.finished(), [])
+
+    def test_idle_prompt_never_fires_past_a_scheduled_wakeup(self):
+        self.hook("UserPromptSubmit")
+        self.hook(session_crons=[{"id": "loop"}])
+        self.idle()
+        self.assertEqual(self.finished(), [])
+
+    def test_hook_created_children_do_not_inherit_root_turn_bookkeeping(self):
+        self.queued("claude", self.data("UserPromptSubmit"))
+        self.queued("claude", self.data("Stop"))
+        self.queued("claude", self.data("Stop", background_tasks=[self.shell("A")]))
+        self.queued("claude", self.data("SubagentStart", agent_id="child"))  # No members: only _notify's copy path.
+        with callback.database() as db:
+            rows = [json.loads(row) for (row,) in db.execute("SELECT record FROM sessions")]
+        child = next(row for row in rows if row["parent"])
+        self.assertEqual([field for field in callback.ROOT_ONLY_FIELDS if field in child], [])
+
+    def test_new_prompt_starts_a_new_turn_that_can_finish_again(self):
+        with patch.object(callback.subprocess, "Popen"):
+            claude_sessions.handle_hook(self.data("UserPromptSubmit", turn_id="t1"))
+            claude_sessions.handle_hook(self.data("Stop", turn_id="t1"))
+            claude_sessions.handle_hook(self.data("Stop", turn_id="t1"))
+            claude_sessions.handle_hook(self.data("UserPromptSubmit", turn_id="t2"))
+            claude_sessions.handle_hook(self.data("Stop", turn_id="t2"))
+        self.assertEqual(len(self.finished()), 2)
+
+    # question escalation reads ASSUMPTION lines from the untruncated final message.
+    def test_idle_release_records_assumptions_past_the_message_limit(self):
+        message = "x" * 2100 + "\nASSUMPTION: tabs are fine"
+        with patch.dict(os.environ, {callback.FLAG_ENV: "1"}), patch.object(callback, "record_assumptions") as record:
+            self.hook("UserPromptSubmit")
+            self.hook(background_tasks=[self.shell("A")], last_assistant_message=message)
+            record.assert_not_called()
+            self.idle()
+        self.assertEqual(record.call_args.args[1], message)
+        self.assertEqual([len(body["last_message"]) for body in self.finished()], [2000])
+
+    def test_supersede_repeating_an_assumption_adds_no_second_notice(self):
+        message = "ASSUMPTION: delete production database"
+        events = callback.rex.STATE / callback.EVENTS_DIR
+        with patch.dict(os.environ, {callback.FLAG_ENV: "1"}), \
+                question_ledger.Ledger(self.root / "ledger.sqlite3") as store:
+            self.hook("UserPromptSubmit")
+            self.hook(background_tasks=[self.shell("A")], last_assistant_message=message)
+            self.idle()
+            self.assertEqual(store.ingest_events(events), 1)  # The release's file is gone before the supersede.
+            self.hook(last_assistant_message=message)
+            store.ingest_events(events)
+            self.assertEqual(store.db.execute("SELECT count(*) FROM notice").fetchone()[0], 1)
+        self.assertEqual(len(self.finished()), 2)
+
+    def test_supersede_overwrites_a_still_pending_assumption_event_without_duplicating(self):
+        message = "ASSUMPTION: drop the staging table"
+        events = callback.rex.STATE / callback.EVENTS_DIR
+        with patch.dict(os.environ, {callback.FLAG_ENV: "1"}), \
+                question_ledger.Ledger(self.root / "ledger.sqlite3") as store:
+            self.hook("UserPromptSubmit")
+            self.hook(background_tasks=[self.shell("A")], last_assistant_message=message)
+            self.idle()  # Release spools run_finished (revision 0) and writes the event; nothing is ingested yet.
+            self.hook(last_assistant_message=message)  # Supersede: same task, turn and line, so the same event stem.
+            self.assertEqual(len(list(events.glob("*.json"))), 1)
+            self.assertEqual(store.ingest_events(events), 1)
+            self.assertEqual(store.db.execute("SELECT count(*) FROM notice").fetchone()[0], 1)
+        self.assertEqual(sorted(body["revision"] for body in self.finished()), [0, 1])  # Drain order is arbitrary.
 
 
 if __name__ == "__main__":

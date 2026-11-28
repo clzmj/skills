@@ -174,8 +174,7 @@ def lifecycle_hook(data):
     elif name == HookEvent.SUBAGENT_STOP:
         store.state(team, actor, MemberState.REPORTED)
     elif name == HookEvent.STOP:
-        pending = data.get("background_tasks") or data.get("session_crons")
-        store.state(team, actor, MemberState.WAITING if pending else MemberState.IDLE)
+        store.state(team, actor, MemberState.WAITING if callback.waiting(data) else MemberState.IDLE)
     elif name == HookEvent.TEAMMATE_IDLE:
         # Older clients may omit agent_id: preserve the root state instead of attributing a teammate's idleness to it.
         if agent:

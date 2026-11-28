@@ -92,6 +92,12 @@ class ClaudeAdapterTests(unittest.TestCase):
         self.hook("SessionEnd")
         self.assertEqual(store.member(self.team, self.root)["state"], "ended")
 
+    def test_stop_with_only_finished_or_monitor_tasks_is_not_waiting(self):
+        self.hook("UserPromptSubmit")
+        self.hook("Stop", background_tasks=[{"id": "s1", "type": "shell", "status": "completed"},
+                                            {"id": "m1", "type": "monitor", "status": "running"}])
+        self.assertEqual(store.member(self.team, self.root)["state"], "idle")
+
     def test_permission_and_idle_notifications_are_informational(self):
         self.hook("UserPromptSubmit")
         self.hook("Stop")
